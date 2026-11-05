@@ -175,6 +175,12 @@ inline void block_pop(Voice& v, Work& w, i32* out) {
             if (pops && v.left && v.t + i == v.at) {
                 const u32 r = lcg(v.seed);   // SCATTER's dice: the timing, level and crackle of each snap
                 if (static_cast<i32>(r >> 1) < v.k[12]) seed = (r >> 3) | 1u;
+                // Kept as it is, overflow and all: with SCATTER high, a loud roll
+                // of the dice takes the last pop's burst past 2^31 and it wraps
+                // negative. Apple clang -O2 wraps it too here, so the host
+                // renders, the calibration and the OP-XY all agree; holding it at
+                // full scale would change the calibrated sound (UB audit,
+                // 2026-11-06). UBSan reports it; it is known.
                 burst = Q31(0.75) + multiply(v.k[7], static_cast<i32>(r >> 1) - Q31(0.5)) + (v.left == 1 ? Q31(0.1) : 0);
                 w.fin[i] = (v.left & 1u) ? multiply(U, v.k[11]) : -multiply(U, v.k[11]);
                 if (--v.left) pop_schedule(v, v.t + i);

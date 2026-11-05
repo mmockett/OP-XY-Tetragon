@@ -245,7 +245,7 @@ inline void caption(char* out, const Caption& c, i32 t, i32 tune) {   // t: Q10 
         number(out, st, "st");
         return;
     }
-    default: header_amount(out, header_capacity, t * 2097152 - (t >> 10));
+    default: header_amount(out, header_capacity, t >= 1024 ? 0x7fffffff : t * 2097152 - (t >> 10));   // 1024: 2^31 - 1, unwrapped
     }
 }
 const Caption A = {amount, 0, 0};
@@ -291,7 +291,7 @@ const char* const labels[models][8] = {
 // The pad controls' captions, as the engine gives them to the stock header.
 inline void tune_text(char* out, i32 v) {
     v = clampi(v, -16, 15);
-    if (v > 0) { char s[8] = "+"; number(s + 1, v, ""); copy(out, header_capacity, s); }
+    if (v > 0) { char s[1 + opxy::draw::header_capacity] = "+"; number(s + 1, v, ""); copy(out, header_capacity, s); }
     else number(out, v, "");
 }
 inline void drive_text(char* out, i32 v) {

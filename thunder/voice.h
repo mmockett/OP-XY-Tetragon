@@ -588,6 +588,11 @@ inline void run_swing(Voice& v, i32* x) {
         const u32 back = pos - (static_cast<u32>(d) >> 8);
         const i32 s0 = buf[back & mask], s1 = buf[(back - 1) & mask];
         const i32 delayed = (s0 << 8) + (s1 - s0) * (d & 0xff);   // Q8 of the stored scale
+        // Kept as it is, overflow and all: on a loud hit, delayed * wet can
+        // pass 2^31 and wrap (key 62's default does). Apple clang -O2 wraps it
+        // too here, so the host renders, the calibration and the OP-XY all
+        // agree; computing the unwrapped product would change the calibrated
+        // sound (UB audit, 2026-11-06). UBSan reports it; it is known.
         x[i] += (delayed * wet) >> 10;                           // back to signal: << 14 >> 8 >> 16
         pos = (pos + 1) & mask;
         d += step;
