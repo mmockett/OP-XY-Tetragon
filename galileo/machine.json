@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "sdk": "1.10",
+  "kind": "drum",
+  "description": "Galileo's inclined plane as a drum kit: each note rolls a ball down a board of frets onto the key's body, where it bounces to rest.",
+  "sources": [
+    "tables.cpp"
+  ],
+  "presetDefaults": {
+    "amp": {
+      "attack": 0,
+      "decay": 32767,
+      "sustain": 32767,
+      "release": 32767
+    }
+  }
+}

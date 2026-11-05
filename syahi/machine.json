@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "sdk": "1.10",
+  "kind": "drum",
+  "description": "One struck head, loaded and shaped into any drum: kicks, snares, toms, tabla, bars, metals, bounces and zaps on 24 keys.",
+  "presetDefaults": {
+    "amp": {
+      "attack": 0,
+      "decay": 32767,
+      "sustain": 32767,
+      "release": 32767
+    }
+  }
+}

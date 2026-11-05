@@ -1,0 +1,130 @@
+{
+  "schema": 1,
+  "id": "syahi",
+  "name": "SYAHI",
+  "parameters": [
+    {
+      "id": "tune",
+      "label": "TUNE",
+      "default": 0.393701,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "decay",
+      "label": "DECAY",
+      "default": 0.472441,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "voice_a",
+      "label": "VOICE A",
+      "default": 0.377953,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "voice_b",
+      "label": "VOICE B",
+      "default": 0.314961,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "form",
+      "label": "FORM",
+      "default": 0.267717,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent",
+      "control": 0
+    },
+    {
+      "id": "spot",
+      "label": "SPOT",
+      "default": 0.125984,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent",
+      "control": 1
+    },
+    {
+      "id": "voice_c",
+      "label": "VOICE C",
+      "default": 0.314961,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent",
+      "control": 2
+    },
+    {
+      "id": "voice_d",
+      "label": "VOICE D",
+      "default": 0.23622,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent",
+      "control": 3
+    }
+  ],
+  "presets": {},
+  "resources": {
+    "voiceBytes": 1304,
+    "voiceAlignment": 4,
+    "voiceCapacity": 16,
+    "sharedBytes": 2340,
+    "outputPeakQ31": 1073741824,
+    "modelCount": 8,
+    "chokeSameKey": 1,
+    "padMix": 1,
+    "padControls": [
+      {
+        "label": "HUMAN",
+        "bits": 4
+      },
+      {
+        "label": "GRIT",
+        "bits": 5,
+        "signed": true
+      }
+    ],
+    "display": {
+      "stateBytes": 7516,
+      "stateAlignment": 4,
+      "paths": 4,
+      "points": 64,
+      "nodes": 267,
+      "texts": 16,
+      "palette": 16
+    }
+  }
+}

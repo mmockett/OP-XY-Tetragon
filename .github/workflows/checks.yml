@@ -1,0 +1,74 @@
+name: Kit checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  # The kits' per-key mixer channels (padMix) need the SDK change still in
+  # review, etcetc000/open-xy#399. Once it merges, switch to
+  # OPEN_XY_REPO: etcetc000/open-xy and OPEN_XY_REF: staging.
+  OPEN_XY_REPO: mmockett/open-xy
+  OPEN_XY_REF: drum/pad-channel
+  KITS: thunder curio galileo syahi
+jobs:
+  # Each kit's records, browser preview, drawing checks and host sound and
+  # screen tests.
+  kits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tetragon
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPEN_XY_REPO }}
+          ref: ${{ env.OPEN_XY_REF }}
+          path: open-xy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Preview and host tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang lld
+          python -m pip install numpy==2.3.5
+      - name: Kit source, preview and sound checks
+        run: |
+          for kit in $KITS; do
+            python open-xy/sdk.py test --machine "tetragon/$kit" --cxx clang++ --host-cxx g++ || exit 1
+          done
+
+  # All four kits compiled together into one native firmware module with the
+  # SDK's pinned Blackfin tools, which run on macOS arm64 and Windows x86_64.
+  firmware:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tetragon
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPEN_XY_REPO }}
+          ref: ${{ env.OPEN_XY_REF }}
+          path: open-xy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Restore the pinned Blackfin tools
+        uses: actions/cache@v4
+        with:
+          path: open-xy/local/toolchain
+          key: toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('open-xy/profiles/toolchains.json') }}
+      - name: Pinned Blackfin tools
+        working-directory: open-xy
+        run: python sdk.py toolchain fetch
+      - name: Firmware compile with all four kits
+        working-directory: open-xy
+        run: |
+          machines=()
+          for kit in $KITS; do machines+=(--machine "../tetragon/$kit"); done
+          python sdk.py compile "${machines[@]}" --out "$RUNNER_TEMP/module"

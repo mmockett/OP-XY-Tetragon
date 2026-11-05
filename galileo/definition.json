@@ -1,0 +1,144 @@
+{
+  "schema": 1,
+  "id": "galileo",
+  "name": "GALILEO",
+  "parameters": [
+    {
+      "id": "body_1",
+      "label": "BODY 1",
+      "default": 0.346457,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "body_2",
+      "label": "BODY 2",
+      "default": 0.448819,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "body_3",
+      "label": "BODY 3",
+      "default": 0.346457,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "body_4",
+      "label": "BODY 4",
+      "default": 0.299213,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent"
+    },
+    {
+      "id": "tilt",
+      "label": "TILT",
+      "default": 0.692913,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent",
+      "control": 0
+    },
+    {
+      "id": "frets",
+      "label": "FRETS",
+      "default": 0.0,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent",
+      "control": 1
+    },
+    {
+      "id": "bounce",
+      "label": "BOUNCE",
+      "default": 0.0,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent",
+      "control": 2
+    },
+    {
+      "id": "balls",
+      "label": "BALLS",
+      "default": 0.0,
+      "mapping": {
+        "kind": "linear",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "display": "percent",
+      "control": 3
+    }
+  ],
+  "presets": {},
+  "resources": {
+    "voiceBytes": 1776,
+    "voiceAlignment": 4,
+    "voiceCapacity": 16,
+    "sharedBytes": 92,
+    "outputPeakQ31": 1073741824,
+    "modelCount": 15,
+    "chokeSameKey": 1,
+    "padMix": 1,
+    "padControls": [
+      {
+        "label": "SPACE",
+        "bits": 5,
+        "signed": true
+      },
+      {
+        "label": "FEEL",
+        "bits": 4
+      }
+    ],
+    "display": {
+      "stateBytes": 452,
+      "stateAlignment": 4,
+      "paths": 2,
+      "points": 64,
+      "nodes": 209,
+      "texts": 16,
+      "palette": 15
+    },
+    "modelGroups": [
+      {
+        "label": "SKIN",
+        "count": 6
+      },
+      {
+        "label": "METAL",
+        "count": 5
+      },
+      {
+        "label": "PERC",
+        "count": 4
+      }
+    ]
+  }
+}

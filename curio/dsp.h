@@ -1,0 +1,204 @@
+#pragma once
+// CURIO's fixed-point toolkit, shared by the sixteen specimens. Signals are
+// Q28 (1.0 is 1 << 28, so a sum has headroom); gains and decays are Q31;
+// controls are Q12, 0..4095; pitches are log2 of hertz in Q12 and times are
+// microseconds. No floating point, no 64-bit arithmetic and no division in
+// any per-sample path: logarithms and powers of two come from tables, a few
+// times a note.
+#include <opxy/audio.hpp>
+#include <opxy/q31.hpp>
+#include "tables.h"
+
+namespace curio {
+using opxy::i32;
+using opxy::u32;
+
+namespace dsp {
+const i32 one = 1 << 28;   // a signal's unit
+const i32 full = 0x7fffffff;
+const u32 frames = opxy::block_frames;
+
+inline i32 mul(i32 a, i32 b) { return opxy::q31::multiply(a, b); }
+inline i32 clamp(i32 v, i32 low, i32 high) { return v < low ? low : v > high ? high : v; }
+inline i32 lo(i32 a, i32 b) { return a < b ? a : b; }
+inline i32 hi(i32 a, i32 b) { return a > b ? a : b; }
+// A Q28 signal times a Q28 level (the product within +-8).
+inline i32 lev(i32 x, i32 level) { return mul(x, level) << 3; }
+// A Q28 signal times a Q16 gain below 128.
+inline i32 gn(i32 x, i32 gain_q16) { return mul(x, gain_q16 << 8) << 7; }
+// A Q12 control's share of v (v any i32).
+inline i32 sc(i32 v, i32 c) { return mul(v, c << 19); }
+// a + (b - a) * c for a Q12 control, in whatever units a and b are.
+inline i32 lerp(i32 a, i32 b, i32 c) { return a + sc(b - a, c); }
+
+// 2^(x / 4096) as a whole number, x in 0 .. 31 * 4096; below 0 it is 0.
+inline u32 ex2(i32 x) {
+    if (x < 0) return 0;
+    if (x >= 31 * 4096) return 0x7fffffffu;
+    const u32 o = static_cast<u32>(x) >> 12, f = static_cast<u32>(x) & 4095u, i = f >> 4, r = f & 15u;
+    const u32 a = table::exp2[i], b = table::exp2[i + 1];
+    return (a + (((b - a) * r) >> 4)) >> (30 - o);
+}
+// log2(v) in Q12, for v >= 1 (0 gives -32 octaves).
+inline i32 lg2(u32 v) {
+    if (!v) return -(32 << 12);
+    i32 o = 31;
+    while (!(v & 0x80000000u)) { v <<= 1; --o; }
+    const u32 i = (v >> 23) & 255u, r = (v >> 15) & 255u;
+    const u32 a = table::log2[i], b = table::log2[i + 1];
+    return (o << 12) + static_cast<i32>(a + (((b - a) * r) >> 8));
+}
+// A Q12 value c (0..4096) raised to the power e (Q12): x^e as Q12.
+inline i32 pw(i32 c, i32 e) {
+    if (c <= 0) return 0;
+    const i32 l = lg2(static_cast<u32>(c)) - (12 << 12);   // <= 0
+    return static_cast<i32>(ex2((l * (e >> 2) >> 10) + (24 << 12)) >> 12);
+}
+// 2^(x / 4096) in Q16, for octaves x in -16..14.
+inline i32 oct(i32 x) { return static_cast<i32>(ex2(x + (16 << 12))); }
+
+// Pitch: log2 of hertz in Q12. hz(30) is 30 Hz; hz(35, 10) is 3.5 Hz.
+inline i32 hz(u32 whole, u32 per = 1) { return lg2(whole) - (per > 1 ? lg2(per) : 0); }
+// The phase increment of a pitch, capped below 20 kHz.
+inline u32 inc(i32 lp) { return lp >= 58520 ? 1948000000u : ex2(lp + 67877); }
+// A per-sample decay, Q31: exp(-1 / (tau * 44100)) for tau in microseconds.
+inline i32 decay(u32 tau_us) {
+    if (tau_us < 100) tau_us = 100;
+    const u32 d = ex2(145421 - lg2(tau_us));
+    return d >= 0x7fffffffu ? 0 : static_cast<i32>(0x7fffffffu - d);
+}
+// The same from a time to fall 60 dB.
+inline i32 decay60(u32 t60_us) { return decay(static_cast<u32>(mul(static_cast<i32>(t60_us), 310879450))); }   // / 6.9078
+// Samples in a time (microseconds), as a block's work: 44100 per second.
+inline u32 samples(u32 us) { return static_cast<u32>(mul(static_cast<i32>(us), 94702624)); }   // * 0.0441
+// A gain from decibels in Q8 (below 0): Q31.
+inline i32 db(i32 db_q8) { return static_cast<i32>(ex2(31 * 4096 + (db_q8 * 2721 >> 10))); }   // log2(10) / 20
+
+// sin and cos of w = 2 pi inc / 2^32, Q30, accurate at low pitches too
+// (Taylor series on half the angle, then doubled), for coefficients.
+inline i32 mq(i32 a, i32 b) { return mul(a, b) << 1; }   // Q30 product
+inline void sincos(u32 increment, i32& s, i32& c) {
+    if (increment > 0x72000000u) increment = 0x72000000u;   // 19.6 kHz: past it the half angle's square overflows
+    const i32 u = 1 << 30;
+    const i32 h = mul(static_cast<i32>(increment), 1686629713);   // w / 2, Q30
+    const i32 h2 = mq(h, h);
+    i32 t = u - mq(h2, 14913080);                 // 1 - h2/72
+    t = u - mq(mq(h2, 25565282), t);              // 1/42
+    t = u - mq(mq(h2, 53687091), t);              // 1/20
+    t = u - mq(mq(h2, 178956971), t);             // 1/6
+    const i32 sh = mq(h, t);
+    t = u - mq(h2, 19173961);                     // 1 - h2/56
+    t = u - mq(mq(h2, 35791394), t);              // 1/30
+    t = u - mq(mq(h2, 89478485), t);              // 1/12
+    t = u - mq(mq(h2, 536870912), t);             // 1/2
+    const i32 ch = t;
+    s = mq(sh, ch) << 1;                          // sin w = 2 sin h cos h
+    c = u - (mq(sh, sh) << 1);                    // cos w = 1 - 2 sin^2 h
+}
+
+// White noise from a 32-bit xorshift: Q28, about unit RMS.
+inline i32 noise(u32& state) {
+    u32 x = state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    state = x;
+    return static_cast<i32>(x) >> 2;
+}
+// A uniform draw 0..4095 (Q12).
+inline i32 draw(u32& state) { noise(state); return static_cast<i32>(state >> 20); }
+// A draw -4096..4095 (Q12), for jitter.
+inline i32 jitter(u32& state) { return noise(state) >> 17; }
+
+// A sine of a phase: Q31.
+inline i32 sine(u32 phase) { return static_cast<i32>(table::sine[phase >> 20]) << 16; }
+
+// A two-pole resonator: y = 2 r cos w y1 - r^2 y2 + x. A strike rings it as a
+// decaying sine of the struck amplitude; an input passes at unity at its peak.
+struct Res { i32 y1, y2, x1, x2; };
+struct ResK { i32 c, r2, s, g, b; };   // r cos w, r^2 / 2, sin w (all Q31), input gains Q31
+inline void tune(ResK& k, u32 increment, i32 r) {
+    i32 s, c;
+    sincos(increment, s, c);
+    k.c = mul(r, c) << 1;
+    k.r2 = mul(r, r) >> 1;
+    k.s = s << 1;
+    // Unity peak gain for an input: 2 (1 - r) sin w.
+    k.g = mul(full - r, s) << 2;
+    // A band-pass's (zeros at 0 and half the rate): unity peak gain at 1 - r.
+    k.b = full - r;
+}
+inline i32 ring(Res& z, const ResK& k, i32 x) {
+    const i32 y = ((mul(k.c, z.y1) - mul(k.r2, z.y2)) << 1) + x;
+    z.y2 = z.y1;
+    z.y1 = y;
+    return y;
+}
+// The resonator as a band-pass, y = ... + (1 - r) (x - x2): no response at
+// 0 Hz, as the prototype's band noise has none.
+inline i32 bp(Res& z, const ResK& k, i32 x) {
+    const i32 in = mul(x, k.b);
+    const i32 y = ((mul(k.c, z.y1) - mul(k.r2, z.y2)) << 1) + in - z.x2;
+    z.x2 = z.x1;
+    z.x1 = in;
+    z.y2 = z.y1;
+    z.y1 = y;
+    return y;
+}
+// Strikes a resonator with amplitude a (Q28): it rings as a r^n sin((n + 1) w).
+inline void strike(Res& z, const ResK& k, i32 a) { z.y1 += mul(a, k.s); }
+
+// A one-pole low-pass's coefficient for a pitch: 1 - exp(-w), Q31.
+inline i32 pole(i32 lp) {
+    const u32 i = inc(lp);
+    // w log2(e) in Q12: inc * 2 pi / 2^32 * 1.4427 * 4096.
+    const i32 y = mul(static_cast<i32>(i >> 1), 37131);
+    const u32 e = ex2(31 * 4096 - y);
+    return static_cast<i32>(0x7fffffffu - (e > 0x7fffffffu ? 0x7fffffffu : e));
+}
+
+// A soft clip: tanh, for x Q28 at unit drive; its output is Q28.
+inline i32 tanh(i32 x) {
+    const i32 m = x < 0 ? -x : x;
+    if (m >= (4 << 28)) return x < 0 ? -(table::tanh[256] << 13) : table::tanh[256] << 13;
+    const u32 i = static_cast<u32>(m) >> 22, r = (static_cast<u32>(m) >> 14) & 255u;
+    const i32 a = table::tanh[i], b = table::tanh[i + 1];
+    const i32 y = (a << 13) + (((b - a) * static_cast<i32>(r)) << 5);
+    return x < 0 ? -y : y;
+}
+}
+}
+
+namespace curio {
+namespace dsp {
+// Compile-time constants from decimals (folded by the compiler: no float at run time).
+constexpr i32 F(double x) { return static_cast<i32>(x >= 1.0 ? 2147483647.0 : x * 2147483648.0); }   // Q31
+constexpr i32 U(double x) { return static_cast<i32>(x * 268435456.0); }                                // Q28
+constexpr i32 C(double x) { return static_cast<i32>(x * 4096.0); }                                     // Q12
+
+// What a specimen reads at a strike: its eight controls (Q12, VARY's moves
+// included), the key's pitch offset (TUNE and VARY, Q12 octaves) and a seed.
+struct Ctx {
+    i32 c[8];
+    i32 tune;
+    u32 seed;
+};
+
+// A decaying level: v *= k each sample.
+struct Env {
+    i32 v, k;
+    i32 step() { v = mul(v, k); return v; }
+};
+// Unit-RMS gain for white noise through a resonator of quality q (Q12) at a
+// pitch: sqrt(44100 q / (pi f)), Q16.
+inline i32 band_gain(i32 lp, i32 q) {
+    return static_cast<i32>(ex2(((56431 + lg2(static_cast<u32>(q)) - (12 << 12) - lp) >> 1) + (16 << 12)));
+}
+// A resonator for noise: centre lp, quality q (Q12); peak gain 1.
+inline void band(ResK& k, i32 lp, i32 q) {
+    // r = exp(-pi f / (q 44100)): a time constant of q / (pi f).
+    const u32 tau_us = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875);   // log2(1e6 / pi) = 18.28
+    tune(k, inc(lp), decay(tau_us));
+}
+}
+}
