@@ -92,7 +92,7 @@ centroid and the time to fall 40 dB.
 | --- | --- | --- | --- |
 | SIZE | all | BOOM `B0` `A1` `G#2`; TOM `A1` `D#3` `G#4`; FLICK `2.6k` `4.9k` `9.0k` | The sheet's size as its pitch, about two octaves on the drums (BOOM 30 to 105 Hz, TOM 55 to 420 Hz), or the band a flick, a snap, a pour or a chirp rings in. On screen the sheet grows, from 264 to 336 px wide. |
 | DAMP | all | BOOM `1.3s` `0.18s` `25ms`; CRASH `3.2s` `1.3s` `0.55s` | The felt pad pressed on the sheet: how long it rings, from over a second to a dead thud. BOOM falls 40 dB in 5.8 s, 0.80 s and 0.11 s; at its default it rings 0.55 s, a deep kick whose body holds for a third of a second. On screen the felt pad swings in on its lever from beside the sheet until it presses the iron, and squashes. |
-| BEATER | BOOM SLAP TOM CRASH CLANK | `0` `50` `100` | Felt, then wood, then a steel rod: how long the mallet stays on the sheet (6 ms to 0.08 ms), so how many of its modes it reaches, and its knock on the head, from a felt thud (on BOOM and TOM, 300 to 700 Hz) to a ringing click. A tom's centroid moves 250, 373, 424 Hz. On screen the head turns from a wrapped felt ball to a wooden barrel to a bare steel rod. |
+| BEATER | BOOM SLAP TOM CRASH CLANK | `0` `50` `100` | Felt, then wood, then a steel rod: how long the mallet stays on the sheet (6 ms to 0.08 ms, and a felt never longer than one cycle of the note), so how many of its modes it reaches, and its knock on the head, from a felt thud (on BOOM and TOM, 300 to 700 Hz) to a ringing click. The drum keeps its weight across the travel, within half a LU at the defaults: a felt thud is as loud as a steel strike. A tom's centroid moves 223, 373, 406 Hz. On screen the head turns from a wrapped felt ball to a wooden barrel to a bare steel rod. |
 | SPOT | BOOM SLAP TOM CRASH CLANK FLICK HOP BOW | `0` `50` `100` (BOW: the mode, `1` to `5`) | Where it is struck, from dead centre (odd modes only, a round thump) to near a corner (every mode, clangorous). On BOW, which of the sheet's modes sings. On screen the mallet, flicker, ball or bow moves. |
 | TENSION | BOOM SLAP FLICK TOM CRASH HOP BOW SHAKE | `0` `50` `100` | Plate to membrane: a slack sheet's modes spread into metal, a taut one's crowd into a drum. On CRASH it brings the drum-like body up under the wash (centroid 7.8, 7.6, 7.3 kHz); on SLAP it tightens the head, half an octave up, with less sag. On FLICK it moves the sizzle's six modes. On screen the turnbuckles screw in and the sheet's buckled edges flatten. |
 | CAMBER | BOOM TOM | `0` `50` `100` | How far a hit's pitch sags as the sheet relaxes, up to 3.5 times on BOOM: a kick's drop, from physics, not an envelope. On screen the sheet curves under its straight batten. |
@@ -165,8 +165,11 @@ Every model is the same sheet, wired its own way (models.h):
 **a chain on it** → **the swaying sheet** → **the pickup**
 
 - **The exciter.** A mallet is a raised-cosine contact whose length is
-  BEATER, carrying the same force whatever its length, and its knock on the
-  head: on the kick a felt thud (noise low-passed twice, 300 to 700 Hz,
+  BEATER, and its knock on the head. On the drums a softer beater reaches
+  fewer of the sheet's modes, so it strikes harder, until the modes it reaches
+  ring with the energy a steel rod gives them all: the kick, snare and toms
+  keep their weight as BEATER turns, and a tom's felt drives its head deeper
+  into its soft clip, a thud. The knock: on the kick a felt thud (noise low-passed twice, 300 to 700 Hz,
   falling over 5 ms), on the toms a stick's knock (600 Hz to 3 kHz at felt,
   brighter with BEATER), on anything a hard beater a ringing click;
   the knock is the same every hit, as a beater's is. The other models have their own: a burst of crackle per snap
@@ -227,29 +230,29 @@ rather than hiss.
 **Level.** Every model is set by loudness, not by its peak (tools/calibrate.py
 writes levels.h). Measured as a hit's loudest 400 ms, K-weighted (BS.1770),
 against the SDK's half-scale ceiling, every model's default hit sits at its
-role's loudness: BOOM at -16.5 LUFS, the other ten at -19, each within
-1 LU, with its true peak (4x oversampled) at -1.0 to -2.4 dB, under the
-ceiling. TOM's role is -16.5 too, but its fundamental and shell peak
-together, so its true peak holds it at -17.2; it carries further than that
-says on a small speaker, at -18.5 to -24 LUFS above 300 Hz where MD KIT's
-PI-MT toms measure -19 to -23 and its TRX-XT toms -35 to -44. For scale, MD KIT's default kit measures -17.7 on its loudest
+role's loudness: BOOM and TOM at -16.5 LUFS, the other ten at -19, each
+within 1 LU, with its true peak (4x oversampled) at -1.0 to -2.4 dB, under
+the ceiling. The toms carry on a small speaker, at -18 to -23 LUFS above
+300 Hz where MD KIT's PI-MT toms measure -19 to -23 and its TRX-XT toms -35
+to -44. For scale, MD KIT's default kit measures -17.7 on its loudest
 kick, -18.5 to -20.6 on its toms, -21.4 and -21.8 on its snares and -21.5 and
 -22.9 on its claps. Each control carries two trims: one holds the hit's
 loudness as the control turns, the other tracks how far that lifts its peak,
 and the engine takes a hit down only by what all eight together lift its
-peak past the room its default leaves, so a steel rod's click or a long,
-damped flick is held by its peak and nothing else is. A hit held so sits
-lower: BOOM struck with the bare rod (BEATER 127) 11 LU under its default,
-CLANK struck with felt (BEATER 0) 15 under. CRASH's and
-FLICK's SWING keep their dip in level, which is their sound. The clap
-(POP), the pour (GRIT), the shackle (CLANK), the bearing (HOP) and the toms
-(TOM), whose strikes stand far over their body, run a transient limiter: a block's peak
-over 0.8 of the ceiling pulls the gain down to it, ramped in before the
-peak, and it comes back with a 5 ms time constant, so it shapes the
-strike and leaves the body. At their defaults it takes 4.0 dB off the
-clap's snaps, 1.7 dB off a tom's first 30 ms and 2.3 to 2.5 dB off the
-others' strikes, at most 5 dB at any
-one control's end. A soft knee over the last quarter under the ceiling
+peak past the room its default leaves, so a long, damped flick is held by
+its peak and nothing else is. BEATER is not: a steel rod's click is held by
+the transient limiter, and the body keeps its level, so the kick, snare,
+toms, crash and shackle stay within half a LU of their defaults from felt
+to steel. CRASH's and FLICK's SWING keep their dip in level, which is their
+sound. The clap (POP), the pour (GRIT), the shackle (CLANK), the bearing
+(HOP), the toms (TOM), and the kick and snare (BOOM, SLAP) for a hard
+beater's click, run that limiter: a block's peak over 0.8 of the ceiling
+pulls the gain down to it, ramped in before the first sample over, and it
+comes back with a 5 ms time constant, so it shapes the strike and leaves
+the body. At their defaults it takes 4.0 dB off the clap's snaps, 2.3 dB
+off a tom's first 30 ms, 0.9 dB off the snare's, none off the kick's and 1.4 to 2.6 dB off the
+others' strikes; a steel rod's click it takes whole, up to 9 dB over its
+first few milliseconds. A soft knee over the last quarter under the ceiling
 catches what is left, so no sample passes the ceiling at any control's end.
 DRIVE's overload rides on top of this: at 15 a hit sounds 8 to 17 LU
 louder, its samples held 2 dB under the ceiling. Keys play at 0 dB, as MD
@@ -330,17 +333,17 @@ block:
 
 | Model | Defaults | All 64 | All 0 | All 127 | Worst |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| BOOM | 8,200 | 12,100 | 7,900 | 10,300 | 2.1% |
-| SLAP | 13,400 | 13,300 | 7,400 | 13,200 | 2.3% |
-| POP | 9,200 | 12,600 | 5,200 | 11,400 | 2.2% |
-| FLICK | 8,500 | 14,200 | 9,000 | 12,600 | 2.4% |
-| TOM | 10,800 | 14,900 | 10,300 | 13,400 | 2.6% |
-| CRASH | 13,700 | 16,300 | 9,700 | 16,000 | 2.8% |
-| CLANK | 8,200 | 11,200 | 4,400 | 10,400 | 1.9% |
-| GRIT | 10,200 | 11,700 | 7,200 | 9,300 | 2.0% |
-| HOP | 9,700 | 13,000 | 7,400 | 9,800 | 2.2% |
-| ZAP | 7,400 | 9,200 | 3,800 | 8,500 | 1.6% |
-| BOW | 7,300 | 7,700 | 7,500 | 7,000 | 1.3% |
+| BOOM | 8,300 | 12,100 | 7,900 | 10,400 | 2.1% |
+| SLAP | 13,300 | 13,400 | 6,600 | 13,600 | 2.3% |
+| POP | 9,200 | 12,600 | 5,200 | 11,000 | 2.2% |
+| FLICK | 8,500 | 14,100 | 8,700 | 12,700 | 2.4% |
+| TOM | 10,800 | 15,000 | 10,400 | 13,600 | 2.6% |
+| CRASH | 13,700 | 16,300 | 9,700 | 15,900 | 2.8% |
+| CLANK | 8,300 | 11,200 | 5,000 | 10,400 | 1.9% |
+| GRIT | 10,300 | 11,700 | 7,300 | 9,400 | 2.0% |
+| HOP | 9,600 | 13,000 | 7,400 | 9,900 | 2.2% |
+| ZAP | 7,400 | 9,300 | 3,800 | 8,500 | 1.6% |
+| BOW | 7,100 | 7,600 | 7,600 | 7,000 | 1.3% |
 | SHAKE | 13,100 | 13,100 | 10,600 | 13,100 | 2.3% |
 
 The worst, CRASH with every control at 64, is about 16,300 instructions, 2.8%

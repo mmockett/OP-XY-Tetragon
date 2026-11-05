@@ -91,11 +91,12 @@ def kit(changes):
 # named play at 0 dB, as MD KIT's do.
 LEVELS = {
     "kingston": {},
-    "foundry": {BD: -6, CP: -7, CB: -9},
-    "tin-roof": {BD: -1, MT: -5, LT: -6},
-    "proscenium": {BD: -1, LT: -1, FT: -1},
-    "brushes": {BD: -2, SD: -2, LT: -8, FT: -9},
-    "gamelan-shed": {BD: -1, SD2: -1},
+    "foundry": {BD: -7, CP: -7, CB: -11},
+    "tin-roof": {},
+    "proscenium": {BD: -1, LT: -2, FT: -2},
+    "brushes": {BD: -2},
+    "gamelan-shed": {HT: -1, MT: -1, LT: -1, FT: -1},
+    "cold-plate": {RS: -1},
     "sheet-808": {BD: -9, RS: -1, BD2: -10},
 }
 

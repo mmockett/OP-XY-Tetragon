@@ -92,6 +92,45 @@ inline i32 contact_share(i32 lf, i32 ltc) {
     const u32 x = 65536u + pow2(a + 16 * octave);
     return frac2(-(log2q(x) - 16 * octave) / 2);
 }
+// What the raised-cosine contact (strike, pulse) really gives a mode of
+// frequency f: its force's spectrum, |sinc(u) / (1 - u^2)| at u = f Tc, as log2
+// (Q16, 0 down to -6 octaves past its first null, u = 2). A model lifts its
+// strike by it to keep its body's level as the beater softens.
+inline i32 contact_reach(i32 lf, i32 ltc) {
+    const i32 l = lf + ltc;   // log2 u
+    if (l < -8 * octave) return 0;
+    if (l >= octave) return tables::reach[32];
+    const u32 x = pow2(l + 20 * octave);   // 16 u, Q16
+    const u32 i = x >> 16;
+    const i32 f = static_cast<i32>(x & 0xffffu);
+    return tables::reach[i] + mul16(tables::reach[i + 1] - tables::reach[i], f);
+}
+// A softer beater reaches fewer of a sheet's modes; this is how far its
+// strike is lifted (as the strike's amp, U and up) so that the modes it
+// reaches ring with the energy the hardest beater gives them all (each
+// mode's a^2 tau), up to 12 dB: BEATER then changes the stick, not the
+// drum's weight. The modes' weights must be those the hardest beater leaves.
+// ltc: the contact (log2 s); lbend: log2 of how far over their own pitch the
+// modes are struck (CAMBER); lt0, tau_exp: their ring, as setup_modes gives
+// it; the modes from `heads` on ring for lrest (log2 s).
+inline i32 beater_lift(const Voice& v, i32 lf0, i32 ltc, i32 lbend, i32 lt0, i32 tau_exp, u32 heads, i32 lrest) {
+    const i32 l0 = log2q(v.mode[0].inc);
+    u32 all = 0, reached = 0;
+    for (u32 k = 0; k < v.nmodes; ++k) {
+        const Mode& m = v.mode[k];
+        if (m.gw <= 0) continue;
+        const i32 lr = log2q(m.inc) - l0;
+        const i32 lt = k < heads ? lt0 - mul16(tau_exp, lr) : lrest;
+        const i32 e = 2 * (log2q(static_cast<u32>(m.gw)) - 31 * octave) + lt + 20 * octave;
+        all += pow2(e > 0 ? e : 0);
+        const i32 er = e + 2 * contact_reach(lf0 + lr + lbend, ltc);
+        reached += pow2(er > 0 ? er : 0);
+    }
+    const i32 lift = (log2q(all > 0 ? all : 1) - log2q(reached > 0 ? reached : 1)) / 2;
+    return static_cast<i32>(pow2(clamp(lift, 0, 2 * octave) + 27 * octave));
+}
+// log2 of how far a pitch glide of bend (Q28, over 1) lifts the modes.
+inline i32 bend_log(i32 bend) { return log2q(static_cast<u32>((1 << 28) + bend)) - 28 * octave; }
 // first: the lowest mode to sound (a model that high-passes its body can skip the fundamental)
 inline void setup_modes(Voice& v, i32 lf0, i32 tension, i32 spot, i32 ltau0, i32 tau_exp, i32 tilt, u32 n, i32 ltc, u32 first = 0) {
     const i32 tt = clamp(tension, 0, 65535) * 32;

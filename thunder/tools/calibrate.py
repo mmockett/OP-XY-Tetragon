@@ -2,7 +2,7 @@
 """Writes thunder/levels.h: each model's output gain and its level trims, set
 by loudness. Renders the real engine on the host. Not part of the machine.
 
-    python3 -I tools/calibrate.py --sdk <open-xy> [--rounds 6]
+    python3 -I tools/calibrate.py --sdk <open-xy> [--rounds 6] [--only TOM ...]
 
 Loudness here is the hit's short-term loudness: BS.1770 K-weighting, the
 loudest 400 ms window (LUFS-M max), measured against the SDK's half-scale
@@ -25,7 +25,12 @@ hit's own peaks; a rise is the loudest seed's.
 A clap, a pour, the shackle and the bearing, whose peaks stand far over their
 body, run the engine's transient limiter (engine.cpp limit), which may take
 up to 3 dB off a peak (4 on the clap's snaps): their room is that much more.
-Each run starts from the levels.h it finds.
+A hard beater's click is held by the limiter, not by the cap: where HELD
+names BEATER, its rise doesn't count against the room and its loudness is
+held as the limiter leaves it, so turning it changes the stick, and the
+body keeps its level. Each run starts from the
+levels.h it finds; --only recalibrates the models named and keeps every
+other model's rows as they are.
 """
 import argparse, os, pathlib, re, subprocess, tempfile
 import numpy as np
@@ -43,11 +48,15 @@ CAP_MOST = -1.5
 # limiter (engine.cpp limit), which may take at most this many dB off their peaks
 # (on the mean over seeds; a dB more on the loudest seed). A clap's snaps, a
 # few milliseconds of noise each, take a dB more than the rest; a tom, whose
-# fundamental and shell peak together over its first 30 ms, takes 3.5.
-LIMIT = {"POP": 4.0, "GRIT": 3.0, "CLANK": 3.0, "HOP": 3.0, "TOM": 3.5}
+# fundamental and shell peak together over its first 30 ms, takes 3.5. The
+# kick and the snare run it for a hard beater's click (HELD) and may take a
+# dB off their default hits.
+LIMIT = {"POP": 4.0, "GRIT": 3.0, "CLANK": 3.0, "HOP": 3.0, "TOM": 3.5, "BOOM": 1.0, "SLAP": 1.0}
 # SWING turns the sheet away, a dip in level that is its sound: no loudness
 # trim holds it (its rise still counts against the room).
 FREE = {("FLICK", 6), ("CRASH", 6)}
+# A hard beater's click, held by the transient limiter rather than the cap.
+HELD = {("BOOM", 2), ("SLAP", 2), ("TOM", 2), ("CLANK", 2)}
 POINTS = [0, 32, 64, 96, 127]
 SEEDS = [1, 2, 3, 4, 5, 6]
 CEILING = 2.0 ** 30
@@ -183,6 +192,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sdk", required=True)
     ap.add_argument("--rounds", type=int, default=6)
+    ap.add_argument("--only", nargs="*", default=None, help="models to recalibrate (default: all)")
     a = ap.parse_args()
     scratch = tempfile.mkdtemp(prefix="thunder-cal-")
     models = kit()
@@ -197,6 +207,8 @@ def main():
         unlimited = build(a.sdk, scratch, "limiter", "knee")
         report = []
         for m, (name, d) in enumerate(models):
+            if a.only and name not in a.only:
+                continue
             jobs = [(m, d)] + [(m, d[:s] + [p] + d[s + 1:]) for s in range(8) for p in POINTS]
             res, off = measure(binary, jobs, scratch), measure(bare, jobs, scratch, DOWN)
             (l0, tp0, most0), (_l, tpo, mosto) = res[0], off[0]
@@ -212,9 +224,14 @@ def main():
                 lo, ri = loud[m][s], rise[m][s]
                 for j in range(5):
                     l, _tp, most = off[1 + s * 5 + j]
-                    change = 0.8 * (off[0][0] - l) if (name, s) not in FREE else -lo[j] * 6.0206
+                    if (name, s) in FREE:
+                        change = -lo[j] * 6.0206
+                    elif (name, s) in HELD:   # the loudness heard: through the limiter that holds the click
+                        change = 0.8 * (res[0][0] - res[1 + s * 5 + j][0])
+                    else:
+                        change = 0.8 * (off[0][0] - l)
                     lo[j] += change / 6.0206
-                    ri[j] = (most + change - mosto) / 6.0206   # the loudest seed's peak
+                    ri[j] = (most + change - mosto) / 6.0206 if (name, s) not in HELD else 0.0   # the loudest seed's peak
                 loud[m][s], rise[m][s] = rezero(lo, d[s]), rezero(ri, d[s])
             spread = [res[1 + k][0] - l0 for k in range(40)]
             worst = max(res[1 + k][2] for k in range(40))

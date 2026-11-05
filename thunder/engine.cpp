@@ -95,20 +95,20 @@ inline i32 knee(i32 y) {
 
 // A transient limiter, on the models levels::limit names (a clap's snaps, a
 // pour's loudest beads, a shackle's and a bearing's strikes, whose peaks stand
-// far over their body): a block's peak over 0.8 of the ceiling pulls the gain
-// down to it, ramped in over the samples before that peak, and the gain comes
-// back with a 5 ms time constant, so it shapes the transient and leaves the
-// body. The calibration lets it take at most 3 dB off a peak (4 on the
-// clap's snaps). No divide: the gain is 2^(log2 T - log2 peak).
+// far over their body, and a tom's hard beater): a block's peak over 0.8 of
+// the ceiling pulls the gain down to it, ramped in over the samples before
+// the first one over, and the gain comes back with a 5 ms time constant, so
+// it shapes the transient and leaves the body. The calibration lets it take
+// at most 3 dB off a default hit's peak (4 on the clap's snaps); a steel
+// beater's click it takes whole. No divide: the gain is 2^(log2 T - log2 peak).
 const i32 limit_top = half_scale - (half_scale / 5);
 const i32 limit_log = L(0.8 * 1073741824.0);
 const i32 limit_back = Q31(0.2516);   // 1 - exp(-64 / (0.005 * 44100)) a block
 inline void limit(Voice& voice, i32* y) {
     i32 peak = 0;
-    u32 at = 0;
     for (unsigned i = 0; i < frames; ++i) {
         const i32 a = absolute(y[i]);
-        if (a > peak) { peak = a; at = i; }
+        if (a > peak) peak = a;
     }
     i32 g = voice.lim;
     i32 target = g >= one ? one : g + multiply(one - g, limit_back);
@@ -119,9 +119,13 @@ inline void limit(Voice& voice, i32* y) {
     }
     if (target == one && g == one) return;
     if (target < g) {
-        // down by the block's peak, over the largest power of two of samples up to it
+        // down by the block's peak, over the largest power of two of samples
+        // before the first one over the limit (those pass at any gain): a
+        // click's noise has samples near its peak well before it
+        u32 first = 0;
+        while (absolute(y[first]) <= limit_top) ++first;
         u32 k = 0;
-        while ((2u << k) <= at + 1) ++k;
+        while ((2u << k) <= first + 1) ++k;
         const i32 step = (target - g) >> k;
         const unsigned n = 1u << k;
         for (unsigned i = 0; i < n; ++i) { g += step; y[i] = multiply(y[i], g); }
