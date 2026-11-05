@@ -221,7 +221,9 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     const i32 g = voice.gain;
     i32 peak = 0;
     for (unsigned i = 0; i < opxy::block_frames; ++i) {
-        const i32 y = ceiling(dsp::multiply(sum[i], g) * 32);
+        // Held within full scale before the ceiling, never wrapped round.
+        const i32 m = dsp::multiply(sum[i], g);
+        const i32 y = ceiling(m > 0x3ffffff ? dsp::one : m < -0x3ffffff ? -dsp::one : m * 32);
         output[i] = y;
         const i32 a = y < 0 ? -y : y;
         if (a > peak) peak = a;

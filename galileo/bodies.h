@@ -26,8 +26,8 @@ using dsp::Energy;
 // log2 of a ratio, Q16 octaves.
 #define OCT(x) (dsp::log2(static_cast<u32>(GQ16(x))) - 16 * dsp::octave)
 
-// x * g, g in Q28 (up to 8).
-inline i32 gain(i32 x, i32 g28) { return multiply(x, g28) * 8; }
+// x * g, g in Q28 (up to 8), held within full scale (three saturating doublings).
+inline i32 gain(i32 x, i32 g28) { return dsp::twice(dsp::twice(dsp::twice(multiply(x, g28)))); }
 // An increment times a ratio (Q28, below 8).
 inline u32 times(u32 inc, i32 ratio28) { return static_cast<u32>(multiply(static_cast<i32>(inc >> 1), ratio28)) << 4; }
 // log2 samples of a time constant of ms milliseconds (Q8: 256 is 1 ms).
@@ -196,7 +196,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         // Punch: the strike's pitch rise, none to +3 octaves, falling back over
         // 12 to 22 ms, so the deeper drop is heard as one; and the transient
         // (the knock, the thump and the beater's click) from -10 dB to +6 dB.
-        skin(b.skin[0], lf, dsp::m15(GQ16(7) >> 1, punch) * 2, decay_ms(12 * 256, 22 * 256, p1), 2, ratios, decays, shares, GQ16(1.2));
+        skin(b.skin[0], lf, punch * 14, decay_ms(12 * 256, 22 * 256, p1), 2, ratios, decays, shares, GQ16(1.2));
         const i32 attack = GQ28(0.3) + multiply(GQ28(1.8), punch << 16);   // Q28, 1 at the default
         // The shell's knock and the beater's thump: two short modes over the
         // head, where a kick's weight reads on small speakers. A felt beater
@@ -281,7 +281,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
     case rim: {    // tune, wood, decay, body
         const i32 lf = pitch(700, GQ16(1.6), p0);
         const i32 metal = dsp::one - p1;
-        const i32 tau = ms(static_cast<u32>(multiply(dsp::mix(12 * 256, 112 * 256, p2) * 2, GQ31(0.5) + multiply(GQ31(0.75), metal))));
+        const i32 tau = ms(static_cast<u32>(multiply(dsp::mix(12 * 256, 112 * 256, p2) * 4, GQ31(0.25) + multiply(GQ31(0.375), metal))));
         u32 w0, w1;
         widths(GQ31(0.9), w0, w1);
         tune(b.mode[0], lf, dsp::decay(tau), 32767, w0, w1);
@@ -722,7 +722,7 @@ inline void click_add(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 
         e = multiply(e, r);
         const i32 in = multiply(static_cast<i32>(x), e) * 2;
         h += multiply(in - h, cc);
-        out[i] += gain(in - h, g28);
+        out[i] = dsp::sat_add(out[i], gain(in - h, g28));
     }
     seed = x;
     if (e < 16 && h < 4096 && h > -4096) e = h = 0;
@@ -737,15 +737,15 @@ inline void modes_add(Struck* m, u32 count, i32* __restrict out, u32 n, i32 g28 
         const i32 a1 = m[k].m.a1, a2 = m[k].m.a2;
         if (g28) {
             for (u32 i = 0; i < n; ++i) {
-                const i32 y = multiply(a1, y1) * 2 - multiply(a2, y2);
+                const i32 y = dsp::resonate(a1, y1, a2, y2);
                 y2 = y1; y1 = y;
-                out[i] += gain(y, g28);
+                out[i] = dsp::sat_add(out[i], gain(y, g28));
             }
         } else {
             for (u32 i = 0; i < n; ++i) {
-                const i32 y = multiply(a1, y1) * 2 - multiply(a2, y2);
+                const i32 y = dsp::resonate(a1, y1, a2, y2);
                 y2 = y1; y1 = y;
-                out[i] += y;
+                out[i] = dsp::sat_add(out[i], y);
             }
         }
         if (y1 < 256 && y1 > -256 && y2 < 256 && y2 > -256) y1 = y2 = 0;

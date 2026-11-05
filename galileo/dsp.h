@@ -30,6 +30,14 @@ inline i32 positive(i32 v) { return v < 0 ? 0 : v; }
 inline i32 mix(i32 a, i32 b, i32 p) { return a + multiply(b - a, p); }
 // Q15 product.
 inline i32 m15(i32 a, i32 b) { return (a * b) >> 15; }
+// Saturating sum and doubling: a resonator rung past full scale, or loud
+// parts summed, holds at the end of the range instead of wrapping round to the
+// other. One instruction each on the Blackfin (q31::add).
+inline i32 sat_add(i32 a, i32 b) { return opxy::q31::add(a, b); }
+inline i32 twice(i32 a) { return sat_add(a, a); }
+// A two-pole resonator's step, 2 a1 y1 - a2 y2, held within full scale. a2 is
+// r^2 < 1, so a2 y2 is never -2^31 and its negation never overflows.
+inline i32 resonate(i32 a1, i32 y1, i32 a2, i32 y2) { return sat_add(twice(multiply(a1, y1)), -multiply(a2, y2)); }
 
 // Unsigned division by a shift and subtract: notes and tempo changes only.
 inline u32 udiv(u32 n, u32 d) {
@@ -217,9 +225,9 @@ struct Mode {
         s = sine(inc);
     }
     // A strike of amplitude v (units 2^28).
-    void strike(i32 v) { y1 += multiply(v, s); }
+    void strike(i32 v) { y1 = sat_add(y1, multiply(v, s)); }
     i32 run() {
-        const i32 y = multiply(a1, y1) * 2 - multiply(a2, y2);
+        const i32 y = resonate(a1, y1, a2, y2);
         y2 = y1; y1 = y;
         return y;
     }
