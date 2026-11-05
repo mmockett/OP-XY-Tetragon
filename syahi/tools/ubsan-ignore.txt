@@ -1,0 +1,14 @@
+# Signed overflows kept on purpose, for tools/compilers.py's sanitized build
+# (clang's -fsanitize-ignorelist). Each wraps alike under clang -O2, g++ and
+# the OP-XY's compiler, and the calibrated sound includes the wrap, so fixing
+# it would change SYAHI's sound (UB audit, 2026-11-06).
+#
+# models.hpp, spec(), CLAP's last_loud: shl(c6 - 0.3, 1) holds at full scale
+# for HANDS above about 0.8, and adding (c6 - 0.3) / 2 then wraps negative,
+# so the clamp gives 0: there the last hand plays as quiet, not the loudest.
+[signed-integer-overflow]
+fun:*4spec*
+#
+# engine.cpp, finish(): the 24 Hz high-pass's step, y - hp, can pass 2^31
+# when the output is driven to full scale.
+fun:*6finish*

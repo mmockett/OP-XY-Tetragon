@@ -425,7 +425,7 @@ inline void draw_coupling(F& frame, const Look& k, const Head& h, i32 buzz, i32 
                 p[n++] = Point{xx, top_at(h, xx) - U - rise};
             }
             x += span;
-            span = span * ratio >> 15;
+            span = (span >> 15) * ratio + ((span & 32767) * ratio >> 15);   // span * ratio >> 15, which can pass 2^31
             height = height * (ratio < 32768 ? ratio : 32768) >> 15;
         }
         if (n < 2) p[n++] = Point{x0 + U, top_at(h, x0) - U};
@@ -914,7 +914,7 @@ inline void display(DisplayState& state, const opxy::draw::Input& input, Frame& 
             if (i >= count || x > 60 * U) { hide(frame, art::bounce_0 + i); continue; }
             part(frame, k, art::bounce_0 + i, x, 0, U, i ? art::dim : art::mid);
             x += span;
-            span = span * ratio >> 15;
+            span = (span >> 15) * ratio + ((span & 32767) * ratio >> 15);   // span * ratio >> 15, which can pass 2^31
         }
         break;
     }
