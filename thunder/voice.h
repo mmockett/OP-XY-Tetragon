@@ -387,7 +387,7 @@ inline void strike(Voice& v, i32 ltc, i32 amp) {
 }
 inline i32 pulse(Voice& v) {
     if (!v.pinc) return 0;
-    const i32 h = (one - sine(v.pphase + 0x40000000u)) >> 1;
+    const i32 h = (one >> 1) - (sine(v.pphase + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
     const u32 next = v.pphase + v.pinc;
     if (next < v.pphase) v.pinc = 0;
     v.pphase = next;

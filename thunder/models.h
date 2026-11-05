@@ -275,7 +275,7 @@ inline void block_flick(Voice& v, Work& w, i32* out) {
             i32 e = 0;
             if (v.u[0]) {
                 if (v.u[1]) {
-                    e = (one - sine(v.u[3] + 0x40000000u)) >> 1;
+                    e = (one >> 1) - (sine(v.u[3] + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
                     v.u[3] += v.u[2];
                 } else {
                     e = v.s[0];
@@ -970,8 +970,8 @@ inline void block_bow(Voice& v, Work& w, i32* out) {
 inline void shake_jolt(Voice& v) {
     // the jolt after this one, and its level along the storm's shape
     const u32 r = lcg(v.seed);
-    const i32 jit = Q31(0.6) + multiply(Q31(0.8), static_cast<i32>(r >> 1));   // 0.6..1.4
-    const u32 gap = static_cast<u32>(multiply(static_cast<i32>(v.u[1]), jit));
+    const i32 jit = Q31(0.3) + multiply(Q31(0.4), static_cast<i32>(r >> 1));   // 0.6..1.4, halved: Q31 holds no more than 1
+    const u32 gap = static_cast<u32>(multiply(static_cast<i32>(v.u[1]), jit)) << 1;
     v.at += gap > 64 ? gap : 64;
     if (v.at >= v.u[0]) { v.left = 0; return; }
     // the storm's shape at the jolt: (u / p)^0.7 rising, ((1 - u) / (1 - p))^0.7 falling
