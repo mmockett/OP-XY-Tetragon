@@ -402,9 +402,9 @@ __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, i32* t, u32 seed) {
     v.op[3].s = h6;
     return seed;
 }
-// out += x k e h, e and h stepping by es and hs a sample.
-__attribute__((noinline)) inline void add_scaled(const i32* x, i32* out, i32 k, i32 e, i32 es, i32 h, i32 hs) {
-    for (u32 n = 0; n < frames; ++n, e += es, h += hs) *out++ += multiply(multiply(*x++, k), multiply(e, h));
+// out += x e, e stepping by es a sample.
+__attribute__((noinline)) inline void add_ramped1(const i32* x, i32* out, i32 e, i32 es) {
+    for (u32 n = 0; n < frames; ++n, e += es) *out++ += multiply(*x++, e);
 }
 // the ring, high-passed twice, as the hand damps it
 __attribute__((noinline)) inline void flick_ring(Voice& v, const i32* x, i32* out, i32 hand, i32 hs) {
@@ -469,7 +469,11 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
         flick_squares<false>(v.u + 10, v.u + 4, t);
         flick_squares<true>(v.u + 13, v.u + 7, t);
         seed = flick_sizzle(v, t, seed);
-        add_scaled(t, out, v.k[4], fizz, zs, hand0, hs);
+        // at its share, under the sizzle's fade and the hand: their product,
+        // ramped through the block
+        const i32 p0 = multiply(multiply(fizz, hand0), v.k[4]);
+        const i32 p1 = multiply(multiply(fizz + static_cast<i32>(frames) * zs, hand0 + static_cast<i32>(frames) * hs), v.k[4]);
+        add_ramped1(t, out, p0, (p1 - p0) >> 6);
     }
     v.seed = seed;
     if (v.c_amount) {
