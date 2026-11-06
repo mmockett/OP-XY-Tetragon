@@ -42,6 +42,9 @@ struct Cicada {
     Env wing, wingatt, tick;
     i32 tick_lp, tick_a;
     u32 srng, wrng;     // the sizzle's and the wing's own noise
+    // Each cicada's rib quotients and remainders, and their steps a rib.
+    u32 fall_k[6], fall_r[6], amp_k[6], amp_r[6];
+    u32 fall_q, fall_rq, amp_q, amp_rq;
     i32 chirp, len;
 
     void tune_shell(int s, i32 lp) {
@@ -54,12 +57,19 @@ struct Cicada {
         dsp::tune(shellk[s * 2 + 1], inc(lp + 2276), decay(static_cast<u32>(mul(static_cast<i32>(tau), F(0.68)))));   // 1.47
     }
     __attribute__((noinline)) void click(u32 who) {
-        const u32 k = kk[who];
         const int s = who ? 1 : 0;
-        // The train falls up to 1.2 octaves by its last rib.
-        const i32 fall = n > 1 ? static_cast<i32>(static_cast<u32>(sc(C(1.2), chirp)) * k / (n - 1)) : sc(C(0.6), chirp);
+        // The train falls up to 1.2 octaves by its last rib: fall_k[who] is
+        // 1.2 chirp k / (n - 1), carried from rib to rib without a division.
+        const i32 fall = n > 1 ? static_cast<i32>(fall_k[who]) : sc(C(0.6), chirp);
         tune_shell(s, lcf[s] - fall);
-        const i32 a = mul(full - static_cast<i32>(static_cast<u32>(F(0.45) >> 8) * k / n << 8), F(0.8) + sc(F(0.2), draw(rng)));
+        const i32 a = mul(full - static_cast<i32>(amp_k[who] << 8), F(0.8) + sc(F(0.2), draw(rng)));   // 0.45 k / n
+        // The next rib's quotients: q + x / d, the remainders carried.
+        fall_k[who] += fall_q;
+        fall_r[who] += fall_rq;
+        if (fall_r[who] >= n - 1) { fall_r[who] -= n - 1; ++fall_k[who]; }
+        amp_k[who] += amp_q;
+        amp_r[who] += amp_rq;
+        if (amp_r[who] >= n) { amp_r[who] -= n; ++amp_k[who]; }
         const i32 g = who ? mul(a, F(0.7)) : a;
         dsp::strike(shell[s * 2], shellk[s * 2], mul(lev(tone_amp, tone_norm), g));
         dsp::strike(shell[s * 2 + 1], shellk[s * 2 + 1], mul(mul(lev(tone_amp, tone_norm), F(0.6)), g));
@@ -136,7 +146,15 @@ struct Cicada {
         tick_a = pole(hz(3000));
         // The swarm: up to five more, starting within 30 ms.
         cicadas = 1 + static_cast<u32>(c[7] * 5 >> 12);
+        {
+            const u32 fx = static_cast<u32>(sc(C(1.2), chirp)), ax = static_cast<u32>(F(0.45) >> 8);
+            fall_q = n > 1 ? fx / (n - 1) : 0;
+            fall_rq = n > 1 ? fx % (n - 1) : 0;
+            amp_q = ax / n;
+            amp_rq = ax % n;
+        }
         for (u32 w = 0; w < 6; ++w) {
+            fall_k[w] = fall_r[w] = amp_k[w] = amp_r[w] = 0;
             kk[w] = 0;
             start_at[w] = w ? samples(static_cast<u32>(draw(rng) * 30000 >> 12)) + 1 : 0;
             next_at[w] = start_at[w];
