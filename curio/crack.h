@@ -46,6 +46,7 @@ struct Ice {
     Env hiss, grain;
     i32 hiss_amp, hiss_gain, grain_rate;
     u32 grain_p, hrng;   // the surface draws its own noise
+    i32 blast;           // the lake's last half-rate sample
     i32 drive, undrive;
 
     void snap(i32 g, bool echo_hit) {
@@ -73,6 +74,7 @@ struct Ice {
         newest = 0;
         zrng = (x.seed * 2654435761u) | 1u;
         hrng = (x.seed * 2246822519u + 0x9e3779b9u) | 1u;
+        blast = 0;
         zlp = 0;
         za = 0;
         echo = 0;
@@ -201,22 +203,37 @@ struct Ice {
             out[j] = mul(tanh(d << 7), ud) << 1;
         }
     }
-    // The lake.
+    // The lake, 150..260 Hz: at half the rate, two samples a step, drawn
+    // back up to the full rate halfway between each pair; a span of odd
+    // length takes its last sample as a single step.
     __attribute__((noinline)) void body_pass(i32* y, u32 n) {
         u32 ph = body.ph;
-        const u32 in = body.inc;
+        const u32 in1 = body.inc, in = in1 << 1;
         i32 v = body.v, a = body.a, bv = blip.v;
-        const i32 vk = body.vk, ak = body.ak, bk = blip.k;
-        if (v <= 4096) return;   // until the next echo
-        for (u32 j = 0; j < n; ++j) {
-            if (CURIO_LIKELY(v > 4096)) {
-                ph += in;
-                if (CURIO_UNLIKELY(bv > (1 << 24))) { bv = mul(bv, bk); ph += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.6), bv))); }
-                v = mul(v, vk);
-                if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
-                y[j] += mul(v - a, sine(ph));
-            }
+        const i32 vk = mul(body.vk, body.vk), ak = mul(body.ak, body.ak), bk = mul(blip.k, blip.k);
+        if (v <= 4096) { blast = 0; return; }   // until the next echo
+        i32 last = blast;
+        for (u32 j = 0; j < (n >> 1); ++j) {
+            ph += in;
+            if (CURIO_UNLIKELY(bv > (1 << 24))) { bv = mul(bv, bk); ph += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.6), bv))); }
+            v = mul(v, vk);
+            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            const i32 x = mul(v - a, sine(ph));
+            y[0] += (last >> 1) + (x >> 1);
+            y[1] += x;
+            last = x;
+            y += 2;
         }
+        if (n & 1) {
+            ph += in1;
+            if (bv > (1 << 24)) { bv = mul(bv, blip.k); ph += static_cast<u32>(mul(static_cast<i32>(in1), mul(F(0.6), bv))); }
+            v = mul(v, body.vk);
+            if (a) { a = mul(a, body.ak); if (a < 64 && a > -64) a = 0; }
+            const i32 x = mul(v - a, sine(ph));
+            y[0] += x;
+            last = x;
+        }
+        blast = last;
         body.ph = ph;
         body.v = v;
         body.a = a;
