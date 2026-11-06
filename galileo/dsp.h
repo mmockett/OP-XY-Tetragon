@@ -116,18 +116,17 @@ inline i32 per_block(i32 r) {
     return r;
 }
 // tanh of x, x in units of 2^28 (|x| up to 4 read from the table, beyond it 1), Q31.
+// Without a branch: |x| is held just under 4, where the table reads its
+// last entry (to the last bit).
 inline i32 tanh(i32 x) {
-    const bool negative = x < 0;
-    u32 a = static_cast<u32>(negative ? -x : x);
-    i32 y;
-    if (a >= (4u << 28)) y = table::tanh[256];
-    else {
-        const u32 index = a >> 22;                    // 256 steps over 0..4
-        const i32 f = static_cast<i32>((a & 0x3fffffu) << 9);
-        const i32 lo = table::tanh[index];
-        y = lo + multiply(table::tanh[index + 1] - lo, f);
-    }
-    return negative ? -y : y;
+    const i32 s = x >> 31;                            // 0, or -1 for x < 0
+    u32 a = static_cast<u32>((x ^ s) - s);            // |x| (-2^31 reads as 2^31)
+    a = a < 0x3fffffffu ? a : 0x3fffffffu;
+    const u32 index = a >> 22;                        // 256 steps over 0..4
+    const i32 f = static_cast<i32>((a << 10) >> 1);   // (a & 0x3fffff) << 9
+    const i32 lo = table::tanh[index];
+    const i32 y = lo + multiply(table::tanh[index + 1] - lo, f);
+    return (y ^ s) - s;
 }
 // A velocity (Q15) raised to a power (Q16), Q15.
 // For an exponent from 1 to 2, v^(1+k) is close to v (1 - k + k v): within 0.05

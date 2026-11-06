@@ -1234,6 +1234,7 @@ __attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pur
     const i32 a0 = pure >> 1, a1 = multiply(pure, GQ31(0.8)) >> 1;
     const i32 up0 = clang >> 1, down0 = (-clang) >> 1;
     const i32 up1 = multiply(clang, GQ31(0.8)) >> 1, down1 = multiply(-clang, GQ31(0.8)) >> 1;
+    const i32 ups = up0 + up1, d0 = down0 - up0, d1 = down1 - up1;
     for (u32 g = 0; g < n; g += grain) {
         const i32 s1 = multiply(slow, rs16), f1 = multiply(fast, rf16);
         i32 l = slow + fast;
@@ -1245,7 +1246,10 @@ __attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pur
             l += dl;
             i32 wave = 0;
             if (KIND != 2) wave = multiply(sine_of(p0), a0) + multiply(sine_of(p1), a1);
-            if (KIND != 1) wave += (p0 > 0x80000000u ? down0 : up0) + (p1 > 0x80000000u ? down1 : up1);
+            // The signs, without a branch: a phase's top bit, all ones from
+            // half a turn (where the sine is 0, so either reads the same but
+            // for its last bit).
+            if (KIND != 1) wave += ups + (d0 & (static_cast<i32>(p0) >> 31)) + (d1 & (static_cast<i32>(p1) >> 31));
             o[i] += multiply(wave, l) * 2;
         }
         slow = s1;
