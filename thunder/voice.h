@@ -479,12 +479,20 @@ inline i32 pulse(Voice& v) {
     return multiply(v.pamp, h);
 }
 // The mallet's force over a block: only while it touches the sheet.
-inline void excite(Voice& v, i32* x) {
-    if (!v.pinc) {
-        for (unsigned i = 0; i < frames; ++i) x[i] = 0;
-        return;
+__attribute__((noinline)) inline void excite(Voice& v, i32* x) {
+    u32 inc = v.pinc, phase = v.pphase;
+    const i32 amp = v.pamp;
+    u32 n = 0;
+    for (; n < frames && inc; ++n) {
+        const i32 h = (one >> 1) - (sine(phase + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
+        const u32 next = phase + inc;
+        if (next < phase) inc = 0;
+        phase = next;
+        x[n] = multiply(amp, h);
     }
-    for (unsigned i = 0; i < frames; ++i) x[i] = pulse(v);
+    for (; n < frames; ++n) x[n] = 0;
+    v.pinc = inc;
+    v.pphase = phase;
 }
 // A hard beater's click: 2.5 ms of noise, high-passed at 2.5 kHz, falling with 0.6 ms.
 // lhp moves its high-pass; llp, if given, low-passes it twice too (a felt
@@ -497,19 +505,34 @@ inline void click(Voice& v, i32 level, i32 ring = 0, i32 lhp = L(2500.0), i32 ll
     v.clk = llp ? onepole_k(llp) : 0;
     v.cseed = 0x2545f491u;   // every hit's click the same: a beater, not a dice roll
 }
-inline i32 click_sample(Voice& v);
-// Adds the click to a block, while there is one.
+// Adds the click to a block, while there is one (its states rest once it has fallen away).
+template <bool low>
+__attribute__((noinline)) inline void click_run(Voice& v, i32* out) {
+    i32 env = v.cenv, h = v.chp.s, l1 = v.clp.s, l2 = v.clp2.s;
+    const i32 ck = v.ck, hk = v.chk, lk = v.clk;
+    u32 seed = v.cseed;
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 x = noise(seed) >> 4;
+        h += multiply(x - h, hk);
+        i32 y = x - h;
+        if (low) {
+            l1 += multiply(y - l1, lk);
+            l2 += multiply(l1 - l2, lk);
+            y = l2 << 2;
+        }
+        env = multiply(env, ck);
+        if (env < (1 << 16)) { env = 0; break; }
+        *out++ += multiply(y, env) << 1;
+    }
+    v.cenv = env;
+    v.chp.s = h;
+    v.clp.s = l1;
+    v.clp2.s = l2;
+    v.cseed = seed;
+}
 inline void add_click(Voice& v, i32* out) {
     if (!v.cenv) return;
-    for (unsigned i = 0; i < frames; ++i) out[i] += click_sample(v);
-}
-inline i32 click_sample(Voice& v) {
-    if (!v.cenv) return 0;
-    i32 n = v.chp.high(noise(v.cseed) >> 4, v.chk);
-    if (v.clk) n = v.clp2.low(v.clp.low(n, v.clk), v.clk) << 2;
-    v.cenv = multiply(v.cenv, v.ck);
-    if (v.cenv < (1 << 16)) v.cenv = 0;
-    return multiply(n, v.cenv) << 1;
+    if (v.clk) click_run<true>(v, out); else click_run<false>(v, out);
 }
 
 // ------------------------------------------------------------ the chain

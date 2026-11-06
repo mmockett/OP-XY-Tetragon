@@ -33,6 +33,10 @@ inline u32 samples(i32 lsec) { return pow2(lsec + lsr); }
 struct Work { i32 exc[frames], fin[frames], body[frames], aux[frames]; };
 
 inline void clear(i32* x) { for (unsigned i = 0; i < frames; ++i) x[i] = 0; }
+// out += 2 x e, e stepping from e by step a sample.
+__attribute__((noinline)) inline void add_ramped(const i32* x, i32* out, i32 e, i32 step) {
+    for (u32 n = 0; n < frames; ++n, e += step) *out++ += multiply(*x++, e) << 1;
+}
 
 // ============================================================ BOOM: kick
 // A felt mallet on a tight sheet. CAMBER makes a hard hit start sharp and sag
@@ -123,7 +127,7 @@ inline void block_slap(Voice& v, Work& w, i32* out) {
     run_chain(v, w.body, w.aux);
     i32 e;
     const i32 step = v.env[0].step(e);
-    for (unsigned i = 0; i < frames; ++i, e += step) out[i] += multiply(w.aux[i], e) << 1;
+    add_ramped(w.aux, out, e, step);
 }
 
 // ============================================================ POP: clap, snap
@@ -518,6 +522,22 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     strike(v, beater_time(c[2]), U);
     v.s[0] = U / 3;   // the strike into the wash: a third, so the hit doesn't spike over the wash
 }
+// The body, high-passed, at its share, and the ring, high-passed twice, as the hand damps it.
+__attribute__((noinline)) inline void crash_mix(Voice& v, const i32* body, const i32* aux, i32* out, i32 damp, i32 ds) {
+    const i32 k0 = v.k[0], k1 = v.k[1], share = v.k[2];
+    i32 h0 = v.op[0].s, h2 = v.op[2].s, h3 = v.op[3].s;
+    for (u32 n = 0; n < frames; ++n, damp += ds) {
+        const i32 b = *body++, x = *aux++;
+        h0 += multiply(b - h0, k0);
+        h2 += multiply(x - h2, k1);
+        const i32 a = x - h2;
+        h3 += multiply(a - h3, k1);
+        *out++ = multiply(b - h0, share) + multiply((a - h3) << 1, damp);
+    }
+    v.op[0].s = h0;
+    v.op[2].s = h2;
+    v.op[3].s = h3;
+}
 inline void block_crash(Voice& v, Work& w, i32* out) {
     glide_modes(v);
     // the swell: s1 falls, s2 rises toward it, (t / p) e^(-t / p)
@@ -546,18 +566,7 @@ inline void block_crash(Voice& v, Work& w, i32* out) {
     run_field(v, w.fin, w.aux, Q31(0.5));
     i32 damp;
     const i32 ds = v.env[0].step(damp);
-    const i32 k0 = v.k[0], k1 = v.k[1], share = v.k[2];
-    i32 h0 = v.op[0].s, h2 = v.op[2].s, h3 = v.op[3].s;
-    for (unsigned i = 0; i < frames; ++i, damp += ds) {
-        h0 += multiply(w.body[i] - h0, k0);
-        h2 += multiply(w.aux[i] - h2, k1);
-        const i32 a = w.aux[i] - h2;
-        h3 += multiply(a - h3, k1);
-        out[i] = multiply(w.body[i] - h0, share) + multiply((a - h3) << 1, damp);
-    }
-    v.op[0].s = h0;
-    v.op[2].s = h2;
-    v.op[3].s = h3;
+    crash_mix(v, w.body, w.aux, out, damp, ds);
     add_click(v, out);
     run_swing(v, out);
     if (v.c_amount) {
