@@ -705,11 +705,11 @@ inline i32 sine_of(u32 x) {
 }
 // One partial over n samples (n a whole number of grains): its increment at
 // each grain's edge (inc[0] at the start, scaled by ratio when given; SWEEP
-// when they move), its level decaying by r16 a grain. Writes out, or adds to
-// it (ADD); swing gets |sine| (SWING).
+// when they move), its level decaying by r16 a grain, heard at gain g (Q28,
+// 0 for none). Writes out, or adds to it (ADD); swing gets |sine| (SWING).
 template <bool ADD, bool SWING, bool SWEEP>
 __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, const u32* __restrict inc, i32 ratio28,
-                                           i32* __restrict out, i32* __restrict swing, u32 n) {
+                                           i32 g28, i32* __restrict out, i32* __restrict swing, u32 n) {
     u32 p = phase;
     i32 a = level;
     u32 now = ratio28 ? times(inc[0], ratio28) : inc[0];
@@ -717,14 +717,15 @@ __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, cons
         const u32 next = SWEEP ? (ratio28 ? times(inc[g / grain + 1], ratio28) : inc[g / grain + 1]) : now;
         const i32 step = static_cast<i32>(next - now) >> 4;
         const i32 end = multiply(a, r16);
-        const i32 da = (end - a) >> 4;
+        i32 l = g28 ? gain(a, g28) : a;
+        const i32 dl = ((g28 ? gain(end, g28) : end) - l) >> 4;
         i32* __restrict o = out + g;
         for (u32 i = 0; i < grain; ++i) {
             if (SWEEP) now += static_cast<u32>(step);
             p += now;
-            a += da;
+            l += dl;
             const i32 v = sine_of(p);
-            const i32 y = multiply(v, a);
+            const i32 y = multiply(v, l);
             if (ADD) o[i] += y;
             else o[i] = y;
             if (SWING) swing[g + i] = v < 0 ? -v : v;
@@ -736,14 +737,15 @@ __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, cons
     level = a;
 }
 template <bool ADD, bool SWING>
-inline void partial(bool sweep, u32& phase, i32& level, i32 r, const u32* inc, i32 ratio28, i32* out, i32* swing, u32 n) {
-    if (sweep) partial_run<ADD, SWING, true>(phase, level, per_grain(r), inc, ratio28, out, swing, n);
-    else partial_run<ADD, SWING, false>(phase, level, per_grain(r), inc, ratio28, out, swing, n);
+inline void partial(bool sweep, u32& phase, i32& level, i32 r, const u32* inc, i32 ratio28, i32 g28, i32* out, i32* swing,
+                    u32 n) {
+    if (sweep) partial_run<ADD, SWING, true>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, n);
+    else partial_run<ADD, SWING, false>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, n);
 }
-// A skin: writes n samples (a whole number of grains). swing, if given, gets
-// |sine| of the fundamental (Q31) for the snare's wires. A partial that has
-// died away only keeps its phase.
-inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swing = 0) {
+// A skin: writes n samples (a whole number of grains), at gain g (Q28) if
+// given. swing, if given, gets |sine| of the fundamental (Q31) for the snare's
+// wires. A partial that has died away only keeps its phase.
+inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swing = 0, i32 g28 = 0) {
     u32 inc[64 / grain + 1];
     const u32 grains = n / grain;
     i32 s = k.s;
@@ -762,8 +764,8 @@ inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swin
     }
     if (!k.parts) { for (u32 i = 0; i < n; ++i) out[i] = 0; return; }
     const bool sweeping = k.s != 0;
-    if (swing) partial<false, true>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, out, swing, n);
-    else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, out, 0, n);
+    if (swing) partial<false, true>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, swing, n);
+    else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, n);
     for (u32 part = 1; part < k.parts; ++part) {
         if (k.e[part].a < 4096) {                           // under -95 dBFS
             k.e[part].a = 0;
@@ -775,7 +777,7 @@ inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swin
             k.ph[part] = p;
             continue;
         }
-        partial<true, false>(sweeping, k.ph[part], k.e[part].a, k.e[part].r, inc, k.ratio[part], out, 0, n);
+        partial<true, false>(sweeping, k.ph[part], k.e[part].a, k.e[part].r, inc, k.ratio[part], g28, out, 0, n);
     }
 }
 // A click's noise burst, high-passed, added at gain g (Q28).
@@ -890,10 +892,6 @@ __attribute__((noinline)) void low_run(dsp::Pole& p, i32 c, i32* __restrict io, 
     for (u32 i = 0; i < n; ++i) { s += multiply(io[i] - s, c); io[i] = s; }
     p.s = s;
 }
-// io scaled by g (Q28), held within full scale.
-__attribute__((noinline)) void scale_run(i32* __restrict io, i32 g28, u32 n) {
-    for (u32 i = 0; i < n; ++i) io[i] = gain(io[i], g28);
-}
 __attribute__((noinline)) void add_run(i32* __restrict out, const i32* __restrict in, u32 n) {
     for (u32 i = 0; i < n; ++i) out[i] += in[i];
 }
@@ -978,8 +976,7 @@ __attribute__((noinline)) inline void run_kick(Body& b, i32* __restrict out, u32
 }
 __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u32 count) {
     i32 swing[64];
-    skin_block(b.skin[0], out, count, swing);
-    scale_run(out, b.g[0], count);
+    skin_block(b.skin[0], out, count, swing, b.g[0]);   // the head at its level
     if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
         // The wires buzz with the head: noise, swelling with the head's swing.
         noise_band_add(b.env[0], b.seed, swing, b.band[0], b.pole[0], b.pc[0], out, b.g[1], count);
@@ -998,8 +995,7 @@ __attribute__((noinline)) inline void run_skins(Body& b, i32* __restrict out, u3
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_hand(Body& b, i32* __restrict out, u32 count) {
-    skin_block(b.skin[0], out, count);
-    scale_run(out, b.g[0], count);
+    skin_block(b.skin[0], out, count, 0, b.g[0]);
     if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
         i32 sl[64];
         noise_env(b.env[0], b.seed, sl, count);
