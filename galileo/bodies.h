@@ -728,7 +728,15 @@ inline void strike_ghosts(Body& b, u32 n) {
             const u32 at = g.at & ~7u;
             g.v = 0;
             b.used &= ~(1u << i);
-            strike(b, v, 0, 0, n, true, at > b.now ? at - b.now : 0);
+            const u32 late = at > b.now ? at - b.now : 0;
+            if (b.model == kit::ratchet) {
+                // A tooth: what strike() does for one, without its dispatch.
+                ++b.count;
+                strike_modes(b, 3, v, GQ16(1.1), touch(b, v), late);
+                b.click[0].strike(v);
+            } else {
+                strike(b, v, 0, 0, n, true, late);
+            }
         } else if (g.at < due) {
             due = g.at;
         }
