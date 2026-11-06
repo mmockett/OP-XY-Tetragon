@@ -99,7 +99,7 @@ template <class F> void magnify(F& f, Fit m) {
 // every point distinct, the outline closed by its first and last.
 template <class Path> inline void outline(Path& path, const P* points, u32 n, u32 key) {
     if (path.key == key) return;
-    P p[64];
+    P p[64] = {};
     for (u32 i = 0; i < n && i < 64; ++i) p[i] = points[i];
     u32 count = n < 64 ? n : 64;
     while (count < 64) {
@@ -266,7 +266,7 @@ template <class Path> void slat(Path& path, P origin, P from, P to, i32 w0, i32 
     const i32 dx = to.x - from.x, dy = to.y - from.y;
     const u32 len = dsp::isqrt(static_cast<u32>(((dx >> 5) * (dx >> 5)) + ((dy >> 5) * (dy >> 5)))) << 5;   // Q10
     const i32 l = (len ? static_cast<i32>(len) : 1024) >> 5;
-    const i32 nx = ((-dy) << 5) / l, ny = (dx << 5) / l;   // the unit normal, Q10
+    const i32 nx = -dy * 32 / l, ny = dx * 32 / l;   // the unit normal, Q10
     P pts[24];
     for (u32 i = 0; i < 12; ++i) {
         const i32 u = static_cast<i32>(i) * 1024 / 11;                    // 0 .. 1, Q10

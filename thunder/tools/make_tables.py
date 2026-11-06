@@ -14,6 +14,12 @@ tensions from 0 (a slack, stiff plate) to 1 (a drumhead), the table holds the
 eight lowest modes: their frequency over the (1, 1) mode's, as log2 in Q12,
 and m and n, which give the mode's shape sin(m pi x) sin(n pi y) at the
 strike point.
+
+A mallet's contact: a raised-cosine force of length Tc reaches a mode of
+frequency f by the force's spectrum, |sinc(u) / (1 - u^2)| with u = f Tc
+(1 at u = 0, a half at u = 1, nothing at u = 2). The table holds its log2 at
+u = i / 16 for i = 0..32, floored at -6 octaves, so a model can hold its
+fundamental's level as the beater softens.
 """
 import math
 import pathlib
@@ -64,6 +70,15 @@ def main():
     lines.append("const opxy::i16 mode_ratio[33][8] = {" + ", ".join("{" + ", ".join(map(str, r)) + "}" for r in ratio) + "};")
     lines.append("const opxy::u8 mode_m[33][8] = {" + ", ".join("{" + ", ".join(map(str, r)) + "}" for r in mm) + "};")
     lines.append("const opxy::u8 mode_n[33][8] = {" + ", ".join("{" + ", ".join(map(str, r)) + "}" for r in nn) + "};")
+    # The raised-cosine contact's reach.
+    def reach(u):
+        if abs(u - 1) < 1e-9:
+            return 0.5
+        s = 1.0 if u == 0 else math.sin(math.pi * u) / (math.pi * u)
+        return abs(s / (1 - u * u))
+    r = [max(-6 * 65536, round(65536 * math.log2(max(reach(i / 16), 1e-9)))) for i in range(33)]
+    lines.append("// A raised-cosine contact's reach of a mode, log2 |sinc(u) / (1 - u^2)| in Q16, u = f Tc = i / 16.")
+    lines.append("const opxy::i32 reach[33] = {" + ", ".join(map(str, r)) + "};")
     lines += ["}", "}", ""]
     OUT.write_text("\n".join(lines))
     print("wrote", OUT)

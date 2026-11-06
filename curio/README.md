@@ -299,6 +299,7 @@ display state 80 bytes, and the sine, log2, 2^x and tanh tables about 10 KiB.
 PY=<open-xy checkout>/.venv/bin/python
 $PY <sdk>/sdk.py test --machine curio --cxx "$(brew --prefix llvm)/bin/clang++"
 $PY <sdk>/sdk.py test --machine curio --firmware
+python3 tools/compilers.py --sdk <sdk>                                  # tests under clang, g++ and sanitizers; renders bit for bit alike
 python3 tools/sheet.py --sdk <sdk> --font <UniversNextPro-Light.ttf>   # contact sheets, screen.png (--each: every specimen alone)
 $PY tools/demos.py --sdk <sdk>                                           # demos
 python3 tools/presets.py --out <build>/candidate/content/presets         # presets

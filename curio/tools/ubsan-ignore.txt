@@ -1,0 +1,9 @@
+# Signed overflows kept on purpose, for tools/compilers.py's sanitized build
+# (clang's -fsanitize-ignorelist). Each wraps alike under clang -O2, g++ and
+# the OP-XY's compiler, and the calibrated sound includes the wrap, so fixing
+# it would change CURIO's sound (UB audit, 2026-11-06).
+#
+# thump.h, Cask::run(): the noise low-passes' steps, lev(n, ...) - clk_lp and
+# the like, can pass 2^31 on a loud hit (tests/sound.cpp reaches it).
+[signed-integer-overflow]
+fun:*4Cask3run*

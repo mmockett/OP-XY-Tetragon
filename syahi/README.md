@@ -336,6 +336,7 @@ Syahi needs SDK 1.10, with per-key mixer channels (`padMix`, `padControls`,
 ```sh
 python <sdk>/sdk.py test --machine syahi
 python <sdk>/sdk.py test --machine syahi --firmware
+python3 syahi/tools/compilers.py --sdk <sdk>   # tests under clang, g++ and sanitizers; renders bit for bit alike
 python <sdk>/sdk.py build --machine syahi --stock-os <your stock-1.2.1>/os.ldr --layout <your device's layout.json> --out <a folder outside this checkout>
 python syahi/tools/presets.py <that folder>          # the kits, into candidate/content/presets/syahi/
 ```

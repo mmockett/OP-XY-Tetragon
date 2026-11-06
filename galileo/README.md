@@ -339,6 +339,10 @@ python sdk.py test --machine ../galileo --cxx "$(brew --prefix llvm)/bin/clang++
 python sdk.py test --machine ../galileo --firmware
 ```
 
+`python3 tools/compilers.py --sdk <sdk>` runs the tests under clang, g++ and a
+sanitized build, and checks that all three render a sweep of every model bit for bit
+alike, so what the computer renders is what the OP-XY plays.
+
 A command-line build installs no presets: `python3 tools/presets.py <folder>`
 writes them for `/content/presets/galileo/`.
 

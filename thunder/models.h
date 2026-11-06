@@ -12,6 +12,13 @@ enum Model : u32 { BOOM, SLAP, POP, FLICK, TOM, CRASH, CLANK, GRIT, HOP, ZAP, BO
 // A mallet's beater, felt (0) to a steel rod (1): its contact time (log2 s) and click (Q16).
 inline i32 beater_time(i32 c) { return mix(L(6e-3), L(0.08e-3), c); }
 inline i32 beater_click(i32 c) { return c > 32768 ? (c - 32768) * 2 : 0; }
+// The contact on a sheet struck at log2 Hz lstrike: a soft beater bounces off
+// a small, stiff sheet sooner, its felt staying on for at most one cycle of
+// the note (so it still reaches it), and the travel to the steel rod keeps
+// its whole range.
+inline i32 beater_contact(i32 c, i32 lstrike) { return mix(L(6e-3) < -lstrike ? L(6e-3) : -lstrike, L(0.08e-3), c); }
+// The modes' weights are set as the hardest beater leaves them (beater_lift).
+const i32 hardest = L(0.08e-3);
 // The sheet's fundamental moves the most air: its whole face pumps as one,
 // while each higher mode's regions swing against each other and largely
 // cancel (a plate's radiation efficiency below its coincidence frequency).
@@ -47,8 +54,9 @@ inline void setup_boom(Voice& v, const i32* c, i32 tune) {
     // (0.02 + 0.5 slack^1.5) (0.4 + SPOT), as Q31 x 2
     v.flevel = multiply(Q31(0.01) + (power16(slack, Q16(1.5)) << 13), Q31(0.2) + (c[3] << 14)) << 1;
     if (v.flevel < Q31(0.008)) v.fon = 0;   // a taut sheet's high modes, 40 dB under: not worth running
-    // the beater's knock on the head: a felt thud (300 to 600 Hz, 5 ms) to a steel tick
-    click(v, (Q16(0.35) + mul16(beater_click(c[2]), Q16(0.25))) << 15, beater_click(c[2]), mix(L(300), L(2500), c[2]), mix(L(600), L(16000), c[2]),
+    // the beater's knock on the head: a felt thud (300 to 600 Hz, 5 ms) to a
+    // steel tick, which spreads over 16 kHz and so is struck lighter (0.15)
+    click(v, (Q16(0.35) - mul16(beater_click(c[2]), Q16(0.2))) << 15, beater_click(c[2]), mix(L(300), L(2500), c[2]), mix(L(600), L(16000), c[2]),
           mix(L(0.005), L(0.0006), c[2]));
     setup_chain(v, Q16(0.45), Q16(0.35), L(0.04), L(1800), L(6000), c[7]);
     strike(v, beater_time(c[2]), U);
@@ -76,11 +84,14 @@ inline void setup_slap(Voice& v, const i32* c, i32 tune) {
     const i32 lf0 = mix(L(110), L(330), c[0]) + mix(-Q16(0.5), Q16(0.1), c[4]) + tune;
     const i32 lt0 = mix(L(0.45), L(0.035), c[1]);
     const i32 tension = mix(Q16(0.2), Q16(1.0), c[4]);
-    setup_modes(v, lf0, tension, Q16(0.05) + mul16(power16(c[3], Q16(0.6)), Q16(0.9)), lt0, Q16(0.6), Q16(0.4), 8, beater_time(c[2]));
+    setup_modes(v, lf0, tension, Q16(0.05) + mul16(power16(c[3], Q16(0.6)), Q16(0.9)), lt0, Q16(0.6), Q16(0.4), 8, hardest);
     radiate(v, Q31(0.67));
     v.bend = mix(Q16(0.7), Q16(0.1), c[4]) << 12;   // a slack head sags 0.7 over 6 ms, a tight one 0.1: crisp, not a boing
     v.bend_env = one;
     v.bend_k = block_decay(L(0.006));
+    // BEATER changes the stick, not the drum's weight (beater_lift)
+    const i32 lbend = bend_log(v.bend), ltc = beater_contact(c[2], lf0 + lbend);
+    const i32 amp = beater_lift(v, lf0, ltc, lbend, lt0, Q16(0.6), 8, 0);
     // (never quite equal lines, and a smeared input: a crisp ring, not a boing)
     setup_field(v, lf0 + L(3.5), Q16(0.45) + mul16(65535 - tension, Q16(0.55)), lt0 + log16(mix(Q16(1.5), Q16(8.0) - 1, power16(c[7], Q16(0.6))) >> 3) + L(8.0),
                 Q16(0.4) + mul16(c[2], Q16(0.5)), 1);
@@ -94,7 +105,7 @@ inline void setup_slap(Voice& v, const i32* c, i32 tune) {
     const i32 tw = mul16(exp16(lrel), Q16(1.0) + mul16(c[5], Q16(3.0))) + Q16(0.03);
     v.env[0].set(one, block_decay(log16(tw)));
     click(v, (Q16(0.15) + mul16(beater_click(c[2]), Q16(0.8))) << 15, beater_click(c[2]));
-    strike(v, beater_time(c[2]), U);
+    strike(v, ltc, amp);
     v.s[0] = U;
 }
 inline void block_slap(Voice& v, Work& w, i32* out) {
@@ -164,6 +175,12 @@ inline void block_pop(Voice& v, Work& w, i32* out) {
             if (pops && v.left && v.t + i == v.at) {
                 const u32 r = lcg(v.seed);   // SCATTER's dice: the timing, level and crackle of each snap
                 if (static_cast<i32>(r >> 1) < v.k[12]) seed = (r >> 3) | 1u;
+                // Kept as it is, overflow and all: with SCATTER high, a loud roll
+                // of the dice takes the last pop's burst past 2^31 and it wraps
+                // negative. Apple clang -O2 wraps it too here, so the host
+                // renders, the calibration and the OP-XY all agree; holding it at
+                // full scale would change the calibrated sound (UB audit,
+                // 2026-11-06). UBSan reports it; it is known.
                 burst = Q31(0.75) + multiply(v.k[7], static_cast<i32>(r >> 1) - Q31(0.5)) + (v.left == 1 ? Q31(0.1) : 0);
                 w.fin[i] = (v.left & 1u) ? multiply(U, v.k[11]) : -multiply(U, v.k[11]);
                 if (--v.left) pop_schedule(v, v.t + i);
@@ -275,7 +292,7 @@ inline void block_flick(Voice& v, Work& w, i32* out) {
             i32 e = 0;
             if (v.u[0]) {
                 if (v.u[1]) {
-                    e = (one - sine(v.u[3] + 0x40000000u)) >> 1;
+                    e = (one >> 1) - (sine(v.u[3] + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
                     v.u[3] += v.u[2];
                 } else {
                     e = v.s[0];
@@ -369,7 +386,9 @@ inline void setup_tom(Voice& v, const i32* c, i32 tune) {
     const i32 lf0 = mix(L(55), L(420), c[0]) + tune;
     const i32 lt0 = mix(L(1.3), L(0.07), c[1]);
     const i32 tension = mix(Q16(0.45), Q16(1.0), c[4]);
-    setup_modes(v, lf0, tension, mul16(c[3], Q16(0.85)), lt0, Q16(0.5), Q16(0.35), 8, beater_time(c[2]));
+    // The modes' weights as the hardest beater leaves them (a softer one's
+    // contact reaches fewer of them: the strike filters them, below)
+    setup_modes(v, lf0, tension, mul16(c[3], Q16(0.85)), lt0, Q16(0.5), Q16(0.35), 8, hardest);
     // (its higher modes fall off and die away more gently than a kick's, so a
     // stick's strike reaches the midrange). The shell: one more mode, an
     // octave over the head, as large as the fundamental, ringing 0.6 of its
@@ -388,10 +407,18 @@ inline void setup_tom(Voice& v, const i32* c, i32 tune) {
     v.bend = mul16(c[5], Q16(2.4)) << 12;
     v.bend_env = one;
     v.bend_k = block_decay(mix(L(0.04), L(0.09), c[5]));
+    // BEATER changes the stick, not the drum's weight: the head is struck at
+    // the pitch CAMBER lifts it to, and the strike lifted for what a softer
+    // beater doesn't reach (beater_lift). It then drives the head harder into
+    // its clip: a felt thud.
+    {
+        const i32 lbend = bend_log(v.bend);
+        v.k[0] = beater_contact(c[2], lf0 + lbend);
+        v.k[8] = beater_lift(v, lf0, v.k[0], lbend, lt0, Q16(0.5), v.nmodes - 1, lt0 + L(0.6));   // the shell rings 0.6 of the head's time
+    }
     setup_field(v, lf0 + L(4), 65535 - tension, lt0 + L(0.6), c[2]);
     v.flevel = mix(Q31(0.062), Q31(0.015), c[4]);   // 0.03..0.12 as the sheet slackens, Q31 x 2
     if (v.flevel < Q31(0.02)) v.fon = 0;   // a taut drumhead's high modes, too faint to run
-    v.k[0] = beater_time(c[2]);
     // the stick's knock: a felt tap (600 Hz to 3 kHz, 4 ms) to a steel tick
     v.k[1] = (Q16(0.15) + mul16(beater_click(c[2]), Q16(0.4))) << 15;
     v.k[3] = beater_click(c[2]);
@@ -410,7 +437,7 @@ inline void setup_tom(Voice& v, const i32* c, i32 tune) {
     v.at = static_cast<u32>(v.sgap);
     v.waiting = v.left != 0;
     setup_chain(v, Q16(0.9), Q16(0.4), L(0.05), L(1800), L(6000), c[7]);
-    strike(v, v.k[0], U);
+    strike(v, v.k[0], v.k[8]);
     click(v, v.k[1], v.k[3], v.k[4], v.k[5], v.k[6]);
     v.s[0] = U;
 }
@@ -424,7 +451,7 @@ inline void block_tom(Voice& v, Work& w, i32* out) {
             if (v.left && v.t + i == v.at) {
                 v.samp = multiply(v.samp, v.samp_k);
                 const i32 a = v.left == 1 ? multiply(v.samp, v.k[2]) : v.samp;
-                strike(v, v.k[0], multiply(U, a));
+                strike(v, v.k[0], multiply(v.k[8], a));
                 click(v, multiply(v.k[1], a), v.k[3], v.k[4], v.k[5], v.k[6]);
                 w.fin[i] = multiply(U, a);
                 v.bend_env = a > v.bend_env ? a : v.bend_env;
@@ -566,7 +593,7 @@ inline void setup_clank(Voice& v, const i32* c, i32 tune) {
     for (u32 k = 0; k < 4; ++k) {
         lr[k] = log16(mix(bar[k], stirrup[k], c[4]));
         if (lf + lr[k] > L(6800.0)) break;
-        sum += mul16(w[k], contact_share(lf + lr[k], mix(L(6e-3), L(0.08e-3), c[2])) >> 15);
+        sum += mul16(w[k], contact_share(lf + lr[k], beater_contact(c[2], lf)) >> 15);
         ++n;
     }
     v.nmodes = n;
@@ -586,7 +613,7 @@ inline void setup_clank(Voice& v, const i32* c, i32 tune) {
     if (!c[5]) v.fon = 0;   // no METAL: no ring to run
     v.k[0] = onepole_k(L(300));
     v.env[0].set(one, block_decay(L(0.01)));
-    v.k[1] = beater_time(c[2]);
+    v.k[1] = beater_contact(c[2], lf);   // a felt bounces off the bar within a cycle of its note
     v.k[2] = (Q16(0.2) + mul16(beater_click(c[2]), Q16(0.5))) << 15;
     click(v, v.k[2]);
     setup_chain(v, Q16(1.4), Q16(0.7), L(0.08), L(1800), L(6000), c[6]);
@@ -970,8 +997,8 @@ inline void block_bow(Voice& v, Work& w, i32* out) {
 inline void shake_jolt(Voice& v) {
     // the jolt after this one, and its level along the storm's shape
     const u32 r = lcg(v.seed);
-    const i32 jit = Q31(0.6) + multiply(Q31(0.8), static_cast<i32>(r >> 1));   // 0.6..1.4
-    const u32 gap = static_cast<u32>(multiply(static_cast<i32>(v.u[1]), jit));
+    const i32 jit = Q31(0.3) + multiply(Q31(0.4), static_cast<i32>(r >> 1));   // 0.6..1.4, halved: Q31 holds no more than 1
+    const u32 gap = static_cast<u32>(multiply(static_cast<i32>(v.u[1]), jit)) << 1;
     v.at += gap > 64 ? gap : 64;
     if (v.at >= v.u[0]) { v.left = 0; return; }
     // the storm's shape at the jolt: (u / p)^0.7 rising, ((1 - u) / (1 - p))^0.7 falling
