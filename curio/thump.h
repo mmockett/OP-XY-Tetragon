@@ -387,42 +387,100 @@ struct Cask {
     }
     static void tune_res(ResK& k, i32 lp, u32 t60) { dsp::tune(k, inc(lp), decay60(t60)); }
     bool waiting() const { return c[7] > 0 && tap < 4; }
+    // The block in passes, each with its state in registers, split at the
+    // cellar's taps.
+    // The air's pitch each sample: the knock's blip, the bung's bend, the slosh.
+    __attribute__((noinline)) void pitch_pass(u32* fb, u32 n, i32 vib) {
+        const u32 in = inca;
+        i32 bv = blip.v, ev = bend.v, sv = slosh_on.v;
+        const i32 bk = blip.k, ek = bend.k, sk = slosh_on.k, bg = bung;
+        const bool slosh = slosh_depth != 0;
+        for (u32 j = 0; j < n; ++j) {
+            u32 f = in;
+            if (bv > (1 << 20)) { bv = mul(bv, bk); f += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.35), bv))); }
+            if (bg) { ev = mul(ev, ek); f -= static_cast<u32>(mul(static_cast<i32>(f), mul(bg, full - ev))); }
+            if (slosh) {
+                sv = mul(sv, sk);
+                f += static_cast<u32>(mul(static_cast<i32>(f), vib));
+            }
+            fb[j] = f;
+        }
+        blip.v = bv;
+        bend.v = ev;
+        slosh_on.v = sv;
+    }
+    // The air's boom, swelling with the slosh.
+    template <bool am_on> __attribute__((noinline)) void air_pass(i32* y, const u32* fb, u32 n, i32 am) {
+        u32 ph = air.ph;
+        i32 v = air.v, a = air.a;
+        const i32 vk = air.vk, ak = air.ak;
+        for (u32 j = 0; j < n; ++j) {
+            ph += fb[j];
+            v = mul(v, vk);
+            if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            i32 s = mul(v - a, sine(ph));
+            if (am_on) s += mul(s, am);
+            y[j] += s;
+        }
+        air.ph = ph;
+        air.v = v;
+        air.a = a;
+    }
+    // The knuckle's click and the thud, from one noise.
+    __attribute__((noinline)) void knock_pass(i32* y, u32 n) {
+        i32 cv = clk.v, tv = thud.v, cl = clk_lp, tl = thud_lp;
+        const i32 ck = clk.k, tk = thud.k, ca = clk_a, ta = thud_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (cv > 4096 || tv > 4096) {
+                const i32 x = noise(r);
+                cv = mul(cv, ck);
+                cl += mul(ca, lev(x, cv) - cl);
+                tv = mul(tv, tk);
+                tl += mul(ta, lev(x, tv) - tl);
+            } else {
+                cl -= cl >> 6;
+                tl -= tl >> 6;
+            }
+            y[j] += cl + tl;
+        }
+        clk.v = cv;
+        thud.v = tv;
+        clk_lp = cl;
+        thud_lp = tl;
+        rng = r;
+    }
     void run(i32* out) {
+        static const u32 at[4] = {1014, 1632, 2690, 3925};       // 23, 37, 61, 89 ms
+        static const i32 gain[4] = {F(0.64), F(0.48), F(0.35), F(0.2)};   // 1.6 times the prototype's: it read faintly
         // The slosh: 5.5 Hz, once a block.
         ph55 += 64u * 535653u;   // 5.5 Hz
         const i32 swing = mul(sine(ph55), full - slosh_on.v);
         const i32 vib = mul(slosh_depth, swing);
         const i32 am = mul(slosh_am, sine(ph55 + 683565275u));   // phase +1 rad
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (c[7] > 0 && tap < 4) {
-                static const u32 at[4] = {1014, 1632, 2690, 3925};       // 23, 37, 61, 89 ms
-                static const i32 gain[4] = {F(0.64), F(0.48), F(0.35), F(0.2)};   // 1.6 times the prototype's: it read faintly
-                if (t == at[tap]) { strike(sc(gain[tap], c[7]), true); ++tap; }
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        u32 fb[frames];
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            // The cellar's next tap in this block.
+            u32 e = frames;
+            if (c[7] > 0 && tap < 4) { const u32 d = at[tap] - t0; if (d < e && d >= i) e = d; }
+            if (e > i) {
+                const u32 n = e - i;
+                // Each part costs nothing once it is still or switched off.
+                pitch_pass(fb + i, n, vib);
+                if (slosh_am) air_pass<true>(out + i, fb + i, n, am);
+                else air_pass<false>(out + i, fb + i, n, am);
+                for (int m = 0; m < 4; ++m) ring_into(wood[m], woodk[m], out + i, n);
+                if (hoop_amp) for (int m = 0; m < 3; ++m) ring_into(hoop[m], hoopk[m], out + i, n);
+                knock_pass(out + i, n);
             }
-            // Each part costs nothing once it is still or switched off.
-            u32 f = inca;
-            if (blip.v > (1 << 20)) f += static_cast<u32>(mul(static_cast<i32>(inca), mul(F(0.35), blip.step())));
-            if (bung) f -= static_cast<u32>(mul(static_cast<i32>(f), mul(bung, full - bend.step())));
-            if (slosh_depth) {
-                slosh_on.step();
-                f += static_cast<u32>(mul(static_cast<i32>(f), vib));
-            }
-            air.ph += f;
-            i32 y = mul(air.level(), sine(air.ph));
-            if (slosh_am) y += mul(y, am);
-            for (int m = 0; m < 4; ++m) y += ring(wood[m], woodk[m], 0);
-            if (hoop_amp) for (int m = 0; m < 3; ++m) y += ring(hoop[m], hoopk[m], 0);
-            if (clk.v > 4096 || thud.v > 4096) {
-                const i32 n = noise(rng);
-                clk_lp += mul(clk_a, lev(n, clk.step()) - clk_lp);
-                thud_lp += mul(thud_a, lev(n, thud.step()) - thud_lp);
-            } else {
-                clk_lp -= clk_lp >> 6;
-                thud_lp -= thud_lp >> 6;
-            }
-            y += clk_lp + thud_lp;
-            out[i] = y;
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
+            if (c[7] > 0 && tap < 4 && t == at[tap]) { strike(sc(gain[tap], c[7]), true); ++tap; }
         }
+        t = t0 + frames;
     }
 };
 

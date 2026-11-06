@@ -147,6 +147,28 @@ inline i32 bp(Res& z, const ResK& k, i32 x) {
 }
 // Strikes a resonator with amplitude a (Q28): it rings as a r^n sin((n + 1) w).
 inline void strike(Res& z, const ResK& k, i32 a) { z.y1 += mul(a, k.s); }
+// A free resonator (no input) rung through n samples and added into y: the
+// same samples as ring(z, k, 0) each sample, its state held in registers,
+// two samples a turn so the last two outputs trade places.
+__attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) {
+    i32 a = z.y1, b = z.y2;   // the last output and the one before
+    const i32 c = k.c, r = k.r2;
+    if (n & 1) {
+        const i32 v = (mul(c, a) - mul(r, b)) << 1;
+        b = a;
+        a = v;
+        *y++ += v;
+    }
+    for (u32 j = 0; j < (n >> 1); ++j) {
+        b = (mul(c, a) - mul(r, b)) << 1;
+        y[0] += b;
+        a = (mul(c, b) - mul(r, a)) << 1;
+        y[1] += a;
+        y += 2;
+    }
+    z.y1 = a;
+    z.y2 = b;
+}
 
 // A one-pole low-pass's coefficient for a pitch: 1 - exp(-w), Q31.
 inline i32 pole(i32 lp) {
