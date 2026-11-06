@@ -152,7 +152,7 @@ struct Ice {
             ph += f;
             f += df;
             v = mul(v, k);
-            if (CURIO_UNLIKELY(a)) { a = mul(a, ka); if (a < 64) a = 0; }
+            a = mul(a, ka);   // the attack runs out on its own
             const i32 level = v - a;   // three quarters of the chirp's level (start)
             const i32 s = sine(ph);
             i32 o = mul(level, s);
@@ -217,7 +217,7 @@ struct Ice {
             ph += in;
             if (CURIO_UNLIKELY(bv > (1 << 24))) { bv = mul(bv, bk); ph += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.6), bv))); }
             v = mul(v, vk);
-            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            a = mul(a, ak);   // the attack runs out on its own
             const i32 x = mul(v - a, sine(ph));
             y[0] += (last >> 1) + (x >> 1);
             y[1] += x;
@@ -228,7 +228,7 @@ struct Ice {
             ph += in1;
             if (bv > (1 << 24)) { bv = mul(bv, blip.k); ph += static_cast<u32>(mul(static_cast<i32>(in1), mul(F(0.6), bv))); }
             v = mul(v, body.vk);
-            if (a) { a = mul(a, body.ak); if (a < 64 && a > -64) a = 0; }
+            a = mul(a, body.ak);
             const i32 x = mul(v - a, sine(ph));
             y[0] += x;
             last = x;
@@ -905,7 +905,7 @@ struct Spark {
             if (CURIO_LIKELY(v)) {
                 ph += in;
                 v = mul(v, vk);
-                if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+                a = mul(a, ak);   // the attack runs out on its own
                 y[j] += mul(v - a, sine(ph));
                 if (CURIO_UNLIKELY(v < 4096)) v = 0;
             }
@@ -1072,7 +1072,7 @@ struct Cork {
             fall = mul(fall, fk);
             ph += in - static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.3), fall)));
             v = mul(v, vk);
-            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            a = mul(a, ak);   // the attack runs out on its own
             y[j] += mul(v - a, sine(ph));
         }
         pop.ph = ph;
@@ -1113,7 +1113,7 @@ struct Cork {
                 rise += 190;   // 8 / 44100 each sample, Q20
                 ph += in + static_cast<u32>(mul(static_cast<i32>(in), rise << 11));
                 v = mul(v, vk);
-                if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+                a = mul(a, ak);   // the attack runs out on its own
                 y[j] += mul(v - a, sine(ph));
             }
         }

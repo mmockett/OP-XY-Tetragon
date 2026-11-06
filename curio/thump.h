@@ -33,7 +33,7 @@ static __attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n, u
         ph += in;
         p = table::sine + (ph >> 20);
         v = mul(v, vk);
-        if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+        a = mul(a, ak);   // the attack runs out on its own
         y[j] += mul(v - a, s);
     }
     o.ph = ph - in;
@@ -169,7 +169,7 @@ struct Ball {
             const i32 r = mul(sw, d) << 1;
             ph += in + static_cast<u32>(r);
             v = mul(v, vk);
-            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            a = mul(a, ak);   // the attack runs out on its own
             y[j] += mul(v - a, sine(ph));
             rise[j] = r;
         }
@@ -190,7 +190,7 @@ struct Ball {
             sw = mul(sw, swk);
             ph += in + (static_cast<u32>(mul(sw, d)) << 1);
             v = mul(v, vk);
-            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            a = mul(a, ak);   // the attack runs out on its own
             y[j] += mul(v - a, sine(ph));
         }
         o.ph = ph;
@@ -479,7 +479,7 @@ struct Cask {
         for (u32 j = 0; j < n; ++j) {
             ph += fb[j];
             v = mul(v, vk);
-            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            a = mul(a, ak);   // the attack runs out on its own
             i32 s = mul(v - a, sine(ph));
             if (am_on) s += mul(s, am);
             y[j] += s;
