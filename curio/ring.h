@@ -13,7 +13,7 @@ struct Glass {
     u32 rng, t;
     i32 c[8], tune;
     u32 ph[8], incs[8];
-    i32 v[4], k[4], amp[4];
+    i32 v[4], k[4], amp[4];   // each mode's level at the block's start, its decay over a block
     i32 click_gain;
     Res clickr, crackr, second[4];
     ResK clickk, crackk, secondk[4];
@@ -49,6 +49,7 @@ struct Glass {
             ph[2 * m] = ph[2 * m + 1] = 0;
             const u32 t60 = ex2(lg2(static_cast<u32>(t1)) - (lk[m] * 717 >> 10));   // / (k + 1)^0.7
             k[m] = decay60(t60);
+            for (int b = 0; b < 6; ++b) k[m] = mul(k[m], k[m]);   // a block's worth
             amp[m] = static_cast<i32>(ex2((28 << 12) - (lk[m] * (aex >> 2) >> 10)));   // (k + 1)^-aex, Q28; the doublet halves it
             v[m] = amp[m];
             // The second glass, a major third up: 0.6 of the decays and levels.
@@ -83,24 +84,33 @@ struct Glass {
     }
     bool waiting() const { return chink_at && t <= chink_at; }
     // The block in passes, each with its state in registers, split at the chink.
-    // A shell mode's beating doublet.
-    __attribute__((noinline)) void doublet_pass(int m, i32* y, u32 na, u32 nb) {
+    // A shell mode's beating doublet, two sines a split apart: their sum is
+    // one sine at their mean times the cosine of half their difference, a
+    // beat of a few hertz that moves only a little in a block. So each mode
+    // is one sine whose level (its decay, its beat and the water's slosh)
+    // is planned at the block's ends and glides between them.
+    __attribute__((noinline)) void doublet_pass(int m, i32* y, u32 na, u32 nb, i32 vib) {
         u32 pa = ph[2 * m], pb = ph[2 * m + 1];
-        i32 vm = v[m];
-        const i32 km = k[m];
-        for (u32 j = 0; j < frames; ++j) {
-            pa += na;
-            pb += nb;
-            vm = mul(vm, km);
-            y[j] += mul(vm, (sine(pa) >> 1) + (sine(pb) >> 1));
+        const u32 dn = nb - na, hd0 = (pb - pa) >> 1, hd1 = hd0 + (frames / 2) * dn;
+        u32 pc = pa + hd0;
+        const u32 nc = na + (dn >> 1);
+        const i32 v0 = v[m], v1 = mul(v0, k[m]);
+        i32 l0 = mul(v0, sine(hd0 + 0x40000000u)), l1 = mul(v1, sine(hd1 + 0x40000000u));
+        if (slosh) {
+            // The moving water swells and damps the ring as it sloshes.
+            l0 += mul(l0, vib) * 6;
+            l1 += mul(l1, vib) * 6;
         }
-        ph[2 * m] = pa;
-        ph[2 * m + 1] = pb;
-        v[m] = vm;
-    }
-    // The moving water swells and damps the ring as it sloshes.
-    __attribute__((noinline)) static void slosh_pass(i32* y, i32 vib) {
-        for (u32 j = 0; j < frames; ++j) y[j] += mul(y[j], vib) * 6;
+        const i32 dl = (l1 - l0) >> 6;
+        i32 l = l0;
+        for (u32 j = 0; j < frames; ++j) {
+            pc += nc;
+            l += dl;
+            y[j] += mul(l, sine(pc));
+        }
+        ph[2 * m] = pa + frames * na;
+        ph[2 * m + 1] = pb + frames * nb;
+        v[m] = v1;
     }
     __attribute__((noinline)) void noise_pass(i32* nb) {
         u32 r = rng;
@@ -165,8 +175,7 @@ struct Glass {
         for (int o = 0; o < 8; ++o) now[o] = incs[o] + static_cast<u32>(mul(static_cast<i32>(incs[o]), vib));
         const u32 rub_inc = rub.inc + static_cast<u32>(mul(static_cast<i32>(rub.inc), rubvib));
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
-        for (int m = 0; m < 4; ++m) doublet_pass(m, out, now[2 * m], now[2 * m + 1]);
-        if (slosh) slosh_pass(out, vib);
+        for (int m = 0; m < 4; ++m) doublet_pass(m, out, now[2 * m], now[2 * m + 1], vib);
         i32 nb[frames];
         noise_pass(nb);
         // Once under its floor a part stays there.
