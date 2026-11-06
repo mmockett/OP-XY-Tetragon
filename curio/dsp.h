@@ -19,6 +19,17 @@ const i32 full = 0x7fffffff;
 const u32 frames = opxy::block_frames;
 
 inline i32 mul(i32 a, i32 b) { return opxy::q31::multiply(a, b); }
+// x << 1 kept in a data register: left alone, the Blackfin compiler folds a
+// doubling and the add after it into the address unit, moving both through
+// P registers and stalling on them. The same bits either way.
+inline i32 twice(i32 x) {
+#if defined(__bfin__)
+    __asm__("%0 <<= 1;" : "+d"(x));
+    return x;
+#else
+    return x << 1;
+#endif
+}
 inline i32 clamp(i32 v, i32 low, i32 high) { return v < low ? low : v > high ? high : v; }
 inline i32 lo(i32 a, i32 b) { return a < b ? a : b; }
 inline i32 hi(i32 a, i32 b) { return a > b ? a : b; }

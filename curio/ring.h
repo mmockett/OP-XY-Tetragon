@@ -114,7 +114,7 @@ struct Glass {
         for (u32 j = 0; j < frames; ++j) {
             if (cv > 4096) {
                 const i32 in = mul(nb[j], b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;
@@ -138,7 +138,7 @@ struct Glass {
             if (cv > 4096) {
                 p += 8765280u;   // 90 Hz
                 const i32 in = mul(nb[j], b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;
@@ -279,7 +279,7 @@ struct BellJar {
         const i32 c = jark.c, r2 = jark.r2, g = jark.g, d = dry, ja = jar_amp;
         for (u32 j = 0; j < n; ++j) {
             const i32 x = y[j];
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(x, g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(x, g);
             y2 = y1;
             y1 = o;
             y[j] = lev(x, d) + lev(o, ja);
@@ -442,7 +442,7 @@ struct Chalk {
         const i32 c = gritk.c, r2 = gritk.r2, b = gritk.b, g = grit_gain, amp = grit_amp;
         for (u32 j = 0; j < sq; ++j) {
             const i32 in = mul(gb[j], b);
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
             x2 = x1;
             x1 = in;
             y2 = y1;
@@ -460,7 +460,7 @@ struct Chalk {
         const i32 c = slatek.c, r2 = slatek.r2, g = slatek.g;
         for (u32 j = 0; j < sq; ++j) {
             const i32 s = lev(wb[j], eb[j]);
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(s, g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(s, g);
             y2 = y1;
             y1 = o;
             y[j] += (s >> 1) + mul(o, F(0.9)) * 2;
@@ -483,7 +483,7 @@ struct Chalk {
         for (u32 j = 0; j < frames; ++j, ++tt) {
             if (dv > 4096 && tt * 10 > l7) {
                 const i32 in = mul(db[j], b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;
@@ -626,7 +626,7 @@ struct Roar {
         const i32 c = roark.c, r2 = roark.r2, b = roark.b, g = bp_gain;
         for (u32 j = 0; j < n; ++j) {
             const i32 in = mul(nb[j], b);
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
             x2 = x1;
             x1 = in;
             y2 = y1;
@@ -669,7 +669,7 @@ struct Roar {
         const i32 c = windk.c, r2 = windk.r2, b = windk.b, g = wind_gain, amp = wind_amp;
         for (u32 j = 0; j < n; ++j) {
             const i32 in = mul(nb[j], b);
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
             x2 = x1;
             x1 = in;
             y2 = y1;

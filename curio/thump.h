@@ -275,7 +275,7 @@ struct Ball {
             const i32 s = d >= lim ? U(0.99933) : d <= -lim ? -U(0.99933) : tanh(d << 7);
             y = mul(s, ud) << 1;
             const i32 in = mul(nb[j], b);
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
             x2 = x1;
             x1 = in;
             y2 = y1;
@@ -583,7 +583,7 @@ struct Stone {
             d = mul(d, k);
             if (d > 256) {
                 const i32 in = mul(nb[j], b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;

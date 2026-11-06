@@ -217,7 +217,7 @@ struct Cicada {
             ev = mul(ev, ek);
             if (ev > 4096) {
                 const i32 in = mul(sb[j], b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;
@@ -241,7 +241,7 @@ struct Cicada {
                 wv = mul(wv, wk);
                 av = mul(av, ak);
                 const i32 in = mul(wb[j], b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;
@@ -496,9 +496,9 @@ struct Pod {
         i32 y1 = z.y1, y2 = z.y2;
         const i32 c = k.c, r2 = k.r2, g = k.g;
         for (u32 j = 0; j < frames / 2; ++j) {   // two samples a turn: the states trade places
-            y2 = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(ib[0], g);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + mul(ib[0], g);
             y[0] += weighted ? mul(y2, w) : y2;
-            y1 = ((mul(c, y2) - mul(r2, y1)) << 1) + mul(ib[1], g);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + mul(ib[1], g);
             y[1] += weighted ? mul(y1, w) : y1;
             ib += 2;
             y += 2;
@@ -528,11 +528,11 @@ struct Pod {
         const i32 c = swk.c, r2 = swk.r2, b = swk.b, g = sw_gain, amp = sw_amp;
         for (u32 j = 0; j < frames; j += 2) {   // two samples a turn: the states trade places
             const i32 i0 = mul(sb[j], b);
-            y2 = ((mul(c, y1) - mul(r2, y2)) << 1) + i0 - x2;
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
             x2 = i0;
             y[j] += lev(gn(y2, g), lev(amp, (eb[j] >> 3) + (bb[j] >> 1)));
             const i32 i1 = mul(sb[j + 1], b);
-            y1 = ((mul(c, y2) - mul(r2, y1)) << 1) + i1 - x1;
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
             x1 = i1;
             y[j + 1] += lev(gn(y1, g), lev(amp, (eb[j + 1] >> 3) + (bb[j + 1] >> 1)));
         }
@@ -548,7 +548,7 @@ struct Pod {
         for (u32 j = 0; j < frames; ++j) {
             const u32 tt = t + j;
             if (tt > 2205 && tt < late_end) {
-                const i32 v = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(lb[j], g);
+                const i32 v = twice(mul(c, y1) - mul(r2, y2)) + mul(lb[j], g);
                 y2 = y1;
                 y1 = v;
                 y[j] += lev(gn(v, nm), ln);
@@ -638,7 +638,7 @@ struct Match {
             noise(r);
             const i32 slip = r < p ? one : 0;
             at = mul(at, ak);
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(slip, g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(slip, g);
             y2 = y1;
             y1 = o;
             y[j] = lev(gn(o, nm), lev(amp, (full - at) >> 3));
@@ -692,7 +692,7 @@ struct Match {
         const i32 c = flk.c, r2 = flk.r2, b = flk.b, g = fl_gain, amp = fl_amp;
         for (u32 j = 0; j < n; ++j) {
             const i32 in = mul(nb[j], b);
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
             x2 = x1;
             x1 = in;
             y2 = y1;
@@ -708,7 +708,7 @@ struct Match {
         i32 y1 = phos.y1, y2 = phos.y2;
         const i32 c = phosk.c, r2 = phosk.r2, g = phosk.g, amp = phos_amp;
         for (u32 j = 0; j < n; ++j) {
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(cb[j], g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(cb[j], g);
             y2 = y1;
             y1 = o;
             y[j] += lev(o, amp);

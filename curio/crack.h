@@ -188,7 +188,7 @@ struct Ice {
             const i32 l = lz[j];
             if (l) {
                 const i32 in = mul(zn[j], b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;
@@ -245,7 +245,7 @@ struct Ice {
                 i32 level = hv;
                 if (gv) { gv = mul(gv, gk); level += lev(level, gv); if (gv < 4096) gv = 0; }
                 const i32 in = mul(hn[j], b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;
@@ -510,17 +510,17 @@ struct Sheet {
         i32 a = z.y1, b = z.y2;   // the last output and the one before
         const i32 c = k.c, r = k.r2;
         if (n & 1) {
-            i32 v = (mul(c, a) - mul(r, b)) << 1;
+            i32 v = twice(mul(c, a) - mul(r, b));
             if (drive) v += lev(*x++, g);
             b = a;
             a = v;
             *y++ += v;
         }
         for (u32 j = 0; j < (n >> 1); ++j) {
-            b = (mul(c, a) - mul(r, b)) << 1;
+            b = twice(mul(c, a) - mul(r, b));
             if (drive) b += lev(x[0], g);
             y[0] += b;
-            a = (mul(c, b) - mul(r, a)) << 1;
+            a = twice(mul(c, b) - mul(r, a));
             if (drive) a += lev(x[1], g);
             y[1] += a;
             x += 2;
@@ -536,7 +536,7 @@ struct Sheet {
         for (u32 j = 0; j < n; ++j) {
             const i32 xj = x[j];
             if (xj) {
-                const i32 v = ((mul(c, y1) - mul(r, y2)) << 1) + lev(xj, g);
+                const i32 v = twice(mul(c, y1) - mul(r, y2)) + lev(xj, g);
                 y2 = y1;
                 y1 = v;
                 y[j] += v;
@@ -576,11 +576,11 @@ struct Sheet {
         const i32 c = ratk.c, r2 = ratk.r2, b = ratk.b;
         for (u32 j = 0; j < frames / 2; ++j) {
             const i32 i0 = mul(nb[0], b);
-            y2 = ((mul(c, y1) - mul(r2, y2)) << 1) + i0 - x2;
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
             x2 = i0;
             yb[0] += lev(y2, renv);
             const i32 i1 = mul(nb[1], b);
-            y1 = ((mul(c, y2) - mul(r2, y1)) << 1) + i1 - x1;
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
             x1 = i1;
             yb[1] += lev(y1, renv);
             nb += 2;
@@ -802,7 +802,7 @@ struct Spark {
                 bv = mul(bv, bk);
                 ba = mul(ba, ak);
                 const i32 in = mul(lev(noise(r), bv - ba), b);
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
                 y2 = y1;
@@ -849,7 +849,7 @@ struct Spark {
             if (tt <= last) lv += ramp;
             else lv = mul(lv, k);
             const i32 in = mul(ob[j], b);
-            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
             x2 = x1;
             x1 = in;
             y2 = y1;
@@ -1114,7 +1114,7 @@ struct Cork {
         const i32 fk = fizz.k, c = fzk.c, r2 = fzk.r2, g = fzk.g, a = fz_a;
         for (u32 j = 0; j < n; ++j) {
             if (fv > 4096) {
-                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(cb[j], g);
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(cb[j], g);
                 y2 = y1;
                 y1 = o;
                 hp += mul(a, o - hp);
