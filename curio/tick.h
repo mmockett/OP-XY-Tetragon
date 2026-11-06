@@ -48,7 +48,7 @@ struct Cicada {
         dsp::tune(shellk[s * 2], inc(lp), decay(tau));
         dsp::tune(shellk[s * 2 + 1], inc(lp + 2276), decay(static_cast<u32>(mul(static_cast<i32>(tau), F(0.68)))));   // 1.47
     }
-    void click(u32 who) {
+    __attribute__((noinline)) void click(u32 who) {
         const u32 k = kk[who];
         const int s = who ? 1 : 0;
         // The train falls up to 1.2 octaves by its last rib.
@@ -151,30 +151,110 @@ struct Cicada {
             band_gain_now = band_gain(lp, C(0.9));
             last_pos = pos;
         }
-        for (u32 i = 0; i < frames; ++i, ++t) {
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            // The next rib's click of any cicada in this block.
+            u32 e = frames;
             for (u32 w = 0; w < cicadas; ++w)
-                if (kk[w] < n && t == next_at[w]) click(w);
-            i32 y = 0;
-            y += ring(shell[0], shellk[0], 0) + ring(shell[1], shellk[1], 0);
-            if (cicadas > 1) y += ring(shell[2], shellk[2], 0) + ring(shell[3], shellk[3], 0);
-            const i32 e = env[0].step();
-            if (e > 4096) {
-                // The sizzle, driven into a soft clip: denser and less peaky,
-                // so a hat carries its loudness under the kit's ceiling.
-                const i32 sz = clamp(lev(lev(gn(bp(hi, hik, noise(rng)), band_gain_now), e), sizzle_level), -U(1.9), U(1.9));
-                y += tanh(sz << 1) >> 1;
-            }
-            if (tick.v > 4096) {
-                const i32 tk = lev(noise(rng), tick.step());
-                tick_lp += mul(tick_a, tk - tick_lp);
-                y += tk - tick_lp;
-            }
-            if (wing.v > 4096) {
-                const i32 wv = wing.step() - (wingatt.v = mul(wingatt.v, wingatt.k));
-                y += lev(gn(bp(wingr, wingk, noise(rng)), wing_gain), wv);
-            }
-            out[i] = y;
+                if (kk[w] < n) { const u32 d = next_at[w] - t0; if (d < e && d >= i) e = d; }
+            if (e > i) span(out + i, e - i);
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
+            clicks();
         }
+        t = t0 + frames;
+    }
+    // Each cicada whose rib clicks at t.
+    __attribute__((noinline)) void clicks() {
+        for (u32 w = 0; w < cicadas; ++w)
+            if (kk[w] < n && t == next_at[w]) click(w);
+    }
+    // n samples between clicks, each part in its own pass with its state in
+    // registers; the noise is drawn in the same order as ever.
+    __attribute__((noinline)) void span(i32* out, u32 n) {
+        i32 sb[frames], wb[frames];
+        ring_into(shell[0], shellk[0], out, n);
+        ring_into(shell[1], shellk[1], out, n);
+        if (cicadas > 1) {
+            ring_into(shell[2], shellk[2], out, n);
+            ring_into(shell[3], shellk[3], out, n);
+        }
+        noise_pass(out, sb, wb, n);
+        sizzle_pass(out, sb, n);
+        if (wing.v > 4096) wing_pass(out, wb, n);
+    }
+    // The tick, and the noise for the sizzle and the wing in draw order.
+    __attribute__((noinline)) void noise_pass(i32* y, i32* sb, i32* wb, u32 n) {
+        i32 ev = env[0].v, tv = tick.v, lp = tick_lp, wv = wing.v;
+        const i32 ek = env[0].k, tk = tick.k, ta = tick_a, wk = wing.k;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            ev = mul(ev, ek);
+            if (ev > 4096) sb[j] = noise(r);
+            if (tv > 4096) {
+                tv = mul(tv, tk);
+                const i32 x = lev(noise(r), tv);
+                lp += mul(ta, x - lp);
+                y[j] += x - lp;
+            }
+            if (wv > 4096) {
+                wv = mul(wv, wk);
+                wb[j] = noise(r);
+            }
+        }
+        tick.v = tv;
+        tick_lp = lp;
+        rng = r;
+    }
+    // The sizzle, driven into a soft clip: denser and less peaky, so a hat
+    // carries its loudness under the kit's ceiling.
+    __attribute__((noinline)) void sizzle_pass(i32* y, const i32* sb, u32 n) {
+        i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2, x1 = hi.x1, x2 = hi.x2;
+        const i32 ek = env[0].k, c = hik.c, r2 = hik.r2, b = hik.b, bg = band_gain_now, sl = sizzle_level;
+        for (u32 j = 0; j < n; ++j) {
+            ev = mul(ev, ek);
+            if (ev > 4096) {
+                const i32 in = mul(sb[j], b);
+                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                const i32 sz = clamp(lev(lev(gn(o, bg), ev), sl), -U(1.9), U(1.9));
+                y[j] += tanh(sz << 1) >> 1;
+            }
+        }
+        env[0].v = ev;
+        hi.y1 = y1;
+        hi.y2 = y2;
+        hi.x1 = x1;
+        hi.x2 = x2;
+    }
+    // The wing's flick.
+    __attribute__((noinline)) void wing_pass(i32* y, const i32* wb, u32 n) {
+        i32 wv = wing.v, av = wingatt.v, y1 = wingr.y1, y2 = wingr.y2, x1 = wingr.x1, x2 = wingr.x2;
+        const i32 wk = wing.k, ak = wingatt.k, c = wingk.c, r2 = wingk.r2, b = wingk.b, g = wing_gain;
+        for (u32 j = 0; j < n; ++j) {
+            if (wv > 4096) {
+                wv = mul(wv, wk);
+                av = mul(av, ak);
+                const i32 in = mul(wb[j], b);
+                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                y[j] += lev(gn(o, g), wv - av);
+            }
+        }
+        wing.v = wv;
+        wingatt.v = av;
+        wingr.y1 = y1;
+        wingr.y2 = y2;
+        wingr.x1 = x1;
+        wingr.x2 = x2;
     }
 };
 
