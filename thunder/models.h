@@ -652,7 +652,7 @@ __attribute__((noinline)) inline void crash_ring(Voice& v, i32* y, i32 damp, i32
         h2 += multiply(x - h2, k1);
         const i32 a = x - h2;
         h3 += multiply(a - h3, k1);
-        *y++ = multiply(a - h3, damp) << 3;
+        *y++ = multiply(a - h3, damp) << 2;   // (the full rate's held samples were twice the field's: 2 x 2)
     }
     v.op[2].s = h2;
     v.op[3].s = h3;
