@@ -626,37 +626,133 @@ struct Match {
         puff_a = pole(hz(250));
     }
     bool waiting() const { return t < ds; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            i32 y = 0;
-            if (t < ds) {
-                noise(rng);
-                const i32 slip = rng < slip_p ? one : 0;
-                sc_att = mul(sc_att, sc_attk);
-                const i32 s = ring(sc_, sck, mul(slip, sck.g));
-                y = lev(gn(s, sc_norm), lev(sc_amp, (full - sc_att) >> 3));
-            } else {
-                y = ring(sc_, sck, 0);
-                y = lev(gn(y, sc_norm), lev(sc_amp, (full - sc_att) >> 3));
-                const i32 env = fl_d.step() - (fl_a.v = mul(fl_a.v, fl_a.k));
-                const i32 n = noise(rng);
-                y += lev(lev(gn(bp(fl, flk, n), fl_gain), env >> 3), fl_amp);
-                if (phos_amp) {
-                    noise(rng);
-                    const i32 cr = rng < phos_p ? lev(noise(rng), env >> 3) : 0;
-                    y += lev(ring(phos, phosk, mul(cr, phosk.g)), phos_amp);
-                }
-                if (wood_amp) {
-                    wood_lp += mul(wood_a, n - wood_lp);
-                    y += lev(lev(wood_lp, env >> 3), wood_amp);
-                }
-                if (puff.v > 4096) {
-                    puff_lp += mul(puff_a, lev(n, puff.step()) - puff_lp);
-                    y += puff_lp;
-                }
-            }
-            out[i] = y;
+    // The block in passes, each with its state in registers, split where the
+    // draw ends; the noise is drawn in the same order as ever.
+    // The draw: the head stick-slips, ringing its squeal.
+    __attribute__((noinline)) void draw_pass(i32* y, u32 n) {
+        i32 at = sc_att, y1 = sc_.y1, y2 = sc_.y2;
+        const i32 ak = sc_attk, c = sck.c, r2 = sck.r2, g = sck.g, nm = sc_norm, amp = sc_amp;
+        const u32 p = slip_p;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            noise(r);
+            const i32 slip = r < p ? one : 0;
+            at = mul(at, ak);
+            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(slip, g);
+            y2 = y1;
+            y1 = o;
+            y[j] = lev(gn(o, nm), lev(amp, (full - at) >> 3));
         }
+        sc_att = at;
+        sc_.y1 = y1;
+        sc_.y2 = y2;
+        rng = r;
+    }
+    // The flare's envelope (an eighth, as the parts take it).
+    __attribute__((noinline)) void flare_pass(i32* eb, u32 n) {
+        i32 dv = fl_d.v, av = fl_a.v;
+        const i32 dk = fl_d.k, ak = fl_a.k;
+        for (u32 j = 0; j < n; ++j) {
+            dv = mul(dv, dk);
+            av = mul(av, ak);
+            eb[j] = (dv - av) >> 3;
+        }
+        fl_d.v = dv;
+        fl_a.v = av;
+    }
+    // The flame's noise, and the phosphorus's crackle, in draw order.
+    __attribute__((noinline)) void noise_pass(const i32* eb, i32* nb, i32* cb, u32 n) {
+        u32 r = rng;
+        const u32 p = phos_p;
+        const bool phos_on = phos_amp != 0;
+        for (u32 j = 0; j < n; ++j) {
+            nb[j] = noise(r);
+            if (phos_on) {
+                noise(r);
+                cb[j] = r < p ? lev(noise(r), eb[j]) : 0;
+            }
+        }
+        rng = r;
+    }
+    // The head's squeal ringing on after the draw.
+    __attribute__((noinline)) void squeal_pass(i32* y, u32 n) {
+        i32 y1 = sc_.y1, y2 = sc_.y2;
+        const i32 c = sck.c, r2 = sck.r2, nm = sc_norm, lv = lev(sc_amp, (full - sc_att) >> 3);
+        for (u32 j = 0; j < n; ++j) {
+            const i32 o = (mul(c, y1) - mul(r2, y2)) << 1;
+            y2 = y1;
+            y1 = o;
+            y[j] = lev(gn(o, nm), lv);
+        }
+        sc_.y1 = y1;
+        sc_.y2 = y2;
+    }
+    __attribute__((noinline)) void flame_pass(i32* y, const i32* eb, const i32* nb, u32 n) {
+        i32 y1 = fl.y1, y2 = fl.y2, x1 = fl.x1, x2 = fl.x2;
+        const i32 c = flk.c, r2 = flk.r2, b = flk.b, g = fl_gain, amp = fl_amp;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 in = mul(nb[j], b);
+            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            y[j] += lev(lev(gn(o, g), eb[j]), amp);
+        }
+        fl.y1 = y1;
+        fl.y2 = y2;
+        fl.x1 = x1;
+        fl.x2 = x2;
+    }
+    __attribute__((noinline)) void phos_pass(i32* y, const i32* cb, u32 n) {
+        i32 y1 = phos.y1, y2 = phos.y2;
+        const i32 c = phosk.c, r2 = phosk.r2, g = phosk.g, amp = phos_amp;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(cb[j], g);
+            y2 = y1;
+            y1 = o;
+            y[j] += lev(o, amp);
+        }
+        phos.y1 = y1;
+        phos.y2 = y2;
+    }
+    // The burning wood's roar under the flare, and the puff.
+    __attribute__((noinline)) void wood_pass(i32* y, const i32* eb, const i32* nb, u32 n) {
+        i32 wl = wood_lp, pl = puff_lp, pv = puff.v;
+        const i32 wa = wood_a, amp = wood_amp, pa = puff_a, pk = puff.k;
+        const bool wood_on = wood_amp != 0;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 x = nb[j];
+            if (wood_on) {
+                wl += mul(wa, x - wl);
+                y[j] += lev(lev(wl, eb[j]), amp);
+            }
+            if (pv > 4096) {
+                pv = mul(pv, pk);
+                pl += mul(pa, lev(x, pv) - pl);
+                y[j] += pl;
+            }
+        }
+        wood_lp = wl;
+        puff_lp = pl;
+        puff.v = pv;
+    }
+    void run(i32* out) {
+        // The draw's samples in this block, then the flame's.
+        const u32 d = t < ds ? (ds - t < frames ? ds - t : frames) : 0;
+        if (d) draw_pass(out, d);
+        if (d < frames) {
+            const u32 n = frames - d;
+            i32* y = out + d;
+            i32 eb[frames], nb[frames], cb[frames];
+            flare_pass(eb, n);
+            noise_pass(eb, nb, cb, n);
+            squeal_pass(y, n);
+            flame_pass(y, eb, nb, n);
+            if (phos_amp) phos_pass(y, cb, n);
+            if (wood_amp || puff.v > 4096) wood_pass(y, eb, nb, n);
+        }
+        t += frames;
     }
 };
 }
