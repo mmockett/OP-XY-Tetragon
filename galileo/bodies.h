@@ -139,7 +139,7 @@ const u32 ghosts = 32;
 struct Body {
     u32 model;
     i32 p[4];          // the controls prepared, Q31
-    u32 held;          // ghosts pending
+    u32 used;          // which ghost slots hold one (bit i: slot i)
     u32 seed;
     u32 count;         // strikes so far
     u32 now;           // samples since the note
@@ -486,7 +486,7 @@ inline bool keeps(u32 model) {
 // Clears everything that rings or counts, keeping what prepare() set: a fresh
 // note on a body prepared for the same model and controls.
 inline void clear_state(Body& b) {
-    b.held = b.count = b.now = 0;
+    b.used = b.count = b.now = 0;
     for (u32 i = 0; i < 2; ++i) {
         Skin& k = b.skin[i];
         for (u32 j = 0; j < 3; ++j) { k.ph[j] = 0; k.e[j].a = 0; }
@@ -504,19 +504,22 @@ inline void clear_state(Body& b) {
 
 // ----------------------------------------------------------------- strike --
 inline void add_ghost(Body& b, u32 at, i32 v) {
-    if (b.held >= ghosts) return;   // all taken: a strike past them is lost
-    if (!v) {                       // a silent one only marks its time
+    if (b.used == 0xffffffffu) return;   // all taken: a strike past them is lost
+    if (!v) {                            // a silent one only marks its time
         if (at < b.due) b.due = at;
         return;
     }
-    for (u32 i = 0; i < ghosts; ++i)
-        if (!b.ghost[i].v) {
-            b.ghost[i].at = at;
-            b.ghost[i].v = v;
-            ++b.held;
-            if (at < b.due) b.due = at;
-            return;
-        }
+    // The first free slot: the lowest clear bit, found in five halvings.
+    u32 free = ~b.used & (b.used + 1), i = 0;
+    if (!(free & 0xffffu)) { i += 16; free >>= 16; }
+    if (!(free & 0xffu)) { i += 8; free >>= 8; }
+    if (!(free & 0xfu)) { i += 4; free >>= 4; }
+    if (!(free & 0x3u)) { i += 2; free >>= 2; }
+    if (!(free & 0x1u)) i += 1;
+    b.ghost[i].at = at;
+    b.ghost[i].v = v;
+    b.used |= 1u << i;
+    if (at < b.due) b.due = at;
 }
 // The next ghost due, or 0xffffffff.
 inline u32 ghost_due(const Body& b) { return b.due; }
@@ -673,7 +676,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
             // A stroke drags the pawl over the teeth: 4 ms a tooth, closing up.
             const u32 teeth = static_cast<u32>(b.k[0]);
             const u32 span = 176 * teeth;
-            for (u32 q = 1; q < teeth && b.held < ghosts; ++q) {
+            for (u32 q = 1; q < teeth && b.used != 0xffffffffu; ++q) {
                 const i32 x = static_cast<i32>((q * table::reciprocal[teeth]) >> 1);       // q / teeth, Q15
                 const u32 at = (span * static_cast<u32>(dsp::power(x, GQ16(1.3)))) >> 15;
                 const i32 rise = GQ15(0.55) + dsp::m15(GQ15(0.45), static_cast<i32>((q * table::reciprocal[teeth - 1]) >> 1));
@@ -694,17 +697,23 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
 inline void strike_ghosts(Body& b, u32 n) {
     const u32 end = b.now + 15;
     if (b.due > end) return;
-    for (u32 i = 0; i < ghosts; ++i)
-        if (b.ghost[i].v && b.ghost[i].at <= end) {
-            const i32 v = b.ghost[i].v;
-            const u32 at = b.ghost[i].at & ~7u;
-            b.ghost[i].v = 0;
-            --b.held;
+    // One walk over the slots held, in order: the due strike, the rest give
+    // the next due. (A ghost's strike lays no ghosts.)
+    u32 due = 0xffffffffu;
+    for (u32 i = 0, m = b.used; m; ++i, m >>= 1) {
+        if (!(m & 1u)) continue;
+        Ghost& g = b.ghost[i];
+        if (g.at <= end) {
+            const i32 v = g.v;
+            const u32 at = g.at & ~7u;
+            g.v = 0;
+            b.used &= ~(1u << i);
             strike(b, v, 0, 0, n, true, at > b.now ? at - b.now : 0);
+        } else if (g.at < due) {
+            due = g.at;
         }
-    b.due = 0xffffffffu;
-    for (u32 i = 0; i < ghosts; ++i)
-        if (b.ghost[i].v && b.ghost[i].at < b.due) b.due = b.ghost[i].at;
+    }
+    b.due = due;
 }
 
 // -------------------------------------------------------------------- run --
