@@ -447,15 +447,6 @@ __attribute__((noinline)) inline void flick_rolloff(Voice& v, i32* out) {
     v.s[2] = last;
     v.s[3] = last2;
 }
-// Noise (x >> 4) through a ramp, doubled: the seed after.
-__attribute__((noinline)) inline u32 noise_ramped(i32* x, u32 seed, i32 e, i32 es) {
-    if (!seed) seed = 0x9e3779b9u;   // (noise's guard, once: xorshift never reaches zero)
-    for (u32 n = 0; n < frames; ++n, e += es) {
-        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-        *x++ = multiply(static_cast<i32>(seed) >> 4, e) << 1;
-    }
-    return seed;
-}
 __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     clear(w.aux);
     u32 seed = v.seed ? v.seed : 1u;
@@ -482,10 +473,12 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     }
     v.seed = seed;
     if (v.c_amount) {
+        // what lifts the chain: the flick's noise as the hand lets the sheet
+        // ring; the chain takes only its largest a block, which for a block
+        // of noise is all but its full scale at the block's start
         i32 lift;
-        const i32 ls = v.env[2].step(lift);
-        v.seed = noise_ramped(w.body, v.seed, lift, ls);
-        run_chain(v, w.body, out);
+        v.env[2].step(lift);
+        chain_most(v, multiply(U - (U >> 6), lift) << 1, out);
     }
     // the pickup's roll-off and the swing; the hat (quiet after its
     // high-passes) brought up to the others' working level by the last of them
