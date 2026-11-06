@@ -580,6 +580,9 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
     NoiseRun z;
     z.seed = v.seed;
     z.f1 = v.n1; z.cn = v.cn; z.g0 = v.r0;
+    // One band passes about twice the noise power of the two it replaced
+    // (a 12 dB slope where it was 24): 3 dB less keeps the burst's level.
+    z.cn.k = multiply(z.cn.k, q31(0.7071));
     z.ring = s.noise_ring;
     z.air = s.noise_air;
     u32 begin = 0;
@@ -616,6 +619,7 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
                 const i32 tone = s.noise_tone + (multiply(noise(z.seed), s.jitter) >> 15);
                 v.cn.set(strikes.last[i] && s.tail ? q_tone : s.noise_q, tone < lg(9000) ? tone : lg(9000));
                 z.cn = v.cn;
+                z.cn.k = multiply(z.cn.k, q31(0.7071));
             }
             if (strikes.last[i] && s.tail) nd = v.nd_tail;
         }
