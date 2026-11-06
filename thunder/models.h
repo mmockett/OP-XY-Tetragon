@@ -287,26 +287,83 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
     v.env[2].set(one, block_decay(ltau - octave));             // what lifts the chain
     setup_chain(v, Q16(0.02), Q16(0.8), log16(mul16(exp16(ltau), Q16(0.8)) + Q16(0.03)), L(3000), L(6000), c[5]);   // a sizzle chain, light: the flick is quiet
 }
+// FLICK's passes (noinline, their state in locals).
+// The flick: noise through its fall (or its sin^2 window) while it lasts.
+template <bool window>
+__attribute__((noinline)) inline u32 flick_excite(Voice& v, i32* exc, u32 seed) {
+    u32 left = v.u[0], ph = v.u[3];
+    const u32 pinc = v.u[2];
+    i32 fall = v.s[0];
+    const i32 k = v.k[0];
+    const u32 count = left < frames ? left : frames;
+    for (u32 n = 0; n < count; ++n) {
+        i32 e;
+        if (window) {
+            e = (one >> 1) - (sine(ph + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
+            ph += pinc;
+        } else {
+            e = fall;
+            fall = multiply(fall, k);
+        }
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        *exc++ = multiply(static_cast<i32>(seed) >> 4, e);
+    }
+    for (u32 n = count; n < frames; ++n) {   // past its end: the noise runs on, unheard
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        *exc++ = 0;
+    }
+    v.u[0] = left - count;
+    v.u[3] = ph;
+    v.s[0] = fall;
+    return seed;
+}
+// Three of the sizzle's six squares, each -1 or 0, summed into t (or added to it).
+template <bool add>
+__attribute__((noinline)) inline void flick_squares(u32* phase, const u32* inc, i32* t) {
+    u32 p0 = phase[0], p1 = phase[1], p2 = phase[2];
+    const u32 i0 = inc[0], i1 = inc[1], i2 = inc[2];
+    for (u32 n = 0; n < frames; ++n) {
+        p0 += i0; p1 += i1; p2 += i2;
+        const i32 q = (static_cast<i32>(p0) >> 31) + (static_cast<i32>(p1) >> 31) + (static_cast<i32>(p2) >> 31);
+        *t = add ? *t + q : q;
+        ++t;
+    }
+    phase[0] = p0; phase[1] = p1; phase[2] = p2;
+}
+// The squares (each +-1: no step at the start) and a noisy sizzle among them, high-passed three times.
+__attribute__((noinline)) inline u32 flick_sizzle(Voice& v, i32* t, u32 seed) {
+    i32 h4 = v.op[4].s, h5 = v.op[5].s, h6 = v.op[3].s;
+    const i32 k1 = v.k[1], kn = v.k[3];
+    for (u32 n = 0; n < frames; ++n) {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        const i32 x = *t * (U / 3 * 4) + U * 4 + multiply(static_cast<i32>(seed) >> 1, kn);
+        h4 += multiply(x - h4, k1);
+        const i32 a = x - h4;
+        h5 += multiply(a - h5, k1);
+        const i32 b = a - h5;
+        h6 += multiply(b - h6, k1);
+        *t++ = b - h6;
+    }
+    v.op[4].s = h4;
+    v.op[5].s = h5;
+    v.op[3].s = h6;
+    return seed;
+}
+// out += x k e h, e and h stepping by es and hs a sample.
+__attribute__((noinline)) inline void add_scaled(const i32* x, i32* out, i32 k, i32 e, i32 es, i32 h, i32 hs) {
+    for (u32 n = 0; n < frames; ++n, e += es, h += hs) *out++ += multiply(multiply(*x++, k), multiply(e, h));
+}
+// Noise (x >> 4) through a ramp, doubled: the seed after.
+__attribute__((noinline)) inline u32 noise_ramped(i32* x, u32 seed, i32 e, i32 es) {
+    for (u32 n = 0; n < frames; ++n, e += es) *x++ = multiply(noise(seed) >> 4, e) << 1;
+    return seed;
+}
 inline void block_flick(Voice& v, Work& w, i32* out) {
     clear(w.aux);
     u32 seed = v.seed ? v.seed : 1u;
     const bool flicking = v.u[0] != 0;
     if (flicking) {
-        for (unsigned i = 0; i < frames; ++i) {
-            i32 e = 0;
-            if (v.u[0]) {
-                if (v.u[1]) {
-                    e = (one >> 1) - (sine(v.u[3] + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
-                    v.u[3] += v.u[2];
-                } else {
-                    e = v.s[0];
-                    v.s[0] = multiply(v.s[0], v.k[0]);
-                }
-                --v.u[0];
-            }
-            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-            w.exc[i] = multiply(static_cast<i32>(seed) >> 4, e);
-        }
+        seed = v.u[1] ? flick_excite<true>(v, w.exc, seed) : flick_excite<false>(v, w.exc, seed);
     } else {
         clear(w.exc);
     }
@@ -315,7 +372,7 @@ inline void block_flick(Voice& v, Work& w, i32* out) {
     if (v.k[5] && !--v.k[5]) v.env[0].factor = v.k[6];
     const i32 hs = v.env[0].step(hand), ts = v.env[1].step(tick), zs = v.env[3].step(fizz);
     const i32 hand0 = hand;
-    const i32 k1 = v.k[1], k2 = v.k[2], kz = v.k[4];
+    const i32 k1 = v.k[1], k2 = v.k[2];
     i32 h0 = v.op[0].s, h1 = v.op[1].s;
     for (unsigned i = 0; i < frames; ++i, hand += hs) {
         // the ring, high-passed twice, as the hand damps it
@@ -337,34 +394,17 @@ inline void block_flick(Voice& v, Work& w, i32* out) {
     }
     if (multiply(fizz, hand0) > (1 << 16)) {
         // the densest modes: the sizzle, under the hand, high-passed three times
-        i32 h4 = v.op[4].s, h5 = v.op[5].s, h6 = v.op[3].s;
-        u32 p0 = v.u[10], p1 = v.u[11], p2 = v.u[12], p3 = v.u[13], p4 = v.u[14], p5 = v.u[15];
-        const u32 i0 = v.u[4], i1 = v.u[5], i2 = v.u[6], i3 = v.u[7], i4 = v.u[8], i5 = v.u[9];
-        i32 hd = hand0;
-        const i32 kn = v.k[3];
-        for (unsigned i = 0; i < frames; ++i, fizz += zs, hd += hs) {
-            p0 += i0; p1 += i1; p2 += i2; p3 += i3; p4 += i4; p5 += i5;
-            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-            const i32 n = ((static_cast<i32>(p0) >> 31) + (static_cast<i32>(p1) >> 31) + (static_cast<i32>(p2) >> 31) +
-                           (static_cast<i32>(p3) >> 31) + (static_cast<i32>(p4) >> 31) + (static_cast<i32>(p5) >> 31)) * (U / 3 * 4) + U * 4 +   // each square +-1: no step at the start
-                          multiply(static_cast<i32>(seed) >> 1, kn);
-            h4 += multiply(n - h4, k1);
-            const i32 a = n - h4;
-            h5 += multiply(a - h5, k1);
-            const i32 b = a - h5;
-            h6 += multiply(b - h6, k1);
-            out[i] += multiply(multiply(b - h6, kz), multiply(fizz, hd));
-        }
-        v.op[4].s = h4;
-        v.op[5].s = h5;
-        v.op[3].s = h6;
-        v.u[10] = p0; v.u[11] = p1; v.u[12] = p2; v.u[13] = p3; v.u[14] = p4; v.u[15] = p5;
+        i32 t[frames];
+        flick_squares<false>(v.u + 10, v.u + 4, t);
+        flick_squares<true>(v.u + 13, v.u + 7, t);
+        seed = flick_sizzle(v, t, seed);
+        add_scaled(t, out, v.k[4], fizz, zs, hand0, hs);
     }
     v.seed = seed;
     if (v.c_amount) {
         i32 lift;
         const i32 ls = v.env[2].step(lift);
-        for (unsigned i = 0; i < frames; ++i, lift += ls) w.body[i] = multiply(noise(v.seed) >> 4, lift) << 1;
+        v.seed = noise_ramped(w.body, v.seed, lift, ls);
         run_chain(v, w.body, out);
     }
     {
