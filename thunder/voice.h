@@ -199,12 +199,14 @@ inline u32 mode_tier(const Voice& v, u32 k, i32 m28, bool quarter) {
     if (!v.bend) peak += peak >> 4;   // a sheet that doesn't glide may wobble (SHAKE, by 4%)
     return quarter && peak <= quarter_top ? 0 : peak <= half_top ? 1 : 2;
 }
-inline void split_modes(Voice& v) {
+// quarter: whether the model may use the quarter-rate tier (CRASH keeps its
+// body at half rate, where it filters it).
+inline void split_modes(Voice& v, bool quarter_ok = true) {
     const i32 m28 = (1 << 28) + (v.bend > 0 ? v.bend : 0);
     // a quarter-rate tier of one mode would cost more than it saves: then none
     u32 low = 0;
     for (u32 k = 0; k < v.nmodes; ++k) low += mode_tier(v, k, m28, true) == 0;
-    const bool quarter = low >= 2;
+    const bool quarter = quarter_ok && low >= 2;
     Mode m[8];
     u32 n = 0;
     for (u32 pass = 0; pass < 3; ++pass) {
@@ -354,6 +356,26 @@ inline void run_modes(Voice& v, const i32* x, i32* out) {
         if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
         run_pair<frames, true>(a, b, x, out, drive != 0);
     }
+}
+
+// For a voice whose modes all run at half rate: their sound at half rate, as
+// it is, into y2 (32 values), for the model to filter there and bring up.
+inline void run_modes_half(Voice& v, const i32* x, i32* y2) {
+    const i32 drive = block_or(x);
+    Mode spare = {0, 0, 0, one, 0, 0};
+    const u32 nh = v.nhalf;
+    i32 x2[half];
+    if (drive) for (u32 i = 0; i < half; ++i) x2[i] = x[2 * i] + x[2 * i + 1];
+    bool sounding = false;
+    for (u32 k = 0; k < nh; k += 2) {
+        Mode& a = v.mode[k];
+        Mode& b = k + 1 < nh ? v.mode[k + 1] : spare;
+        if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
+        if (sounding) run_pair<half, true>(a, b, x2, y2, drive != 0);
+        else run_pair<half, false>(a, b, x2, y2, drive != 0);
+        sounding = true;
+    }
+    if (!sounding) for (u32 i = 0; i < half; ++i) y2[i] = 0;
 }
 
 // ------------------------------------------------------------ the high modes
