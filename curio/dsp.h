@@ -166,7 +166,7 @@ inline void strike(Res& z, const ResK& k, i32 a) { z.y1 += mul(a, k.s); }
 // A free resonator (no input) rung through n samples and added into y: the
 // same samples as ring(z, k, 0) each sample, its state held in registers,
 // two samples a turn so the last two outputs trade places.
-static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) {
+__attribute__((always_inline)) inline void ring_free(Res& z, const ResK& k, i32* y, u32 n) {
     i32 a = z.y1, b = z.y2;   // the last output and the one before
     const i32 c = k.c, r = k.r2;
     if (n & 1) {
@@ -184,6 +184,11 @@ static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i3
     }
     z.y1 = a;
     z.y2 = b;
+}
+static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) { ring_free(z, k, y, n); }
+// A bank of free resonators in one call, each rung in turn.
+static __attribute__((noinline)) inline void ring_bank(Res* z, const ResK* k, u32 count, i32* y, u32 n) {
+    for (u32 m = 0; m < count; ++m) ring_free(z[m], k[m], y, n);
 }
 
 // A one-pole low-pass's coefficient for a pitch: 1 - exp(-w), Q31.

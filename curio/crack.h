@@ -908,8 +908,7 @@ struct Spark {
         else if (snap.v > 4096) burst_pass<false>(y, sb, n);
         snap_pass(y, sb, n);
         if (glass_on) {
-            ring_into(glass[0], glassk[0], y, n);
-            ring_into(glass[1], glassk[1], y, n);
+            ring_bank(glass, glassk, 2, y, n);
         }
         ozone_pass(y, tt, n);
         if (c[4] > 0) arc_pass(y, tt, n);

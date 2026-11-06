@@ -187,9 +187,9 @@ struct Glass {
             const u32 d = chink_at - t;
             if (d < frames) {
                 for (int m = 0; m < 4; ++m) dsp::strike(second[m], secondk[m], lev(sec_amp[m], chink_amp));
-                for (int m = 0; m < 4; ++m) ring_into(second[m], secondk[m], out + d, frames - d);
+                ring_bank(second, secondk, 4, out + d, frames - d);
             } else if (t >= chink_at) {
-                for (int m = 0; m < 4; ++m) ring_into(second[m], secondk[m], out, frames);
+                ring_bank(second, secondk, 4, out, frames);
             }
         }
         t += frames;
@@ -305,7 +305,7 @@ struct BellJar {
             if (k < n) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
             if (e > i) {
                 const u32 m = e - i;
-                for (int q = 0; q < 4; ++q) ring_into(mode[q], modek[q], out + i, m);
+                ring_bank(mode, modek, 4, out + i, m);
                 click_pass(out + i, m);
                 ring_into(base, basek, out + i, m);
                 if (jar_amp) jar_pass(out + i, m);

@@ -182,12 +182,7 @@ struct Cicada {
     // n samples between clicks, each part in its own pass with its state in
     // registers; the noise is drawn in the same order as ever.
     __attribute__((noinline)) void span(i32* out, u32 n) {
-        ring_into(shell[0], shellk[0], out, n);
-        ring_into(shell[1], shellk[1], out, n);
-        if (cicadas > 1) {
-            ring_into(shell[2], shellk[2], out, n);
-            ring_into(shell[3], shellk[3], out, n);
-        }
+        ring_bank(shell, shellk, cicadas > 1 ? 4 : 2, out, n);
         // Each part, once under its floor, stays there until the next click.
         if (tick.v > 4096) tick_pass(out, n);
         sizzle_pass(out, n);
@@ -369,7 +364,7 @@ struct Ratchet {
             if (k < n) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
             if (e > i) {
                 const u32 m = e - i;
-                for (int s = 0; s < 3; ++s) ring_into(slat[s], slatk[s], out + i, m);
+                ring_bank(slat, slatk, 3, out + i, m);
                 ring_into(spring, springk, out + i, m);
                 ring_into(box, boxk, out + i, m);
                 tick_pass(out + i, m);

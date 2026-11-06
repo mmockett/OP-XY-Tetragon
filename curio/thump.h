@@ -521,8 +521,8 @@ struct Cask {
         pitch(fb, n, vib);
         if (slosh_am) air_pass<true>(h, fb, n, am);
         else air_pass<false>(h, fb, n, am);
-        for (int m = 0; m < 4; ++m) ring_into(wood[m], woodk[m], h, n);
-        if (hoop_amp) for (int m = 0; m < 3; ++m) ring_into(hoop[m], hoopk[m], h, n);
+        ring_bank(wood, woodk, 4, h, n);
+        if (hoop_amp) ring_bank(hoop, hoopk, 3, h, n);
     }
     // The half-rate parts back up to the full rate, each new sample halfway
     // between two.
@@ -816,7 +816,7 @@ struct Drip {
             if (wob) bubble_pass<true>(b, out, n, vib);
             else bubble_pass<false>(b, out, n, vib);
         }
-        for (int m = 0; m < 4; ++m) ring_into(basin[m], basink[m], out, n);
+        ring_bank(basin, basink, 4, out, n);
         splash_pass(out, n);
     }
     // A drop from the tap or an echo from the room at t.
