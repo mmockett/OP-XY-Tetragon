@@ -176,8 +176,13 @@ namespace syahi {
 // log2 of a positive integer, Q16 (a value of 0 counts as 1).
 static inline i32 log2u(u32 v) {
     if (!v) return 0;
+    // Normalise in five steps: shift the top set bit to bit 31.
     i32 whole = 31;
-    while (!(v & 0x80000000u)) { v <<= 1; --whole; }
+    if (!(v & 0xffff0000u)) { v <<= 16; whole -= 16; }
+    if (!(v & 0xff000000u)) { v <<= 8; whole -= 8; }
+    if (!(v & 0xf0000000u)) { v <<= 4; whole -= 4; }
+    if (!(v & 0xc0000000u)) { v <<= 2; whole -= 2; }
+    if (!(v & 0x80000000u)) { v <<= 1; whole -= 1; }
     // v is now 1.m in Q31: index the mantissa's top eight bits.
     const u32 index = (v >> 23) & 255u;
     const i32 frac = static_cast<i32>((v >> 7) & 0xffffu) << 15;

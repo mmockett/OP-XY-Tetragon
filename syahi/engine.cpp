@@ -97,8 +97,9 @@ inline void set_up(Voice& voice) {
 
 inline void begin_note(Voice& voice, Shared& shared) {
     Core& core = voice.core;
-    unsigned char* bytes = reinterpret_cast<unsigned char*>(&core);
-    for (unsigned i = 0; i < sizeof(Core); ++i) bytes[i] = 0;
+    static_assert(sizeof(Core) % 4 == 0 && alignof(Core) >= 4, "Core clears by words");
+    u32* words = reinterpret_cast<u32*>(&core);
+    for (unsigned i = 0; i < sizeof(Core) / 4; ++i) words[i] = 0;
     core.model = voice.next;
     const u32 serial = count_note(shared, identity(voice));
     const Variation hit = vary(serial, voice.human);
