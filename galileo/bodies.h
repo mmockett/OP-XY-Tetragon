@@ -128,7 +128,7 @@ const u32 ghosts = 32;
 struct Body {
     u32 model;
     i32 p[4];          // the controls prepared, Q31
-    u32 prepared;
+    u32 held;          // ghosts pending
     u32 seed;
     u32 count;         // strikes so far
     u32 now;           // samples since the note
@@ -180,7 +180,6 @@ inline void prepare(Body& b, u32 model, const i32* p) {
     using namespace kit;
     b.model = model;
     for (u32 i = 0; i < 4; ++i) b.p[i] = p[i];
-    b.prepared = 1;
     const i32 p0 = p[0], p1 = p[1], p2 = p[2], p3 = p[3];
     switch (model) {
     case kick: {   // tune, punch, decay, beater
@@ -467,10 +466,16 @@ inline void prepare(Body& b, u32 model, const i32* p) {
 
 // ----------------------------------------------------------------- strike --
 inline void add_ghost(Body& b, u32 at, i32 v) {
+    if (b.held >= ghosts) return;   // all taken: a strike past them is lost
+    if (!v) {                       // a silent one only marks its time
+        if (at < b.due) b.due = at;
+        return;
+    }
     for (u32 i = 0; i < ghosts; ++i)
         if (!b.ghost[i].v) {
             b.ghost[i].at = at;
             b.ghost[i].v = v;
+            ++b.held;
             if (at < b.due) b.due = at;
             return;
         }
@@ -620,7 +625,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
             // A stroke drags the pawl over the teeth: 4 ms a tooth, closing up.
             const u32 teeth = static_cast<u32>(b.k[0]);
             const u32 span = 176 * teeth;
-            for (u32 q = 1; q < teeth; ++q) {
+            for (u32 q = 1; q < teeth && b.held < ghosts; ++q) {
                 const i32 x = static_cast<i32>((q * table::reciprocal[teeth]) >> 1);       // q / teeth, Q15
                 const u32 at = (span * static_cast<u32>(dsp::power(x, GQ16(1.3)))) >> 15;
                 const i32 rise = GQ15(0.55) + dsp::m15(GQ15(0.45), static_cast<i32>((q * table::reciprocal[teeth - 1]) >> 1));
@@ -643,6 +648,7 @@ inline void strike_ghosts(Body& b, u32 n) {
         if (b.ghost[i].v && b.ghost[i].at <= b.now) {
             const i32 v = b.ghost[i].v;
             b.ghost[i].v = 0;
+            --b.held;
             strike(b, v, 0, 0, n, true);
         }
     b.due = 0xffffffffu;
