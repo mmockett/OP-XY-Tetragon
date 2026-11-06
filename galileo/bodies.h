@@ -232,9 +232,9 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         b.band[0].tune(dsp::mix(q16(1400), q16(4500), p3), -OCT(1.1));
         b.pc[0] = dsp::pole(q16(700));
         b.pc[1] = dsp::pole(q16(8500));
-        prepare_click(b.click[0], 500, 2500);
+        prepare_click(b.click[0], 500, 3000);                               // the stick, and the
         b.cg[0] = GQ28(0.2);
-        prepare_click(b.click[1], 2600, 3600);                              // the crack
+        prepare_click(b.click[1], 2600, 3000);                              // crack, through one high-pass
         b.cg[1] = GQ28(0.05) + multiply(GQ28(0.45), p3);
         b.g[0] = GQ28(1.1) - multiply(GQ28(0.45), p1);                       // head
         b.g[1] = multiply(GQ28(1.75), p1);                                   // wires
@@ -801,9 +801,61 @@ __attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restri
     c.e = e;
     c.hp.s = h;
 }
+// A click under unity gain (g < 1, Q28): the gain rides on the burst's level,
+// so the sample needs no scaling (n a whole number of grains).
+__attribute__((noinline)) void click_soft_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
+    i32 s = multiply(c.e, g28 << 3), h = c.hp.s;
+    const i32 r = c.r, cc = c.c;
+    u32 x = seed;
+    for (u32 i = 0; i < n; ++i) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        s = multiply(s, r);
+        const i32 in = multiply(static_cast<i32>(x), s) * 2;
+        h += multiply(in - h, cc);
+        out[i] = dsp::sat_add(out[i], in - h);
+    }
+    seed = x;
+    // Its own level, decayed the same way a grain at a time.
+    const i32 r16 = per_grain(r);
+    i32 e = c.e;
+    for (u32 g = 0; g < n; g += grain) e = multiply(e, r16);
+    if (e < 16 && h < 4096 && h > -4096) e = h = 0;
+    c.e = e;
+    c.hp.s = h;
+}
 // Idle, it costs nothing.
 inline void click_add(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
-    if (c.e || c.hp.s) click_run(c, seed, out, n, g28);
+    if (!c.e && !c.hp.s) return;
+    if (g28 < (1 << 28)) click_soft_run(c, seed, out, n, g28);
+    else click_run(c, seed, out, n, g28);
+}
+// Two clicks on one burst of noise and one high-pass (a's), each at its own
+// width and gain (Q28, under 1), added: n a whole number of grains.
+__attribute__((noinline)) void click_pair_run(dsp::Click& a, dsp::Click& b, u32& seed, i32* __restrict out, u32 n,
+                                              i32 ga28, i32 gb28) {
+    i32 sa = multiply(a.e, ga28 << 3), sb = multiply(b.e, gb28 << 3), h = a.hp.s;
+    const i32 ra = a.r, rb = b.r, c = a.c;
+    u32 x = seed;
+    for (u32 i = 0; i < n; ++i) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        sa = multiply(sa, ra);
+        sb = multiply(sb, rb);
+        const i32 in = multiply(static_cast<i32>(x), sa + sb) * 2;
+        h += multiply(in - h, c);
+        out[i] = dsp::sat_add(out[i], in - h);
+    }
+    seed = x;
+    // Their own levels, decayed the same way a grain at a time.
+    const i32 ra16 = per_grain(ra), rb16 = per_grain(rb);
+    i32 ea = a.e, eb = b.e;
+    for (u32 g = 0; g < n; g += grain) { ea = multiply(ea, ra16); eb = multiply(eb, rb16); }
+    if (ea < 16 && eb < 16 && h < 4096 && h > -4096) ea = eb = h = 0;
+    a.e = ea;
+    b.e = eb;
+    a.hp.s = h;
+}
+inline void click_pair_add(dsp::Click& a, dsp::Click& b, u32& seed, i32* __restrict out, u32 n, i32 ga28, i32 gb28) {
+    if (a.e || b.e || a.hp.s) click_pair_run(a, b, seed, out, n, ga28, gb28);
 }
 // Saturating a - b, for b never -2^31 (a product with a factor under 1).
 inline i32 sat_sub(i32 a, i32 b) { return dsp::sat_add(a, -b); }
@@ -982,8 +1034,8 @@ __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u3
         // The wires buzz with the head: noise, swelling with the head's swing.
         noise_band_add(b.env[0], b.seed, swing, b.band[0], b.pole[0], b.pc[0], out, b.g[1], count);
     }
-    click_add(b.click[0], b.seed, out, count, b.cg[0]);
-    click_add(b.click[1], b.seed, out, count, b.cg[1]);
+    // The stick's click and the crack: one burst of noise, one high-pass.
+    click_pair_add(b.click[0], b.click[1], b.seed, out, count, b.cg[0], b.cg[1]);
     knee_run(out, count, GQ28(1.2), GQ28(0.6), GQ28(1 / 0.6));
 }
 __attribute__((noinline)) inline void run_skins(Body& b, i32* __restrict out, u32 count) {   // tom, fill
