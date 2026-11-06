@@ -21,7 +21,7 @@ struct Tone {
 };
 // A tone at its own pitch through n samples, added into y: ph += inc and
 // y += level() sine(ph) each sample, its state held in registers.
-__attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n, u32 in) {
+static __attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n, u32 in) {
     // Each sample's table address is found a sample ahead, so the address
     // unit never waits on it.
     u32 ph = o.ph + in;
