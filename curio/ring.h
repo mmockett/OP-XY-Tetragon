@@ -422,7 +422,7 @@ struct Chalk {
             g = g + gs < F(0.8) ? g + gs : F(0.8);
             at = mul(at, ak);
             i32 env = full - at;
-            if (tt > l) env = mul(env, static_cast<i32>((end - tt) * fade_step));
+            if (CURIO_UNLIKELY(tt > l)) env = mul(env, static_cast<i32>((end - tt) * fade_step));
             fv = mul(fv, fk);
             eb[j] = mul(mul(env, gate), fv) >> 3;
         }
@@ -699,7 +699,7 @@ struct Roar {
         for (u32 j = 0; j < n; ++j, ++tt) {
             a = mul(a, k);
             i32 env = full - a;
-            if (tt > l) env = mul(env, static_cast<i32>((end - tt) * fade_step));
+            if (CURIO_UNLIKELY(tt > l)) env = mul(env, static_cast<i32>((end - tt) * fade_step));
             y[j] = mul(mul(y[j], am), env);
         }
         att = a;

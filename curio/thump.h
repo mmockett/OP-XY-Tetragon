@@ -284,7 +284,7 @@ struct Ball {
             f += mul(fa, m - f);
             const i32 d = mul(y, dr);                    // y g / 128
             const i32 lim = 1 << 23;                     // g y > 4
-            const i32 s = d >= lim ? U(0.99933) : d <= -lim ? -U(0.99933) : tanh(d << 7);
+            const i32 s = CURIO_LIKELY(d < lim && d > -lim) ? tanh(d << 7) : d >= lim ? U(0.99933) : -U(0.99933);
             y = mul(s, ud) << 1;
             const i32 in = mul(nb[j], b);
             const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;

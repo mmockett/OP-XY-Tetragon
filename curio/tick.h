@@ -204,7 +204,7 @@ struct Cicada {
         for (u32 j = 0; j < n; ++j) {
             ev = mul(ev, ek);
             if (CURIO_LIKELY(ev > 4096)) sb[j] = noise(r);
-            if (tv > 4096) {
+            if (CURIO_UNLIKELY(tv > 4096)) {
                 tv = mul(tv, tk);
                 const i32 x = lev(noise(r), tv);
                 lp += mul(ta, x - lp);
@@ -506,7 +506,7 @@ struct Pod {
             const u32 p = (static_cast<u32>(mul(rp, mul(eb[j], pi) << 1)) << 1) +
                           (static_cast<u32>(mul(rp, bb[j])) << 3);   // up to 1.7 times the shake's rate
             i32 imp = 0;
-            if (r < p) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r));   // 0.5 .. 1.5
+            if (CURIO_UNLIKELY(r < p)) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r));   // 0.5 .. 1.5
             ib[j] = imp;
             sb[j] = noise(r);
             if (scatter && tt > 2205 && tt < late_end) {
@@ -719,7 +719,7 @@ struct Match {
             nb[j] = noise(r);
             if (phos_on) {
                 noise(r);
-                cb[j] = r < p ? lev(noise(r), eb[j]) : 0;
+                cb[j] = CURIO_UNLIKELY(r < p) ? lev(noise(r), eb[j]) : 0;
             }
         }
         rng = r;

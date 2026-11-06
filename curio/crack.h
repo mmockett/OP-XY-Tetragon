@@ -153,7 +153,7 @@ struct Ice {
             const i32 level = v - a;   // three quarters of the chirp's level (start)
             const i32 s = sine(ph);
             i32 o = mul(level, s);
-            if (band && zon) {
+            if (band && CURIO_LIKELY(zon)) {
                 // Unit RMS at 2 kHz as the band-pass had, 0.35 of the tone.
                 zl += mul(zk, noise(zr) - zl);
                 o += lev(gn(mul(zl, s), 459000), level);   // 15 x 0.35 / 0.75, Q16
@@ -233,10 +233,10 @@ struct Ice {
         if (hv <= 4096) return;   // until the next echo
         for (u32 j = 0; j < n; ++j) {
             if (CURIO_LIKELY(hv > 4096)) {
-                if (gt[j]) gv = one;
+                if (CURIO_UNLIKELY(gt[j])) gv = one;
                 hv = mul(hv, hk);
                 i32 level = hv;
-                if (gv) { gv = mul(gv, gk); level += lev(level, gv); if (gv < 4096) gv = 0; }
+                if (CURIO_LIKELY(gv)) { gv = mul(gv, gk); level += lev(level, gv); if (CURIO_UNLIKELY(gv < 4096)) gv = 0; }
                 const i32 in = mul(hn[j], b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
@@ -780,13 +780,13 @@ struct Spark {
     // cracks; the noise is drawn in the same order as ever.
     // The burst of band noise (it rings on while its band does), and the
     // noise for the snap and the ozone in draw order.
-    __attribute__((noinline)) void burst_pass(i32* y, i32* sb, i32* ob, u32 n) {
+    template <bool bursting> __attribute__((noinline)) void burst_pass(i32* y, i32* sb, i32* ob, u32 n) {
         i32 bv = burst.v, ba = batt, y1 = burstr.y1, y2 = burstr.y2, x1 = burstr.x1, x2 = burstr.x2;
         i32 sv = snap.v;   // the snap's draws stop as it falls quiet, as its own pass's do
         const i32 bk = burst.k, ak = bak, c = bpk.c, r2 = bpk.r2, b = bpk.b, g = bgain, sk = snap.k;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (bv > 4096 || y1 > 4096 || y1 < -4096) {
+            if (bursting && CURIO_LIKELY(bv > 4096 || y1 > 4096 || y1 < -4096)) {
                 bv = mul(bv, bk);
                 ba = mul(ba, ak);
                 const i32 in = mul(lev(noise(r), bv - ba), b);
@@ -797,7 +797,7 @@ struct Spark {
                 y1 = o;
                 y[j] += gn(o, g);
             }
-            if (sv > 4096) {
+            if (CURIO_UNLIKELY(sv > 4096)) {
                 sv = mul(sv, sk);
                 sb[j] = spiky(r);
             }
@@ -904,7 +904,9 @@ struct Spark {
     __attribute__((noinline)) void span(i32* y, u32 tt, u32 n) {
         i32 sb[frames], ob[frames];
         for (u32 j = 0; j < n; ++j) y[j] = 0;
-        burst_pass(y, sb, ob, n);
+        // The burst, once quiet with its band rung out, stays so until the next crack.
+        if (burst.v > 4096 || burstr.y1 > 4096 || burstr.y1 < -4096) burst_pass<true>(y, sb, ob, n);
+        else burst_pass<false>(y, sb, ob, n);
         snap_pass(y, sb, n);
         if (glass_on) {
             ring_into(glass[0], glassk[0], y, n);
