@@ -146,10 +146,13 @@ jobs:
           path: keep/
 
   # The counted build: the pinned Blackfin tools have reviewed downloads for
-  # macOS arm64 and Windows only, so one macOS job cross-compiles base and head.
+  # macOS arm64 and Windows only; Windows runners are the easier to get.
   elf:
     needs: plan
-    runs-on: macos-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -169,11 +172,11 @@ jobs:
           key: toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('open-xy/profiles/toolchains.json') }}
       - name: Pinned Blackfin tools
         working-directory: open-xy
-        run: python3 sdk.py toolchain fetch
+        run: python sdk.py toolchain fetch
       - name: Cross-compile base and head
         run: |
           for side in base head; do for kit in $KITS; do
-            python3 head/tools/golden/golden.py bfin --kit "$side/$kit" --sdk open-xy --tools open-xy/local/toolchain/bin --out "out/$side/$kit"
+            python head/tools/golden/golden.py bfin --kit "$side/$kit" --sdk open-xy --tools open-xy/local/toolchain/bin --out "out/$side/$kit"
           done; done
       - uses: actions/upload-artifact@v4
         with:
@@ -200,7 +203,7 @@ jobs:
       - name: Build the simulator
         if: steps.sim.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update > /dev/null && sudo apt-get install -y libgmp-dev libmpfr-dev zlib1g-dev texinfo > /dev/null
+          sudo apt-get update > /dev/null && sudo apt-get install -y libgmp-dev libmpfr-dev zlib1g-dev libreadline-dev texinfo > /dev/null
           tools/golden/build_sim.sh "$GDB_VERSION" sim
       - uses: actions/download-artifact@v4
         with:
