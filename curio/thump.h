@@ -22,16 +22,21 @@ struct Tone {
 // A tone at its own pitch through n samples, added into y: ph += inc and
 // y += level() sine(ph) each sample, its state held in registers.
 __attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n, u32 in) {
-    u32 ph = o.ph;
+    // Each sample's table address is found a sample ahead, so the address
+    // unit never waits on it.
+    u32 ph = o.ph + in;
+    const opxy::i16* p = table::sine + (ph >> 20);
     i32 v = o.v, a = o.a;
     const i32 vk = o.vk, ak = o.ak;
     for (u32 j = 0; j < n; ++j) {
+        const i32 s = static_cast<i32>(*p) << 16;
         ph += in;
+        p = table::sine + (ph >> 20);
         v = mul(v, vk);
         if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
-        y[j] += mul(v - a, sine(ph));
+        y[j] += mul(v - a, s);
     }
-    o.ph = ph;
+    o.ph = ph - in;
     o.v = v;
     o.a = a;
 }
