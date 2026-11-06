@@ -33,7 +33,8 @@ struct Cicada {
     i32 tuned[2];       // the pitch each shell is tuned to now
     Res shell[4];       // the main's two, the swarm's two
     ResK shellk[4];
-    i32 q, lq;
+    i32 q, lq, lq9;     // log2 of the shell's quality and of the sizzle band's (0.9), less 12 octaves
+    i32 slide, slide_step;   // the sizzle's place along the train (Q31) and its step a block
     Env env[2];
     i32 tone_amp, sizzle_amp, tone_norm, sizzle_norm;
     Res hi, lo, wingr;
@@ -119,6 +120,7 @@ struct Cicada {
         lcf[1] = dsp::lo(lcf[0] + mul(jitter(rng), F(0.3)), hz(12000));
         q = C(2.0) + sc(C(28.0), pw(c[3], C(1.5)));
         lq = lg2(static_cast<u32>(q)) - (12 << 12) + 74875;   // log2 of q / pi, us, less the pitch: each click's shell
+        lq9 = lg2(static_cast<u32>(C(0.9))) - (12 << 12);
         chirp = c[5];
         for (int s = 0; s < 4; ++s) shell[s] = Res();
         tuned[0] = tuned[1] = -(1 << 30);   // nothing yet
@@ -130,6 +132,8 @@ struct Cicada {
         env[0].k = env[1].k = decay(static_cast<u32>(tl));
         // The train's length, for the sizzle's slide.
         len = static_cast<i32>(static_cast<u32>(period) * n >> 8) + 1323;
+        slide = 0;
+        slide_step = static_cast<i32>((static_cast<u32>(frames) << 15) / static_cast<u32>(len)) << 16;   // a block's share of the train
         // The prototype scales tone and sizzle each to a peak of 1: the
         // tone's ring by the overlap of rings, the sizzle by its envelope's
         // pile-up over the train (1 / (1 - exp(-1 / (tl rate))), at most n).
@@ -183,15 +187,23 @@ struct Cicada {
         return false;
     }
     void run(i32* out) {
-        // The sizzle slides from the high band to the low one as the train falls.
-        const i32 pos = n > 1 ? mul(t >= static_cast<u32>(len) ? full : static_cast<i32>((static_cast<u32>(t) << 15) / static_cast<u32>(len)) << 16, chirp << 19)
-                              : sc(F(0.5), chirp);
+        // The sizzle slides from the high band to the low one as the train
+        // falls: its place along the train steps on a block at a time.
+        i32 pos;
+        if (n > 1) {
+            pos = mul(slide, chirp << 19);
+            slide = slide < full - slide_step ? slide + slide_step : full;
+        } else {
+            pos = sc(F(0.5), chirp);
+        }
         // One band slides from 1.15 to 0.55 of the shell (the prototype
-        // crossfaded two), retuned once a block while the train falls.
+        // crossfaded two), retuned once a block while the train falls, its
+        // quality's log worked out at the strike and its sin and cos read
+        // from the sine table.
         if (pos != last_pos || !band_gain_now) {
             const i32 lp = lcf[0] + 826 - mul(4359, pos);
-            band(hik, lp, C(0.9));
-            band_gain_now = band_gain(lp, C(0.9));
+            tune_quick(hik, inc(lp), decay(ex2(lq9 - lp + 74875)));
+            band_gain_now = static_cast<i32>(ex2(((56431 + lq9 - lp) >> 1) + (16 << 12)));
             last_pos = pos;
         }
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
