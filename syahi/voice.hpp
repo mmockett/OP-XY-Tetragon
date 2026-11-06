@@ -761,7 +761,9 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     }
     // The wash, the noise and the rattle, a sample at a time.
     const Spec& s = v.spec;
-    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < 40);
+    // The burst runs on 4 blocks after it falls quiet for its band to settle,
+    // 40 when it also rings a mode (a narrow resonance takes that long).
+    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < (s.noise_ring ? 40u : 4u));
     const bool rattling = s.wires > 0 || v.tilt;   // METAL always passes through: its tilt is there
     // The wash and the noise add to the head; the wires then follow all of it.
     if (metal_wash) {
