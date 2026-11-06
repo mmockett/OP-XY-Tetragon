@@ -238,7 +238,9 @@ struct Cicada {
                 x1 = in;
                 y2 = y1;
                 y1 = o;
-                const i32 sz = clamp(lev(lev(gn(o, bg), ev), sl), -U(1.9), U(1.9));
+                i32 sz = lev(lev(gn(o, bg), ev), sl);   // held within +-1.9
+                if (CURIO_UNLIKELY(sz > U(1.9))) sz = U(1.9);
+                if (CURIO_UNLIKELY(sz < -U(1.9))) sz = -U(1.9);
                 y[j] += tanh(sz << 1) >> 1;
             }
         }

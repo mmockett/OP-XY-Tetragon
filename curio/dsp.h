@@ -197,12 +197,13 @@ inline i32 pole(i32 lp) {
 
 // A soft clip: tanh, for x Q28 at unit drive; its output is Q28.
 inline i32 tanh(i32 x) {
-    const i32 m = x < 0 ? -x : x;
-    if (m >= (4 << 28)) return x < 0 ? -(table::tanh[256] << 13) : table::tanh[256] << 13;
+    const i32 sg = x >> 31;           // -1 below zero: (v ^ sg) - sg is v or -v without a branch
+    const i32 m = (x ^ sg) - sg;
+    if (CURIO_UNLIKELY(m >= (4 << 28))) return ((table::tanh[256] << 13) ^ sg) - sg;
     const u32 i = static_cast<u32>(m) >> 22, r = (static_cast<u32>(m) >> 14) & 255u;
     const i32 a = table::tanh[i], b = table::tanh[i + 1];
     const i32 y = (a << 13) + (((b - a) * static_cast<i32>(r)) << 5);
-    return x < 0 ? -y : y;
+    return (y ^ sg) - sg;
 }
 }
 }
