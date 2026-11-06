@@ -429,7 +429,7 @@ static inline void advance(Partial& m, u32 count) {
 // in u32. With `ramp` the pending strike ramps in along r; with `metal` the
 // unit sine is kept for the wash.
 template <bool ramp, bool metal>
-__attribute__((noinline)) static void run_mode(Partial& a, i32* __restrict out, i32* __restrict sa, const i32* __restrict r,
+__attribute__((noinline)) static void run_mode(Partial& a, i32* __restrict out, i16* __restrict sa, const i32* __restrict r,
                                               u32 begin, u32 count) {
     const i16* const table = tables::sine;
     u32 pa = a.phase + a.inc, ia = a.inc + static_cast<u32>(a.dinc);
@@ -439,13 +439,14 @@ __attribute__((noinline)) static void run_mode(Partial& a, i32* __restrict out, 
     const i16* ta = table + (pa >> 18);
     i32* o = out + begin;
     const i32* rr = r + begin;
-    i32* qa = metal ? sa + begin : nullptr;
+    i16* qa = metal ? sa + begin * head_modes : nullptr;
     for (u32 n = 0; n < count; ++n) {
-        const i32 xa = static_cast<i32>(*ta) << 16;
+        const i16 t = *ta;
+        const i32 xa = static_cast<i32>(t) << 16;
         pa += ia;
         ia += da;
         ta = table + (pa >> 18);
-        if (metal) qa[n] = xa;
+        if (metal) { *qa = t; qa += head_modes; }
         o[n] += ramp ? multiply(ga + multiply(ea, rr[n]), xa) : multiply(ga, xa);
         ga += dga;
     }
@@ -456,10 +457,11 @@ static inline bool quiet(const Partial& m) {
 }
 
 
-// Scratch for the wash: each mode's unit sine through the block. Voices render
-// one at a time, so they share it.
+// Scratch for the wash: each mode's sine (the table's word) through the
+// block, sample by sample. Voices render one at a time, so they share it.
 struct Scratch {
-    i32 sines[head_modes][64];
+    i16 sines[64][head_modes];
+    i16 spare[64][head_modes];   // keeps Shared at its declared size (definition.json)
 };
 
 // Three passes after the modes, each a tight loop with its state held in
@@ -476,6 +478,19 @@ static inline void wash_envelopes(Core& v, const Strikes& strikes) {
     const i32 flowing = multiply(v.pair_in, v.pair_flow);
     v.pair_in -= flowing;
     for (u32 j = 0; j < wash_pairs; ++j) v.pair[j] = multiply(v.pair[j], v.pair_decay[j]) + flowing;
+}
+// The wash pairs' products and square-wave products, from the modes' table
+// words: two unit sines' product is a * b * 2 exactly.
+__attribute__((noinline)) static void wash_products(const i16* __restrict q, i32* __restrict w, i32 e0, i32 e1, i32 e2,
+                                                    i32 e3, i32 e4, i32 e5) {
+    for (u32 n = 0; n < 64; ++n) {
+        i32 x = multiply((q[0] * q[3]) << 1, e0) + multiply((q[1] * q[5]) << 1, e1);
+        x += multiply((q[2] * q[6]) << 1, e2) + multiply((q[4] * q[7]) << 1, e3);
+        x += (q[0] ^ q[2]) < 0 ? -e4 : e4;
+        x += (q[3] ^ q[6]) < 0 ? -e5 : e5;
+        w[n] = x;
+        q += head_modes;
+    }
 }
 __attribute__((noinline)) static void wash_pass(Core& v, const Scratch& scratch, i32* __restrict out) {
     const i32* end = v.pair;
@@ -494,22 +509,18 @@ __attribute__((noinline)) static void wash_pass(Core& v, const Scratch& scratch,
     wash_gain += multiply(wash_gain, v.wash_lift);
     // Noise in the wash, as loud as modes 1 and 4 together and as dense: 0.7 x a unit normal.
     const i32 hiss = multiply(multiply((v.part[1].u + v.part[4].u) >> 1, q31(0.7 * 1.732 / 2)), dense << 2) << 1;
-    const i32 *s0 = scratch.sines[0], *s1 = scratch.sines[1], *s2 = scratch.sines[2], *s3 = scratch.sines[3];
-    const i32 *s4 = scratch.sines[4], *s5 = scratch.sines[5], *s6 = scratch.sines[6], *s7 = scratch.sines[7];
     // The pairs' envelopes held through the block, at its middle: they move slowly.
     const i32 e0 = e[0] + (de[0] << 5), e1 = e[1] + (de[1] << 5), e2 = e[2] + (de[2] << 5), e3 = e[3] + (de[3] << 5);
     const i32 e4 = (e[4] + (de[4] << 5)) >> 1, e5 = (e[5] + (de[5] << 5)) >> 1;
+    i32 w[64];
+    wash_products(&scratch.sines[0][0], w, e0, e1, e2, e3, e4, e5);
     u32 seed = v.seed;
     Chamberlin high = v.xh;
     i32 low = v.wash_low;
     const i32 c = v.wash_c;
     for (u32 n = 0; n < 64; ++n) {
-        i32 w = multiply(multiply(s0[n], s3[n]), e0) + multiply(multiply(s1[n], s5[n]), e1)
-              + multiply(multiply(s2[n], s6[n]), e2) + multiply(multiply(s4[n], s7[n]), e3);
-        w += (s0[n] ^ s2[n]) < 0 ? -e4 : e4;
-        w += (s3[n] ^ s6[n]) < 0 ? -e5 : e5;
-        w += multiply(noise(seed), hiss) << 1;
-        low += multiply(high.highpass(w) - low, c);
+        const i32 x = w[n] + (multiply(noise(seed), hiss) << 1);
+        low += multiply(high.highpass(x) - low, c);
         out[n] += multiply(low, wash_gain) << 3;
     }
     v.seed = seed;
@@ -657,7 +668,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
         if (!strikes.count && quiet(m)) {
             skip(m, 64);
-            if (metal_wash) for (u32 n = 0; n < 64; ++n) scratch.sines[k][n] = 0;
+            if (metal_wash) for (u32 n = 0; n < 64; ++n) scratch.sines[n][k] = 0;
             continue;
         }
         live[lives++] = k;
@@ -669,7 +680,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
             if (end > begin)
                 for (u32 j = 0; j < lives; ++j) {
                     Partial& a = v.part[live[j]];
-                    i32* sa = scratch.sines[live[j]];
+                    i16* sa = &scratch.sines[0][live[j]];
                     const bool rp = ramping && a.pe;
                     if (metal_wash) {
                         if (rp) run_mode<true, true>(a, out, sa, r, begin, end - begin);
