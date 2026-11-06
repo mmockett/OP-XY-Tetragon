@@ -547,7 +547,7 @@ __attribute__((noinline)) inline i32 field_mix2(const i32* r, const i32* x, i32*
 // own, then the four are mixed and written back.
 // x: the block's input at half rate, at the lines' scale (field_input's), or
 // none (drive false).
-inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
+__attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
     if (!drive && !v.dpos) {
         // with nothing driving it, stop once it has rung down for longer than
         // its longest line (fixed point would otherwise keep it circling just
@@ -611,14 +611,14 @@ inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
     if (drive) field_input(in, x, v.fin);
     field_run(v, x, drive != 0, out, level);
 }
+__attribute__((noinline)) inline void field_scale(i32* x, i32 gin) {
+    for (u32 i = 0; i < half; ++i) x[i] = multiply(x[i], gin) << 7;
+}
 // The same for an input made at half rate: x (at the input's scale, as a
 // block's pairs summed would be) is scaled to the lines' in place.
 inline void run_field_half(Voice& v, i32* x, bool drive, i32* out, i32 level) {
     if (!v.fon) return;
-    if (drive) {
-        const i32 gin = v.fin;
-        for (u32 i = 0; i < half; ++i) x[i] = multiply(x[i], gin) << 7;
-    }
+    if (drive) field_scale(x, v.fin);
     field_run(v, x, drive, out, level);
 }
 
