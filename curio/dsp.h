@@ -260,7 +260,9 @@ inline i32 tanh(i32 x) {
     if (CURIO_UNLIKELY(m >= (4 << 28))) return ((table::tanh[256] << 13) ^ sg) - sg;
     const u32 i = static_cast<u32>(m) >> 22, r = (static_cast<u32>(m) >> 14) & 255u;
     const i32 a = table::tanh[i], b = table::tanh[i + 1];
-    const i32 y = (a << 13) + (((b - a) * static_cast<i32>(r)) << 5);
+    // (b - a) r as a fractional multiply, exact here (the product is under
+    // 2^18): a cycle where an integer multiply takes three.
+    const i32 y = (a << 13) + (mul((b - a) << 16, static_cast<i32>(r) << 15) << 5);
     return (y ^ sg) - sg;
 }
 }
