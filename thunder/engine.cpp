@@ -196,12 +196,12 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
         }
         if (levels::limit[voice.model]) limit(voice, output);   // level: limiter
     } else {
-        // DRIVE in the same pass: 0.6 z (1 - z^2 / 3), z the output at a gain of 1.4..7
+        // DRIVE in the same pass: 0.6 z (1 - z^2 / 3), z the output at a gain of 1.4..7,
+        // held at full scale (which the output alone, at a gain of 1.4 or more, reaches first)
         const i32 g = Q31((1.0 * 2.5) / 32) + drive * Q31((6.0 / 15 * 2.5) / 32);
-        const i32 lim = one >> 5;
+        const i32 lim = one >> 11;
         for (unsigned i = 0; i < frames; ++i) {
-            const i32 y0 = clamp(multiply(x[i], gain), -(one >> 6), one >> 6) << 6;
-            const i32 z = clamp(multiply(y0, g), -lim, lim) << 5;
+            const i32 z = clamp(multiply(multiply(x[i], gain), g), -lim, lim) << 11;
             const i32 y = multiply(z, Q31(0.6) - multiply(multiply(z, z), Q31(0.2)));
             output[i] = y;
             most |= y < 0 ? -y : y;
