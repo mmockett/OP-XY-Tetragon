@@ -30,6 +30,7 @@ struct Cicada {
     u32 start_at[6], kk[6], next_at[6];
     i32 period;         // samples per click, Q8
     i32 lcf[2];         // each shell's pitch (the main, the swarm's)
+    i32 tuned[2];       // the pitch each shell is tuned to now
     Res shell[4];       // the main's two, the swarm's two
     ResK shellk[4];
     i32 q;
@@ -43,6 +44,9 @@ struct Cicada {
     i32 chirp, len;
 
     void tune_shell(int s, i32 lp) {
+        // A train that doesn't fall keeps its shell's tuning from rib to rib.
+        if (lp == tuned[s]) return;
+        tuned[s] = lp;
         // The shell rings for q / (pi f): its decay from its quality.
         const u32 tau = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875);
         dsp::tune(shellk[s * 2], inc(lp), decay(tau));
@@ -87,6 +91,7 @@ struct Cicada {
         q = C(2.0) + sc(C(28.0), pw(c[3], C(1.5)));
         chirp = c[5];
         for (int s = 0; s < 4; ++s) shell[s] = Res();
+        tuned[0] = tuned[1] = -(1 << 30);   // nothing yet
         tune_shell(0, lcf[0]);
         tune_shell(1, lcf[1]);
         // The tail: 12..412 ms.
