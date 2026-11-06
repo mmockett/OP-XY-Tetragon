@@ -655,60 +655,96 @@ inline void strike_ghosts(Body& b, u32 n) {
 // locals, writing or adding into a buffer: cheaper on the Blackfin than one loop
 // that steps every part each sample. A part with nothing ringing is skipped.
 
-// A skin: writes n samples. While the strike's pitch sweep lasts, every
-// sample follows it; after, each partial runs at its own fixed increment.
-// swing, if given, gets |sine| of the fundamental (Q31) for the snare's wires.
+// A skin's pitch sweep and its partials' levels are planned every 16 samples
+// and ramp straight between: the pitch follows its curve to a sixteenth of a
+// step, and a partial costs a phase, two ramps and a sine a sample.
+const u32 grain = 16;
+// The sweep's curve, ~ s^1.3.
+inline i32 sweep_curve(i32 s) { return multiply(s, GQ31(0.6) + multiply(s, GQ31(0.4))); }
+// r^16: a per-sample decay's grain.
+inline i32 per_grain(i32 r) {
+    for (int i = 0; i < 4; ++i) r = multiply(r, r);
+    return r;
+}
+// An interpolated sine of a 32-bit phase (dsp::sine, its fraction by shifts).
+inline i32 sine_of(u32 x) {
+    const i32* t = table::sine + (x >> 23);
+    const i32 lo = t[0];
+    return lo + multiply(t[1] - lo, static_cast<i32>((x << 9) >> 1));
+}
+// One partial over n samples (n a whole number of grains): its increment at
+// each grain's edge (inc[0] at the start, scaled by ratio when given; SWEEP
+// when they move), its level decaying by r16 a grain. Writes out, or adds to
+// it (ADD); swing gets |sine| (SWING).
+template <bool ADD, bool SWING, bool SWEEP>
+__attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, const u32* __restrict inc, i32 ratio28,
+                                           i32* __restrict out, i32* __restrict swing, u32 n) {
+    u32 p = phase;
+    i32 a = level;
+    u32 now = ratio28 ? times(inc[0], ratio28) : inc[0];
+    for (u32 g = 0; g < n; g += grain) {
+        const u32 next = SWEEP ? (ratio28 ? times(inc[g / grain + 1], ratio28) : inc[g / grain + 1]) : now;
+        const i32 step = static_cast<i32>(next - now) >> 4;
+        const i32 end = multiply(a, r16);
+        const i32 da = (end - a) >> 4;
+        i32* __restrict o = out + g;
+        for (u32 i = 0; i < grain; ++i) {
+            if (SWEEP) now += static_cast<u32>(step);
+            p += now;
+            a += da;
+            const i32 v = sine_of(p);
+            const i32 y = multiply(v, a);
+            if (ADD) o[i] += y;
+            else o[i] = y;
+            if (SWING) swing[g + i] = v < 0 ? -v : v;
+        }
+        now = next;
+        a = end;
+    }
+    phase = p;
+    level = a;
+}
+template <bool ADD, bool SWING>
+inline void partial(bool sweep, u32& phase, i32& level, i32 r, const u32* inc, i32 ratio28, i32* out, i32* swing, u32 n) {
+    if (sweep) partial_run<ADD, SWING, true>(phase, level, per_grain(r), inc, ratio28, out, swing, n);
+    else partial_run<ADD, SWING, false>(phase, level, per_grain(r), inc, ratio28, out, swing, n);
+}
+// A skin: writes n samples (a whole number of grains). swing, if given, gets
+// |sine| of the fundamental (Q31) for the snare's wires. A partial that has
+// died away only keeps its phase.
 inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swing = 0) {
+    u32 inc[64 / grain + 1];
+    const u32 grains = n / grain;
     i32 s = k.s;
     if (s > 4194304 && k.sweep_inc) {                       // sweeping (above 0.002)
-        const i32 sr = k.sr;
-        u32 p0 = k.ph[0], p1 = k.ph[1], p2 = k.ph[2];
-        i32 a0 = k.e[0].a, a1 = k.e[1].a, a2 = k.e[2].a;
-        const i32 r0 = k.e[0].r, r1 = k.e[1].r, r2 = k.e[2].r;
-        const i32 q1 = k.ratio[1], q2 = k.ratio[2];
-        const u32 parts = k.parts, base = k.inc, sweep = k.sweep_inc;
-        for (u32 i = 0; i < n; ++i) {
-            s = multiply(s, sr);
-            const i32 curve = multiply(s, GQ31(0.6) + multiply(s, GQ31(0.4)));   // ~ s^1.3
-            const u32 now = base + static_cast<u32>(multiply(static_cast<i32>(sweep), curve));
-            p0 += now;
-            a0 = multiply(a0, r0);
-            const i32 v = dsp::sine(p0);
-            i32 y = multiply(v, a0);
-            if (swing) swing[i] = v < 0 ? -v : v;
-            if (parts > 1) { p1 += times(now, q1); a1 = multiply(a1, r1); y += multiply(dsp::sine(p1), a1); }
-            if (parts > 2) { p2 += times(now, q2); a2 = multiply(a2, r2); y += multiply(dsp::sine(p2), a2); }
-            out[i] = y;
+        const i32 sr16 = per_grain(k.sr);
+        const u32 base = k.inc, sweep = k.sweep_inc;
+        inc[0] = base + static_cast<u32>(multiply(static_cast<i32>(sweep), sweep_curve(s)));
+        for (u32 g = 1; g <= grains; ++g) {
+            s = multiply(s, sr16);
+            inc[g] = base + static_cast<u32>(multiply(static_cast<i32>(sweep), sweep_curve(s)));
         }
         k.s = s;
-        k.ph[0] = p0; k.ph[1] = p1; k.ph[2] = p2;
-        k.e[0].a = a0; k.e[1].a = a1; k.e[2].a = a2;
-        return;
+    } else {
+        k.s = 0;
+        for (u32 g = 0; g <= grains; ++g) inc[g] = k.inc;
     }
-    k.s = 0;
     if (!k.parts) { for (u32 i = 0; i < n; ++i) out[i] = 0; return; }
-    for (u32 part = 0; part < k.parts; ++part) {
-        u32 p = k.ph[part];
-        i32 a = k.e[part].a;
-        const i32 r = k.e[part].r;
-        const u32 inc = part ? times(k.inc, k.ratio[part]) : k.inc;
-        if (!part) {
-            for (u32 i = 0; i < n; ++i) {
-                p += inc;
-                a = multiply(a, r);
-                const i32 v = dsp::sine(p);
-                out[i] = multiply(v, a);
-                if (swing) swing[i] = v < 0 ? -v : v;
+    const bool sweeping = k.s != 0;
+    if (swing) partial<false, true>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, out, swing, n);
+    else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, out, 0, n);
+    for (u32 part = 1; part < k.parts; ++part) {
+        if (k.e[part].a < 4096) {                           // under -95 dBFS
+            k.e[part].a = 0;
+            u32 p = k.ph[part];
+            for (u32 g = 0; g < grains; ++g) {
+                const u32 a = times(inc[g], k.ratio[part]), b = times(inc[g + 1], k.ratio[part]);
+                p += a * grain + static_cast<u32>(static_cast<i32>(b - a) >> 4) * (grain * (grain + 1) / 2);
             }
-        } else if (a) {
-            for (u32 i = 0; i < n; ++i) {
-                p += inc;
-                a = multiply(a, r);
-                out[i] += multiply(dsp::sine(p), a);
-            }
-        } else p += inc * n;
-        k.ph[part] = p;
-        k.e[part].a = a;
+            k.ph[part] = p;
+            continue;
+        }
+        partial<true, false>(sweeping, k.ph[part], k.e[part].a, k.e[part].r, inc, k.ratio[part], out, 0, n);
     }
 }
 // A click's noise burst, high-passed, added at gain g (Q28). Idle, it costs nothing.
