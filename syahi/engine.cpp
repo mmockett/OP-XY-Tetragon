@@ -130,11 +130,12 @@ inline void begin_note(Voice& voice, Shared& shared) {
 // tanh(drive x / working) * working / tanh(drive), from a table of tanh(i / 64).
 // multiply(t, working) is t / 4 exactly (working is 2^29), so t >> 2.
 static inline i32 grit_drive(i32 x, i32 drive, i32 makeup) {
-    const u32 position = static_cast<u32>(multiply(absolute(x) >> 8, drive));   // Q8 table steps
-    const u32 index = position >> 8 > 255 ? 255 : position >> 8;
+    // Past the table's end the position holds at its last step (MIN, no branch).
+    const u32 p = static_cast<u32>(multiply(absolute(x) >> 8, drive));   // Q8 table steps
+    const u32 position = p < 65535u ? p : 65535u;
+    const u32 index = position >> 8;
     const i32 f = static_cast<i32>((position & 255u) << 23);
-    const i32 t = position >> 8 > 255 ? tables::tanh[256]
-                : tables::tanh[index] + multiply(tables::tanh[index + 1] - tables::tanh[index], f);
+    const i32 t = tables::tanh[index] + multiply(tables::tanh[index + 1] - tables::tanh[index], f);
     const i32 y = multiply(t >> 2, makeup) << 3;
     return x < 0 ? -y : y;
 }
