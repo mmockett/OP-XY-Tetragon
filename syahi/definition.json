@@ -100,7 +100,7 @@
   "resources": {
     "voiceBytes": 1304,
     "voiceAlignment": 4,
-    "voiceCapacity": 16,
+    "voiceCapacity": 8,
     "sharedBytes": 2340,
     "outputPeakQ31": 1073741824,
     "modelCount": 8,
