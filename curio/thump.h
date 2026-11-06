@@ -792,12 +792,12 @@ struct Drip {
         if (v <= 4096 && !lp) return;   // still, until the next drop
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (v > 4096) {
+            if (CURIO_UNLIKELY(v > 4096)) {
                 v = mul(v, k);
                 const i32 sp = lev(noise(r), v);
                 lp += mul(sa, sp - lp);
                 y[j] += sp - lp;
-            } else if (lp) {
+            } else if (CURIO_LIKELY(lp)) {
                 v = 0;
                 y[j] -= lp;
                 lp -= lp >> 4;

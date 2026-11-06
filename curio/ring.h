@@ -284,17 +284,9 @@ struct BellJar {
     }
     // The jar: its air's resonance at 420 Hz, fed by the bell.
     __attribute__((noinline)) void jar_pass(i32* y, u32 n) {
-        i32 y1 = jar.y1, y2 = jar.y2;
-        const i32 c = jark.c, r2 = jark.r2, g = jark.g, d = dry, ja = jar_amp;
-        for (u32 j = 0; j < n; ++j) {
-            const i32 x = y[j];
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(x, g);
-            y2 = y1;
-            y1 = o;
-            y[j] = lev(x, d) + lev(o, ja);
-        }
-        jar.y1 = y1;
-        jar.y2 = y2;
+        const i32 g = jark.g, d = dry, ja = jar_amp;
+        drive_run(jar, jark, y, n, [g](i32 x) { return mul(x, g); },
+                  [d, ja](i32& to, i32 o) { to = lev(to, d) + lev(o, ja); });
     }
     void run(i32* out) {
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
@@ -672,21 +664,8 @@ struct Roar {
     }
     // The roar: noise through a band swinging about its pitch.
     __attribute__((noinline)) void roar_pass(i32* y, const i32* nb, u32 n) {
-        i32 y1 = roar.y1, y2 = roar.y2, x1 = roar.x1, x2 = roar.x2;
-        const i32 c = roark.c, r2 = roark.r2, b = roark.b, g = bp_gain;
-        for (u32 j = 0; j < n; ++j) {
-            const i32 in = mul(nb[j], b);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-            x2 = x1;
-            x1 = in;
-            y2 = y1;
-            y1 = o;
-            y[j] = mul(gn(o, g), F(0.39));
-        }
-        roar.y1 = y1;
-        roar.y2 = y2;
-        roar.x1 = x1;
-        roar.x2 = x2;
+        const i32 g = bp_gain;
+        bp_run(roar, roark, nb, y, n, [g](i32& to, i32 o) { to = mul(gn(o, g), F(0.39)); });
     }
     // The hum at the band's pitch.
     __attribute__((noinline)) void hum_pass(i32* y, u32 n) {
@@ -715,21 +694,8 @@ struct Roar {
     }
     // The wind in the cord, from the roar's noise.
     __attribute__((noinline)) void wind_pass(i32* y, const i32* nb, u32 n) {
-        i32 y1 = windr.y1, y2 = windr.y2, x1 = windr.x1, x2 = windr.x2;
-        const i32 c = windk.c, r2 = windk.r2, b = windk.b, g = wind_gain, amp = wind_amp;
-        for (u32 j = 0; j < n; ++j) {
-            const i32 in = mul(nb[j], b);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-            x2 = x1;
-            x1 = in;
-            y2 = y1;
-            y1 = o;
-            y[j] += lev(gn(o, g), amp);
-        }
-        windr.y1 = y1;
-        windr.y2 = y2;
-        windr.x1 = x1;
-        windr.x2 = x2;
+        const i32 g = wind_gain, amp = wind_amp;
+        bp_run(windr, windk, nb, y, n, [g, amp](i32& to, i32 o) { to += lev(gn(o, g), amp); });
     }
     // The swell, the fade and the pulse.
     __attribute__((noinline)) void env_pass(i32* y, u32 n, i32 am, u32 fade_step) {

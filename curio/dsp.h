@@ -186,6 +186,59 @@ __attribute__((always_inline)) inline void ring_free(Res& z, const ResK& k, i32*
     z.y2 = b;
 }
 static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) { ring_free(z, k, y, n); }
+// A band-pass (bp) through n samples of x, each output o handed with its
+// place in y to emit(y[j], o): two samples a turn so the states trade
+// places (a hardware loop), the odd one first.
+template <class Emit> __attribute__((always_inline)) inline void bp_run(Res& z, const ResK& k, const i32* x, i32* y, u32 n, Emit emit) {
+    i32 y1 = z.y1, y2 = z.y2, x1 = z.x1, x2 = z.x2;
+    const i32 c = k.c, r2 = k.r2, b = k.b;
+    if (n & 1) {
+        const i32 in = mul(*x++, b);
+        const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+        x2 = x1;
+        x1 = in;
+        y2 = y1;
+        y1 = o;
+        emit(*y++, o);
+    }
+    for (u32 h = 0; h < (n >> 1); ++h) {
+        const i32 i0 = mul(x[0], b);
+        y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+        x2 = i0;
+        emit(y[0], y2);
+        const i32 i1 = mul(x[1], b);
+        y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+        x1 = i1;
+        emit(y[1], y1);
+        x += 2;
+        y += 2;
+    }
+    z.y1 = y1;
+    z.y2 = y2;
+    z.x1 = x1;
+    z.x2 = x2;
+}
+// A resonator driven by in(y[j]) through n samples, each output handed to
+// emit(y[j], o), the same way.
+template <class In, class Emit> __attribute__((always_inline)) inline void drive_run(Res& z, const ResK& k, i32* y, u32 n, In in, Emit emit) {
+    i32 y1 = z.y1, y2 = z.y2;
+    const i32 c = k.c, r2 = k.r2;
+    if (n & 1) {
+        const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in(*y);
+        y2 = y1;
+        y1 = o;
+        emit(*y++, o);
+    }
+    for (u32 h = 0; h < (n >> 1); ++h) {
+        y2 = twice(mul(c, y1) - mul(r2, y2)) + in(y[0]);
+        emit(y[0], y2);
+        y1 = twice(mul(c, y2) - mul(r2, y1)) + in(y[1]);
+        emit(y[1], y1);
+        y += 2;
+    }
+    z.y1 = y1;
+    z.y2 = y2;
+}
 // A bank of free resonators in one call, each rung in turn.
 static __attribute__((noinline)) inline void ring_bank(Res* z, const ResK* k, u32 count, i32* y, u32 n) {
     for (u32 m = 0; m < count; ++m) ring_free(z[m], k[m], y, n);

@@ -676,22 +676,13 @@ struct Match {
     // draw ends; the noise is drawn in the same order as ever.
     // The draw: the head stick-slips, ringing its squeal.
     __attribute__((noinline)) void draw_pass(i32* y, u32 n) {
-        i32 at = sc_att, y1 = sc_.y1, y2 = sc_.y2;
-        const i32 ak = sc_attk, c = sck.c, r2 = sck.r2, g = sck.g, nm = sc_norm, amp = sc_amp;
+        i32 at = sc_att;
+        const i32 ak = sc_attk, g = sck.g, nm = sc_norm, amp = sc_amp;
         const u32 p = slip_p;
         u32 r = rng;
-        for (u32 j = 0; j < n; ++j) {
-            noise(r);
-            const i32 slip = r < p ? one : 0;
-            at = mul(at, ak);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(slip, g);
-            y2 = y1;
-            y1 = o;
-            y[j] = lev(gn(o, nm), lev(amp, (full - at) >> 3));
-        }
+        drive_run(sc_, sck, y, n, [&r, p, g](i32) { noise(r); return mul(r < p ? one : 0, g); },
+                  [&at, ak, nm, amp](i32& to, i32 o) { at = mul(at, ak); to = lev(gn(o, nm), lev(amp, (full - at) >> 3)); });
         sc_att = at;
-        sc_.y1 = y1;
-        sc_.y2 = y2;
         rng = r;
     }
     // The flare's envelope (an eighth, as the parts take it).
@@ -721,45 +712,16 @@ struct Match {
     }
     // The head's squeal ringing on after the draw.
     __attribute__((noinline)) void squeal_pass(i32* y, u32 n) {
-        i32 y1 = sc_.y1, y2 = sc_.y2;
-        const i32 c = sck.c, r2 = sck.r2, nm = sc_norm, lv = lev(sc_amp, (full - sc_att) >> 3);
-        for (u32 j = 0; j < n; ++j) {
-            const i32 o = (mul(c, y1) - mul(r2, y2)) << 1;
-            y2 = y1;
-            y1 = o;
-            y[j] = lev(gn(o, nm), lv);
-        }
-        sc_.y1 = y1;
-        sc_.y2 = y2;
+        const i32 nm = sc_norm, lv = lev(sc_amp, (full - sc_att) >> 3);
+        drive_run(sc_, sck, y, n, [](i32) { return 0; }, [nm, lv](i32& to, i32 o) { to = lev(gn(o, nm), lv); });
     }
     __attribute__((noinline)) void flame_pass(i32* y, const i32* eb, const i32* nb, u32 n) {
-        i32 y1 = fl.y1, y2 = fl.y2, x1 = fl.x1, x2 = fl.x2;
-        const i32 c = flk.c, r2 = flk.r2, b = flk.b, g = fl_gain, amp = fl_amp;
-        for (u32 j = 0; j < n; ++j) {
-            const i32 in = mul(nb[j], b);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-            x2 = x1;
-            x1 = in;
-            y2 = y1;
-            y1 = o;
-            y[j] += lev(lev(gn(o, g), eb[j]), amp);
-        }
-        fl.y1 = y1;
-        fl.y2 = y2;
-        fl.x1 = x1;
-        fl.x2 = x2;
+        const i32 g = fl_gain, amp = fl_amp;
+        bp_run(fl, flk, nb, y, n, [&eb, g, amp](i32& to, i32 o) { to += lev(lev(gn(o, g), *eb++), amp); });
     }
     __attribute__((noinline)) void phos_pass(i32* y, const i32* cb, u32 n) {
-        i32 y1 = phos.y1, y2 = phos.y2;
-        const i32 c = phosk.c, r2 = phosk.r2, g = phosk.g, amp = phos_amp;
-        for (u32 j = 0; j < n; ++j) {
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(cb[j], g);
-            y2 = y1;
-            y1 = o;
-            y[j] += lev(o, amp);
-        }
-        phos.y1 = y1;
-        phos.y2 = y2;
+        const i32 g = phosk.g, amp = phos_amp;
+        drive_run(phos, phosk, y, n, [&cb, g](i32) { return mul(*cb++, g); }, [amp](i32& to, i32 o) { to += lev(o, amp); });
     }
     // The burning wood's roar under the flare, and the puff.
     template <bool wood_on> __attribute__((noinline)) void wood_pass(i32* y, const i32* eb, const i32* nb, u32 n) {
