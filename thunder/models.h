@@ -310,6 +310,7 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
                 mix(Q16(0.45), Q16(0.9), nail), 2);
     const i32 lcut = lhp + log16(mix(Q16(1.0), Q16(0.45), c[3])) + mul16(q31_root(nail) >> 15, Q16(0.8));   // a coin's edge rings brighter
     v.k[1] = onepole_k(lcut);
+    v.k[7] = onepole_k(lcut + octave);   // the same corner at half rate, for the ring
     v.k[2] = onepole_k(lhp - L(1.25));
     // the hand: the sheet rings on (falling with six times DAMP's time) until
     // the hand lands, at 0.9 of it, then damps it in a sixth of it: a closed
@@ -336,6 +337,8 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
         }
     }
     v.s[2] = v.s[3] = 0;
+    v.s[1] = 0;      // the ring's last half-rate sample
+    field_raw(v);
     v.env[1].set(mix(Q31(0.04), Q31(0.6), q31_root(nail) >> 15), block_decay(mix(L(0.001), L(0.006), nail)));   // the nail's tick: a soft pad to a coin's edge
     setup_swing(v, c[6], mix(L(3), L(7), c[6]));
     v.env[2].set(one, block_decay(ltau - octave));             // what lifts the chain
@@ -407,19 +410,27 @@ __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, i32* t, u32 seed) {
 __attribute__((noinline)) inline void add_ramped1(const i32* x, i32* out, i32 e, i32 es) {
     for (u32 n = 0; n < frames; ++n, e += es) *out++ += multiply(*x++, e);
 }
-// the ring, high-passed twice, as the hand damps it
-__attribute__((noinline)) inline void flick_ring(Voice& v, const i32* x, i32* out, i32 hand, i32 hs) {
-    const i32 k1 = v.k[1];
-    i32 h0 = v.op[0].s, h1 = v.op[1].s;
-    for (u32 n = 0; n < frames; ++n, hand += hs) {
-        const i32 xi = *x++;
-        h0 += multiply(xi - h0, k1);
-        const i32 a = xi - h0;
-        h1 += multiply(a - h1, k1);
-        *out++ = multiply(a - h1, multiply(hand, Q31(0.6)));
+// the ring (the field's sound at half rate, as it is), high-passed twice as
+// the hand damps it (h: 0.6 of the hand, at each half-rate sample's place),
+// then brought back to the full rate (each sample, and between two their
+// mean), at the level the full rate's held samples gave it
+__attribute__((noinline)) inline void flick_ring(Voice& v, const i32* y, i32* out, i32 h, i32 hs) {
+    const i32 k = v.k[7];
+    i32 h0 = v.op[0].s, h1 = v.op[1].s, prev = v.s[1];
+    for (u32 n = 0; n < half; ++n, h += hs) {
+        const i32 x = *y++;
+        h0 += multiply(x - h0, k);
+        const i32 a = x - h0;
+        h1 += multiply(a - h1, k);
+        const i32 r = multiply(a - h1, h) << 1;
+        out[0] = (prev + r) >> 1;
+        out[1] = r;
+        prev = r;
+        out += 2;
     }
     v.op[0].s = h0;
     v.op[1].s = h1;
+    v.s[1] = prev;
 }
 // the nail's tick: the flick itself, high-passed
 __attribute__((noinline)) inline void flick_tick(Voice& v, const i32* x, i32* out, i32 tick, i32 ts) {
@@ -449,7 +460,6 @@ __attribute__((noinline)) inline void flick_rolloff(Voice& v, i32* out) {
     v.s[3] = last2;
 }
 __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
-    clear(w.aux);
     u32 seed = v.seed ? v.seed : 1u;
     const bool flicking = v.u[0] != 0;
     if (flicking) {
@@ -457,12 +467,14 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     } else {
         clear(w.exc);
     }
-    run_field(v, w.exc, w.aux, Q31(0.5));
+    run_field(v, w.exc, w.aux, Q31(0.5));   // (at half rate: 32 values)
+    if (!v.fon) clear(w.aux);
     i32 hand, tick, fizz;
     if (v.k[5] && !--v.k[5]) v.env[0].factor = v.k[6];
     const i32 hs = v.env[0].step(hand), ts = v.env[1].step(tick), zs = v.env[3].step(fizz);
     const i32 hand0 = hand;
-    flick_ring(v, w.aux, out, hand, hs);
+    const i32 h6 = multiply(hand, Q31(0.6)), hs6 = multiply(hs, Q31(0.6));
+    flick_ring(v, w.aux, out, h6 + hs6, hs6 << 1);
     if (flicking || tick > (1 << 16)) flick_tick(v, w.exc, out, tick, ts);
     if (multiply(fizz, hand0) > (1 << 16)) {
         // the densest modes: the sizzle, under the hand, high-passed three times
