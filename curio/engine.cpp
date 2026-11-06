@@ -203,22 +203,29 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     i32 l = voice.lim;
     bool loud = false;
     if (l == full && want == full) {
+        // Loud if any sample reaches the floor: the block's highest and lowest.
+        i32 top = -full - 1, bottom = full;
         for (u32 i = 0; i < frames; ++i) {
             const i32 y = mul(out[i], g) << 6;
             output[i] = y;
-            loud = loud || y >= quiet_floor || y <= -quiet_floor;
+            top = y > top ? y : top;
+            bottom = y < bottom ? y : bottom;
         }
+        loud = top >= quiet_floor || bottom <= -quiet_floor;
     } else {
         // Down at once; up 1 dB a block, ramped across it, never past what the block allows.
         if (want < l) l = want;
         const i32 to = lo(l > F(0.888) ? full : l + (l >> 3), want);
         const i32 d = (to - l) >> 6;
+        i32 top = -full - 1, bottom = full;
         for (u32 i = 0; i < frames; ++i) {
             const i32 y = knee(mul(mul(out[i], g), l) << 3);
             l += d;
             output[i] = y;
-            loud = loud || y >= quiet_floor || y <= -quiet_floor;
+            top = y > top ? y : top;
+            bottom = y < bottom ? y : bottom;
         }
+        loud = top >= quiet_floor || bottom <= -quiet_floor;
         voice.lim = to;
     }
     voice.quiet = loud ? 0 : voice.quiet + 1;
