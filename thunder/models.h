@@ -33,6 +33,17 @@ inline u32 samples(i32 lsec) { return pow2(lsec + lsr); }
 struct Work { i32 exc[frames], fin[frames], body[frames], aux[frames]; };
 
 inline void clear(i32* x) { for (unsigned i = 0; i < frames; ++i) x[i] = 0; }
+// The one-pole high-pass (h += k (x - h), out x - h) loses a little above its
+// corner, more the larger its k: run at half rate (k larger for the same
+// corner) it passes the top of its band 2 (1 - k) / (2 - k) high where the
+// full rate's passed it at that with its own k. A ring filtered at half rate
+// is lifted by the difference, stages times: this returns the lift as a Q31
+// fraction of 2 (its lift / 2), kf and kh the two rates' coefficients.
+inline i32 hp_half_lift(i32 kf, i32 kh, i32 stages) {
+    const i32 l = log2q(static_cast<u32>(one - kf)) + log2q(0x80000000u - static_cast<u32>(kh >> 1))
+                - log2q(0x80000000u - static_cast<u32>(kf >> 1)) - log2q(static_cast<u32>(one - kh));
+    return frac2(stages * l - octave);
+}
 // The block passes the models share (noinline: in a model's own function the
 // compiler gives these simple loops no hardware loop).
 __attribute__((noinline)) inline void copy(i32* to, const i32* from) {
@@ -318,6 +329,7 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
     const i32 lcut = lhp + log16(mix(Q16(1.0), Q16(0.45), c[3])) + mul16(q31_root(nail) >> 15, Q16(0.8));   // a coin's edge rings brighter
     v.k[1] = onepole_k(lcut);
     v.k[7] = onepole_k(lcut + octave);   // the same corner at half rate, for the ring
+    v.k[8] = hp_half_lift(v.k[1], v.k[7], 2);   // and its lift (over 2)
     v.k[2] = onepole_k(lhp - L(1.25));
     // the hand: the sheet rings on (falling with six times DAMP's time) until
     // the hand lands, at 0.9 of it, then damps it in a sixth of it: a closed
@@ -429,7 +441,7 @@ __attribute__((noinline)) inline void flick_ring(Voice& v, const i32* y, i32* ou
         h0 += multiply(x - h0, k);
         const i32 a = x - h0;
         h1 += multiply(a - h1, k);
-        const i32 r = multiply(a - h1, h) << 1;
+        const i32 r = multiply(a - h1, h) << 2;   // (x2 for the held samples, x2 for the lift's half)
         out[0] = (prev + r) >> 1;
         out[1] = r;
         prev = r;
@@ -481,7 +493,7 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     const i32 hs = v.env[0].step(hand), ts = v.env[1].step(tick), zs = v.env[3].step(fizz);
     const i32 hand0 = hand;
     const i32 h6 = multiply(hand, Q31(0.6)), hs6 = multiply(hs, Q31(0.6));
-    flick_ring(v, w.aux, out, h6 + hs6, hs6 << 1);
+    flick_ring(v, w.aux, out, multiply(h6 + hs6, v.k[8]), multiply(hs6 << 1, v.k[8]));
     if (flicking || tick > (1 << 16)) flick_tick(v, w.exc, out, tick, ts);
     if (multiply(fizz, hand0) > (1 << 16)) {
         // the densest modes: the sizzle, under the hand, high-passed three times
@@ -643,7 +655,13 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     }
     v.k[0] = onepole_k(lf0 + L(1.5));                                    // the body's high-pass
     v.k[5] = onepole_k(lf0 + L(1.5) + octave);                           // (the same at half rate)
-    v.k[1] = onepole_k(mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]) + octave);   // the ring's (twice, at half rate): struck near the bell, darker
+    {
+        // the ring's (twice, at half rate): struck near the bell, darker; and
+        // the lift that keeps its band where the full rate's filters left it
+        const i32 lring = mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]);
+        v.k[1] = onepole_k(lring + octave);
+        v.k[6] = hp_half_lift(onepole_k(lring), v.k[1], 2);
+    }
     v.k[2] = multiply(mix(Q31(0.12), Q31(0.9), c[4]), mix(Q31(0.99), Q31(0.3), c[3]));   // the body's share, less toward the edge
     v.env[0].set(one, block_decay(lt60 + log16(mix(Q16(1.0), Q16(0.12), c[4]))));
     // SWELL: noise into the high modes along (t / peak) e^(1 - t / peak)
@@ -672,7 +690,7 @@ __attribute__((noinline)) inline void crash_ring(Voice& v, i32* y, i32 damp, i32
         h2 += multiply(x - h2, k1);
         const i32 a = x - h2;
         h3 += multiply(a - h3, k1);
-        *y++ = multiply(a - h3, damp) << 2;   // (the full rate's held samples were twice the field's: 2 x 2)
+        *y++ = multiply(a - h3, damp) << 3;   // (the full rate's held samples were twice the field's: 2 x 2, and the lift's 2)
     }
     v.op[2].s = h2;
     v.op[3].s = h3;
@@ -757,7 +775,8 @@ __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     if (!v.fon) clear(ring);
     i32 damp;
     const i32 ds = v.env[0].step(damp);
-    crash_ring(v, ring, damp + ds, ds << 1);   // (the hand's level at each half-rate sample's place)
+    // (the hand's level at each half-rate sample's place, with the ring's lift, over 2)
+    crash_ring(v, ring, multiply(damp + ds, v.k[6]), multiply(ds << 1, v.k[6]));
     if (half_body) crash_mix_half(v, body2, ring, out);
     else crash_mix(v, w.body, ring, out);
     add_click(v, out);
@@ -906,6 +925,7 @@ inline void setup_grit(Voice& v, const i32* c, i32 tune) {
     field_raw(v);
     v.s[2] = 0;   // the ring's last half-rate sample
     v.flevel = multiply(Q31(0.85), q31(c[5]));
+    v.k[9] = multiply(v.flevel, hp_half_lift(onepole_k(L(1500)), onepole_k(L(1500) + octave), 1));   // the ring's level, with its high-pass's lift (over 2)
     if (!c[5]) v.fon = 0;   // no METAL: no ring to run
     v.k[8] = onepole_k(L(1500) + octave);   // the ring's high-pass, at half rate
     setup_chain(v, Q16(0.9), Q16(0.8), L(0.05), L(1800), L(6000), c[6]);
@@ -942,12 +962,12 @@ __attribute__((noinline)) inline void grit_band(Svf& sv, i32 f, i32 q, i32* out,
 // 1.5 kHz (set for the half rate), at its level, at the level the full
 // rate's held samples gave it.
 __attribute__((noinline)) inline void grit_ring(Voice& v, i32* y) {
-    const i32 k = v.k[8], lv = v.flevel;
+    const i32 k = v.k[8], lv = v.k[9];
     i32 h = v.op[1].s;
     for (u32 n = 0; n < half; ++n) {
         const i32 xi = *y;
         h += multiply(xi - h, k);
-        *y++ = multiply(xi - h, lv) << 2;
+        *y++ = multiply(xi - h, lv) << 3;   // (x4 for the held samples, x2 for the lift's half)
     }
     v.op[1].s = h;
 }
