@@ -1029,7 +1029,6 @@ inline void setup_bounce(Voice& v, const i32* c, i32 tune) {
     const i32 lt0 = mix(L(0.6), L(0.02), c[1]);
     setup_modes(v, lf0, c[6], Q16(0.3) + mul16(c[3], Q16(0.6)), lt0, Q16(0.6), Q16(0.3), 8, beater_time(c[2]));
     setup_field(v, lf0 + octave, 65535 - c[6], log16(mul16(exp16(lt0), Q16(1.5)) + Q16(0.02)), Q16(0.5) + (c[2] >> 1));
-    field_small(v, log16(mul16(exp16(lt0), Q16(1.5)) + Q16(0.02)));
     v.flevel = Q31(0.125);
     v.k[0] = beater_time(c[2]);
     v.k[1] = (Q16(0.3) + mul16(beater_click(c[2]), Q16(0.6))) << 15;
@@ -1336,7 +1335,6 @@ inline void setup_shake(Voice& v, const i32* c, i32 tune) {
     const i32 crack = c[6];
     v.k[2] = mix(L(0.008), L(0.0015), crack);                          // a jolt's push (log2 s)
     setup_field(v, lf0 + L(12), 65535 - c[4], lt0, Q16(0.5));
-    field_small(v, lt0);
     v.flevel = Q31(0.5);
     v.k[3] = onepole_k(mix(L(900), L(3000), crack));
     v.k[4] = onepole_k(mix(L(200), L(900), crack));

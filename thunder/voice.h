@@ -450,7 +450,9 @@ __attribute__((noinline)) inline i32 up_add(const i32* r, i32* out, i32 prev) {
 }
 // A small field: two of the four lines (the second and the fourth, so the
 // spread stays), for a sheet whose high modes are a faint shimmer over its
-// body (a kick's, a tom's, a bearing's, the thunder's): half the work. Its
+// body (a kick's, a tom's): half the work. (Its 45-degree turn puts a mode
+// near 40 Hz; under a kick's or a tom's body it doesn't show, under a
+// bearing's or the thunder's it did, so those keep four lines.) Its
 // gain per pass is set for the two, over sqrt 2 for their mix, and its input
 // is lifted by sqrt 2, as two lines take half the energy four do.
 inline void field_small(Voice& v, i32 lt60) {
