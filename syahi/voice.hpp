@@ -416,6 +416,41 @@ static inline void skip(Partial& m, u32 count) {
     m.inc += static_cast<u32>(m.dinc) * count;
     m.g += m.dg * static_cast<i32>(count);
 }
+// Where `count` samples of run() leave a partial: phase += inc, then inc += dinc,
+// a sample at a time, and g += dg.
+static inline void advance(Partial& m, u32 count) {
+    m.phase += m.inc * count + static_cast<u32>(m.dinc) * (count * (count - 1) / 2);
+    m.inc += static_cast<u32>(m.dinc) * count;
+    m.g += m.dg * static_cast<i32>(count);
+}
+// One partial over samples [begin, begin + count): a counted loop (a
+// hardware loop), the table address computed a sample ahead so the load never
+// waits on it. The phase and increment at the end are advance()'s sums, exact
+// in u32. With `ramp` the pending strike ramps in along r; with `metal` the
+// unit sine is kept for the wash.
+template <bool ramp, bool metal>
+__attribute__((noinline)) static void run_mode(Partial& a, i32* __restrict out, i32* __restrict sa, const i32* __restrict r,
+                                              u32 begin, u32 count) {
+    const i16* const table = tables::sine;
+    u32 pa = a.phase + a.inc, ia = a.inc + static_cast<u32>(a.dinc);
+    const u32 da = static_cast<u32>(a.dinc);
+    i32 ga = a.g;
+    const i32 dga = a.dg, ea = ramp ? a.pe : 0;
+    const i16* ta = table + (pa >> 18);
+    i32* o = out + begin;
+    const i32* rr = r + begin;
+    i32* qa = metal ? sa + begin : nullptr;
+    for (u32 n = 0; n < count; ++n) {
+        const i32 xa = static_cast<i32>(*ta) << 16;
+        pa += ia;
+        ia += da;
+        ta = table + (pa >> 18);
+        if (metal) qa[n] = xa;
+        o[n] += ramp ? multiply(ga + multiply(ea, rr[n]), xa) : multiply(ga, xa);
+        ga += dga;
+    }
+    advance(a, count);
+}
 static inline bool quiet(const Partial& m) {
     return absolute(m.a) < silent && absolute(m.p) < silent && absolute(m.g) < silent && absolute(m.dg) < 2;
 }
@@ -613,7 +648,9 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     }
     const bool ramping = r[0] < one || strikes.count;
     const bool metal_wash = v.spec.dense > 0;
-    // The head's modes.
+    // The head's modes: plan each, skip the quiet, run the rest between the
+    // strikes, landing each strike as it comes.
+    u32 live[head_modes], lives = 0;
     for (u32 k = 0; k < head_modes; ++k) {
         Partial& m = v.part[k];
         plan_mode(v, m, k, energy_end, glide_now);
@@ -623,12 +660,27 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
             if (metal_wash) for (u32 n = 0; n < 64; ++n) scratch.sines[k][n] = 0;
             continue;
         }
+        live[lives++] = k;
+    }
+    {
         u32 begin = 0;
         for (u32 i = 0; i <= strikes.count; ++i) {
             const u32 end = i < strikes.count ? strikes.at[i] : 64;
-            if (metal_wash) run_metal(m, out, scratch.sines[k], r, begin, end, ramping);
-            else run(m, out, r, begin, end, ramping);
-            if (i < strikes.count) land(m, strikes.level[i], ramp_at[i]);
+            if (end > begin)
+                for (u32 j = 0; j < lives; ++j) {
+                    Partial& a = v.part[live[j]];
+                    i32* sa = scratch.sines[live[j]];
+                    const bool rp = ramping && a.pe;
+                    if (metal_wash) {
+                        if (rp) run_mode<true, true>(a, out, sa, r, begin, end - begin);
+                        else run_mode<false, true>(a, out, sa, r, begin, end - begin);
+                    } else {
+                        if (rp) run_mode<true, false>(a, out, sa, r, begin, end - begin);
+                        else run_mode<false, false>(a, out, sa, r, begin, end - begin);
+                    }
+                }
+            if (i < strikes.count)
+                for (u32 j = 0; j < lives; ++j) land(v.part[live[j]], strikes.level[i], ramp_at[i]);
             begin = end;
         }
     }
