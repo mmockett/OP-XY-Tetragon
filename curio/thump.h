@@ -129,65 +129,181 @@ struct Ball {
         next = static_cast<u32>(t0);
     }
     bool waiting() const { return next != 0; }
+    // The block in passes, each with its state in registers, split at the
+    // bounces; the noise is drawn in the same order as ever.
+    // The drop's tone (it never rests), and how far its sweep has risen.
+    __attribute__((noinline)) void drop_pass(i32* y, i32* rise, u32 n) {
+        Tone& o = tone[0];
+        u32 ph = o.ph;
+        const u32 in = o.inc;
+        i32 v = o.v, a = o.a, sw = sweep[0];
+        const i32 vk = o.vk, ak = o.ak, swk = sweepk, d = sdi[0];
+        for (u32 j = 0; j < n; ++j) {
+            sw = mul(sw, swk);
+            const i32 r = mul(sw, d);
+            ph += in + static_cast<u32>(r);
+            v = mul(v, vk);
+            if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            y[j] += mul(v - a, sine(ph));
+            rise[j] = r;
+        }
+        o.ph = ph;
+        o.v = v;
+        o.a = a;
+        sweep[0] = sw;
+    }
+    // The bounces' tone: it costs nothing once it has died away.
+    __attribute__((noinline)) void bounce_pass(i32* y, u32 n) {
+        Tone& o = tone[1];
+        u32 ph = o.ph;
+        const u32 in = o.inc;
+        i32 v = o.v, a = o.a, sw = sweep[1];
+        const i32 vk = o.vk, ak = o.ak, swk = sweepk, d = sdi[1];
+        for (u32 j = 0; j < n; ++j) {
+            if (v < 4096 && v > -4096) { v = a = 0; continue; }
+            sw = mul(sw, swk);
+            ph += in + static_cast<u32>(mul(sw, d));
+            v = mul(v, vk);
+            if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            y[j] += mul(v - a, sine(ph));
+        }
+        o.ph = ph;
+        o.v = v;
+        o.a = a;
+        sweep[1] = sw;
+    }
+    // The skin's edge modes, risen with the drop's sweep.
+    __attribute__((noinline)) void edge_pass(i32* y, const i32* rise, u32 n) {
+        u32 p1 = ph1, p2 = ph2, p3 = ph3;
+        const u32 i1 = inc_edge[0], i2 = inc_edge[1], i3 = inc_edge[2];
+        i32 ev = edge.v;
+        const i32 ek = edge.k;
+        for (u32 j = 0; j < n; ++j) {
+            if (ev > 4096) {
+                const i32 r = rise[j];   // adding nothing where it is 0
+                p1 += i1 + (static_cast<u32>(mul(r, F(1.59 / 2))) << 1);
+                p2 += i2 + (static_cast<u32>(mul(r, F(2.14 / 4))) << 2);
+                p3 += i3 + (static_cast<u32>(mul(r, F(2.65 / 4))) << 2);
+                ev = mul(ev, ek);
+                y[j] += mul(ev, (sine(p1) >> 2) + mul(sine(p2), F(0.7 / 4)) + mul(sine(p3), F(0.4 / 4))) << 2;
+            }
+        }
+        ph1 = p1;
+        ph2 = p2;
+        ph3 = p3;
+        edge.v = ev;
+    }
+    // The floor's ring and the ping of the ball.
+    __attribute__((noinline)) void floor_pass(i32* y, u32 n) {
+        u32 pf = phf, p190 = ph190;
+        const u32 inf = incf, in190 = inc190;
+        i32 fv = fl.v;
+        const i32 fk = fl.k;
+        for (u32 j = 0; j < n; ++j) {
+            if (fv > 4096) {
+                pf += inf;
+                p190 += in190;
+                fv = mul(fv, fk);
+                y[j] += mul(fv, (sine(pf) >> 1) + mul(sine(p190), F(0.3))) << 1;
+            }
+        }
+        phf = pf;
+        ph190 = p190;
+        fl.v = fv;
+    }
+    __attribute__((noinline)) void ping_pass(i32* y, u32 n) {
+        u32 pp = php;
+        const u32 ip = incp;
+        i32 pv = ping.v;
+        const i32 pk = ping.k;
+        for (u32 j = 0; j < n; ++j) {
+            if (pv > 4096) {
+                pp += ip;
+                pv = mul(pv, pk);
+                y[j] += mul(pv, sine(pp));
+            }
+        }
+        php = pp;
+        ping.v = pv;
+    }
+    // The click, and the buzz's noise drawn after it.
+    template <bool grit> __attribute__((noinline)) void click_pass(i32* y, i32* nb, u32 n) {
+        i32 cv = clk.v, lp = clk_lp;
+        const i32 ck = clk.k, ca = clk_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (cv > 4096 || lp > 4096 || lp < -4096) {
+                cv = mul(cv, ck);
+                const i32 c = lev(noise(r), cv);
+                lp += mul(ca, c - lp);
+                y[j] += lp;
+            }
+            if (grit) nb[j] = noise(r);
+        }
+        clk.v = cv;
+        clk_lp = lp;
+        rng = r;
+    }
+    // Grit: a tanh drive and a buzz of the snare chain.
+    __attribute__((noinline)) void grit_pass(i32* out, const i32* nb, u32 n) {
+        i32 f = follow, y1 = buzz.y1, y2 = buzz.y2, x1 = buzz.x1, x2 = buzz.x2;
+        const i32 fa = follow_a, dr = drive, ud = undrive << 14, bg = buzz_gain;
+        const i32 c = buzzk.c, r2 = buzzk.r2, b = buzzk.b;
+        for (u32 j = 0; j < n; ++j) {
+            i32 y = out[j];
+            const i32 m = y < 0 ? -y : y;
+            f += mul(fa, m - f);
+            const i32 d = mul(y, dr);                    // y g / 128
+            const i32 lim = 1 << 23;                     // g y > 4
+            const i32 s = d >= lim ? U(0.99933) : d <= -lim ? -U(0.99933) : tanh(d << 7);
+            y = mul(s, ud) << 1;
+            const i32 in = mul(nb[j], b);
+            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            y += mul(mul(o, bg) << 3, (f < one ? f : one - 1) << 3);
+            out[j] = y;
+        }
+        follow = f;
+        buzz.y1 = y1;
+        buzz.y2 = y2;
+        buzz.x1 = x1;
+        buzz.x2 = x2;
+    }
     void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        i32 rise[frames], nb[frames];
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            // The next bounce in this block.
+            u32 e = frames;
+            if (next) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
+            if (e > i) {
+                const u32 n = e - i;
+                drop_pass(out + i, rise + i, n);
+                bounce_pass(out + i, n);
+                edge_pass(out + i, rise + i, n);
+                floor_pass(out + i, n);
+                ping_pass(out + i, n);
+                if (c[7] > 0) {
+                    click_pass<true>(out + i, nb + i, n);
+                    grit_pass(out + i, nb + i, n);
+                } else {
+                    click_pass<false>(out + i, nb + i, n);
+                }
+            }
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
             if (next && t == next) {
                 ++k;
                 strike_at(a);
                 schedule();
             }
-            i32 y = 0;
-            u32 now0 = 0;
-            for (int s = 0; s < 2; ++s) {
-                Tone& o = tone[s];
-                // A tone that has died away costs nothing.
-                if (o.v < 4096 && o.v > -4096 && s) { o.v = o.a = 0; continue; }
-                sweep[s] = mul(sweep[s], sweepk);
-                const u32 now = o.inc + static_cast<u32>(mul(sweep[s], sdi[s]));
-                if (!s) now0 = now;
-                o.ph += now;
-                y += mul(o.level(), sine(o.ph));
-            }
-            const i32 rise = static_cast<i32>(now0 - tone[0].inc);
-            if (edge.v > 4096) {
-                ph1 += inc_edge[0];
-                ph2 += inc_edge[1];
-                ph3 += inc_edge[2];
-                if (rise) {
-                    ph1 += static_cast<u32>(mul(rise, F(1.59 / 2))) << 1;
-                    ph2 += static_cast<u32>(mul(rise, F(2.14 / 4))) << 2;
-                    ph3 += static_cast<u32>(mul(rise, F(2.65 / 4))) << 2;
-                }
-                const i32 eg = edge.step();
-                y += mul(eg, (sine(ph1) >> 2) + mul(sine(ph2), F(0.7 / 4)) + mul(sine(ph3), F(0.4 / 4))) << 2;
-            }
-            if (fl.v > 4096) {
-                phf += incf;
-                ph190 += inc190;
-                const i32 f = fl.step();
-                y += mul(f, (sine(phf) >> 1) + mul(sine(ph190), F(0.3))) << 1;
-            }
-            if (clk.v > 4096 || clk_lp > 4096 || clk_lp < -4096) {
-                const i32 n = lev(noise(rng), clk.step());
-                clk_lp += mul(clk_a, n - clk_lp);
-                y += clk_lp;
-            }
-            if (ping.v > 4096) {
-                php += incp;
-                y += mul(ping.step(), sine(php));
-            }
-            if (c[7] > 0) {
-                const i32 m = y < 0 ? -y : y;
-                follow += mul(follow_a, m - follow);
-                const i32 d = mul(y, drive);                 // y g / 128
-                const i32 lim = 1 << 23;                     // g y > 4
-                const i32 s = d >= lim ? U(0.99933) : d <= -lim ? -U(0.99933) : tanh(d << 7);
-                y = mul(s, undrive << 14) << 1;
-                const i32 b = bp(buzz, buzzk, noise(rng));
-                y += mul(mul(b, buzz_gain) << 3, (follow < one ? follow : one - 1) << 3);
-            }
-            out[i] = y;
         }
+        t = t0 + frames;
     }
 };
 
