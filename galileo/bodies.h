@@ -916,11 +916,21 @@ inline void noise_band_add(Energy& env, u32& seed, const i32* __restrict swing, 
     high_add(p, c, x, out, g28, n);
 }
 
+// The largest |x| of n samples, unsigned (so |-2^31| is 2^31).
+__attribute__((noinline)) u32 peak_of(const i32* __restrict x, u32 n) {
+    u32 most = 0;
+    for (u32 i = 0; i < n; ++i) {
+        const u32 v = static_cast<u32>(x[i]);
+        const u32 a = x[i] < 0 ? 0u - v : v;
+        most = a > most ? a : most;
+    }
+    return most;
+}
 // A soft knee, the body's own limiter: straight up to k, then bending towards
 // k + h (units 2^28; inv_h28 is 1 / h in Q28). A hit's first milliseconds give
 // up their peak, so its body sounds louder under the same ceiling; softer
 // strokes pass untouched.
-__attribute__((noinline)) void knee_run(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
+__attribute__((noinline)) void knee_bend(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
     for (u32 i = 0; i < n; ++i) {
         const i32 x = io[i];
         const i32 a = x < 0 ? -x : x;
@@ -928,6 +938,10 @@ __attribute__((noinline)) void knee_run(i32* __restrict io, u32 n, i32 k, i32 h,
         const i32 y = k + multiply(dsp::tanh(gain(a - k, inv_h28)), h);
         io[i] = x < 0 ? -y : y;
     }
+}
+// The bend's search only where some sample is over the knee.
+inline void knee_run(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
+    if (peak_of(io, n) > static_cast<u32>(k)) knee_bend(io, n, k, h, inv_h28);
 }
 
 __attribute__((noinline)) inline void run_kick(Body& b, i32* __restrict out, u32 count) {
