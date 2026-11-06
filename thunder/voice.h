@@ -546,6 +546,50 @@ inline void setup_chain(Voice& v, i32 most, i32 links, i32 lrel, i32 lo, i32 hi,
     v.c_r1.lp = v.c_r1.bp = 0;
     v.c_hp.s = 0;
 }
+// The chain's passes (noinline, their state in locals: together they spill).
+// The dice: a slap, 0.4..1 of U / 16, either way, when they fall under the
+// chance; thrown every other sample, the odd samples taking what passes certainty.
+__attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra, i32* hit) {
+    for (u32 n = 0; n < frames / 2; ++n) {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        const i32 a = (U / 40) + static_cast<i32>((seed >> 8) & 0x3ffffu) * 64;
+        // (without branches: s0, s1 flip a's sign; m0, m1 keep it or not)
+        const i32 s0 = static_cast<i32>(seed & 1u) - 1, s1 = static_cast<i32>((seed >> 1) & 1u) - 1;
+        const i32 m0 = -static_cast<i32>(static_cast<i32>(seed >> 1) < chance2);
+        const i32 m1 = -static_cast<i32>(static_cast<i32>((seed << 7) >> 1) < extra);
+        hit[0] = ((a ^ s0) - s0) & m0;
+        hit[1] = ((a ^ s1) - s1) & m1;
+        hit += 2;
+    }
+    return seed;
+}
+// Each slap rings the links' band, high-passed: x in, the band out.
+__attribute__((noinline)) inline void chain_ring(i32* x, i32 f, i32 q, i32 hk, i32& lp_, i32& bp_, i32& hs_) {
+    i32 lp = lp_, bp = bp_, hs = hs_;
+    for (u32 n = 0; n < frames; ++n) {
+        lp += multiply(f, bp);
+        const i32 hp = *x - lp - (multiply(q, bp) << 1);
+        bp += multiply(f, hp);
+        hs += multiply(bp - hs, hk);
+        *x++ = bp - hs;
+    }
+    lp_ = lp;
+    bp_ = bp;
+    hs_ = hs;
+}
+// and low-passed twice at its top, added to out at the chain's gain.
+__attribute__((noinline)) inline void chain_low(const i32* x, i32* out, i32 lk, i32 gain, i32& l1_, i32& l2_) {
+    i32 l1 = l1_, l2 = l2_;
+    for (u32 n = 0; n < frames; ++n) {
+        l1 += multiply(*x++ - l1, lk);
+        l2 += multiply(l1 - l2, lk);
+        *out++ += multiply(l2, gain) << 7;
+    }
+    l1_ = l1;
+    l2_ = l2;
+}
 // disp: the sheet's motion (near U at its loudest); adds the rattle to out.
 inline void run_chain(Voice& v, const i32* disp, i32* out) {
     if (!v.c_amount) return;
@@ -573,29 +617,10 @@ inline void run_chain(Voice& v, const i32* disp, i32* out) {
     // the odd samples take the rest
     const i32 chance2 = chance > (one >> 1) ? one : chance << 1;
     const i32 extra = chance > (one >> 1) ? (chance - (one >> 1)) << 1 : 0;
-    for (unsigned i = 0; i < frames; i += 2) {
-        seed ^= seed << 13;
-        seed ^= seed >> 17;
-        seed ^= seed << 5;
-        // a slap, 0.4..1 of U / 16, either way, when the dice fall under the chance
-        const i32 a = (U / 40) + static_cast<i32>((seed >> 8) & 0x3ffffu) * 64;
-        const i32 hit = static_cast<i32>(seed >> 1) < chance2 ? ((seed & 1u) ? a : -a) : 0;
-        lp += multiply(f, bp);
-        i32 hp = hit - lp - (multiply(q, bp) << 1);
-        bp += multiply(f, hp);
-        hs += multiply(bp - hs, hk);
-        l1 += multiply(bp - hs - l1, lk);
-        l2 += multiply(l1 - l2, lk);
-        out[i] += multiply(l2, gain) << 7;
-        const i32 hit2 = static_cast<i32>((seed << 7) >> 1) < extra ? ((seed & 2u) ? a : -a) : 0;
-        lp += multiply(f, bp);
-        hp = hit2 - lp - (multiply(q, bp) << 1);
-        bp += multiply(f, hp);
-        hs += multiply(bp - hs, hk);
-        l1 += multiply(bp - hs - l1, lk);
-        l2 += multiply(l1 - l2, lk);
-        out[i + 1] += multiply(l2, gain) << 7;
-    }
+    i32 hits[frames];
+    seed = chain_dice(seed, chance2, extra, hits);
+    chain_ring(hits, f, q, hk, lp, bp, hs);
+    chain_low(hits, out, lk, gain, l1, l2);
     if (!env1 && absolute(lp) + absolute(bp) + absolute(l1) + absolute(l2) < (1 << 10)) lp = bp = hs = l1 = l2 = 0;
     v.c_l1 = l1;
     v.c_l2 = l2;
