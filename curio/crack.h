@@ -146,9 +146,8 @@ struct Ice {
         u32 ph = h.ph, f = h.f, zr = zrng;
         const u32 df = h.df;
         i32 v = h.v, a = h.a, zl = zlp;
-        const i32 k = chk, ka = chak, gate = zgate, zk = za;
+        const i32 k = chk, ka = chak, zk = za;
         for (u32 j = 0; j < n; ++j) {
-            const bool zon = v - a > gate;
             ph += f;
             f += df;
             v = mul(v, k);
@@ -156,7 +155,7 @@ struct Ice {
             const i32 level = v - a;   // three quarters of the chirp's level (start)
             const i32 s = sine(ph);
             i32 o = mul(level, s);
-            if (band && CURIO_LIKELY(zon)) {
+            if (band) {
                 // Unit RMS at 2 kHz as the band-pass had, 0.35 of the tone.
                 zl += mul(zk, noise(zr) - zl);
                 o += lev(gn(mul(zl, s), 459000), level);   // 15 x 0.35 / 0.75, Q16
@@ -178,12 +177,10 @@ struct Ice {
         const i32 ck = crack.k, ca = crack_a;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (CURIO_LIKELY(cv > 4096)) {
-                cv = mul(cv, ck);
-                const i32 cr = lev(spiky(r), cv);
-                lp += mul(ca, cr - lp);
-                y[j] += cr - lp;
-            }
+            cv = mul(cv, ck);
+            const i32 cr = lev(spiky(r), cv);
+            lp += mul(ca, cr - lp);
+            y[j] += cr - lp;
         }
         crack.v = cv;
         crack_lp = lp;
@@ -248,20 +245,36 @@ struct Ice {
         i32 y1 = nz.y1, y2 = nz.y2, x1 = nz.x1, x2 = nz.x2;
         const i32 c = nzk.c, r2 = nzk.r2, b = nzk.b;
         if (hv <= 4096) return;   // until the next echo
-        for (u32 j = 0; j < n; ++j) {
-            if (CURIO_LIKELY(hv > 4096)) {
-                if (CURIO_UNLIKELY(r < gp)) gv = one;
-                hv = mul(hv, hk);
-                i32 level = hv;
-                if (CURIO_LIKELY(gv)) { gv = mul(gv, gk); level += lev(level, gv); if (CURIO_UNLIKELY(gv < 4096)) gv = 0; }
-                const i32 in = mul(noise(r), b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                y[j] += lev(o, level);
-            }
+        // Each micro-crack restarts the crunch, which then dies away; two
+        // samples a turn so the band's states trade places.
+        if (n & 1) {
+            gv = mul(gv, gk);
+            if (CURIO_UNLIKELY(r < gp)) gv = one;
+            hv = mul(hv, hk);
+            const i32 in = mul(noise(r), b);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            *y++ += lev(o, hv + lev(hv, gv));
+        }
+        for (u32 j = 0; j < (n >> 1); ++j) {
+            gv = mul(gv, gk);
+            if (CURIO_UNLIKELY(r < gp)) gv = one;
+            hv = mul(hv, hk);
+            const i32 i0 = mul(noise(r), b);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+            x2 = i0;
+            y[0] += lev(y2, hv + lev(hv, gv));
+            gv = mul(gv, gk);
+            if (CURIO_UNLIKELY(r < gp)) gv = one;
+            hv = mul(hv, hk);
+            const i32 i1 = mul(noise(r), b);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+            x1 = i1;
+            y[1] += lev(y1, hv + lev(hv, gv));
+            y += 2;
         }
         hiss.v = hv;
         grain.v = gv;
@@ -280,7 +293,9 @@ struct Ice {
         for (u32 s = 0; s < 2; ++s) {
             Chirp& h = ch[s];
             if (!h.v && !h.a) continue;
-            if (s == newest) chirp_pass<true>(h, x, n);
+            // The newest carries its band while well above zero (under -24 dB
+            // of its start the band is lost under the tone: it rests).
+            if (s == newest && h.v - h.a > zgate) chirp_pass<true>(h, x, n);
             else chirp_pass<false>(h, x, n);
         }
         // The snap, once under its floor, stays there until the next crack.
