@@ -362,11 +362,20 @@ def cmd_bfin(a):
     (out / "census.txt").write_text(census.stdout + census.stderr)
     print(f"{info['id']}: built {out / 'golden.elf'}")
     if a.run:
-        r = subprocess.run([a.run, str(out / "golden.elf")], capture_output=True, text=True, timeout=a.timeout)
-        (out / "cycles.txt").write_text(r.stdout + r.stderr)
-        print(r.stdout[-3000:], r.stderr[-2000:])
-        if "done" not in r.stdout:
-            sys.exit(f"{info['id']}: the simulator run did not finish")
+        simulate(out, a.run, a.timeout)
+
+
+def simulate(out, run, timeout):
+    out = pathlib.Path(out)
+    r = subprocess.run([run, str(out / "golden.elf")], capture_output=True, text=True, timeout=timeout)
+    (out / "cycles.txt").write_text(r.stdout + r.stderr)
+    print(r.stdout[-3000:], r.stderr[-2000:])
+    if "done" not in r.stdout:
+        sys.exit(f"{out}: the simulator run did not finish")
+
+
+def cmd_sim(a):
+    simulate(a.out, a.run, a.timeout)
 
 
 def load_cycles(folder):
@@ -463,8 +472,12 @@ def main():
     q.add_argument("--run")
     q.add_argument("--blocks", type=int, default=1500)
     q.add_argument("--timeout", type=int, default=3000)
+    q = s.add_parser("sim")
+    q.add_argument("--out", required=True)
+    q.add_argument("--run", required=True)
+    q.add_argument("--timeout", type=int, default=3000)
     a = p.parse_args()
-    dict(render=cmd_render, identity=cmd_identity, hits=cmd_hits, report=cmd_report, bfin=cmd_bfin, counts=cmd_counts)[a.cmd](a)
+    dict(sim=cmd_sim, render=cmd_render, identity=cmd_identity, hits=cmd_hits, report=cmd_report, bfin=cmd_bfin, counts=cmd_counts)[a.cmd](a)
 
 
 if __name__ == "__main__":

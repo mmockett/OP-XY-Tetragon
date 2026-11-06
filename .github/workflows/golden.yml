@@ -145,34 +145,11 @@ jobs:
           name: compare
           path: keep/
 
-  # GDB's Blackfin simulator, built once (and cached) with the Blackfin+ multiply.
-  simulator:
+  # The counted build: the pinned Blackfin tools have reviewed downloads for
+  # macOS arm64 and Windows only, so one macOS job cross-compiles base and head.
+  elf:
+    needs: plan
     runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Restore the simulator
-        id: sim
-        uses: actions/cache@v4
-        with:
-          path: sim
-          key: bfin-sim-gdb-${{ env.GDB_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/golden/sim_patch.py', 'tools/golden/build_sim.sh') }}
-      - name: Build the simulator
-        if: steps.sim.outputs.cache-hit != 'true'
-        run: tools/golden/build_sim.sh "$GDB_VERSION" sim
-      - uses: actions/upload-artifact@v4
-        with:
-          name: bfin-sim
-          path: sim/
-
-  # The pinned Blackfin tools have reviewed downloads for macOS arm64 and Windows only.
-  counts:
-    needs: [plan, simulator]
-    runs-on: macos-latest
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        kit: [thunder, curio, galileo, syahi]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -183,9 +160,6 @@ jobs:
           repository: ${{ env.OPEN_XY_REPO }}
           ref: ${{ env.OPEN_XY_REF }}
           path: open-xy
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
       - name: Base checkout
         run: git -C head worktree add --detach ../base "${{ needs.plan.outputs.identity == 'true' && needs.plan.outputs.identity_base || needs.plan.outputs.base }}"
       - name: Restore the pinned Blackfin tools
@@ -195,21 +169,51 @@ jobs:
           key: toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('open-xy/profiles/toolchains.json') }}
       - name: Pinned Blackfin tools
         working-directory: open-xy
-        run: python sdk.py toolchain fetch
+        run: python3 sdk.py toolchain fetch
+      - name: Cross-compile base and head
+        run: |
+          for side in base head; do for kit in $KITS; do
+            python3 head/tools/golden/golden.py bfin --kit "$side/$kit" --sdk open-xy --tools open-xy/local/toolchain/bin --out "out/$side/$kit"
+          done; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: elf
+          path: out/
+
+  # The simulator runs on Linux, each kit in its own job; GDB is built once and cached.
+  counts:
+    needs: [plan, elf]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        kit: [thunder, curio, galileo, syahi]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the simulator
+        id: sim
+        uses: actions/cache@v4
+        with:
+          path: sim
+          key: bfin-sim-gdb-${{ env.GDB_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/golden/sim_patch.py', 'tools/golden/build_sim.sh') }}
+      - name: Build the simulator
+        if: steps.sim.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update > /dev/null && sudo apt-get install -y libgmp-dev libmpfr-dev zlib1g-dev texinfo > /dev/null
+          tools/golden/build_sim.sh "$GDB_VERSION" sim
       - uses: actions/download-artifact@v4
         with:
-          name: bfin-sim
-          path: sim
-      - run: chmod +x sim/bfin-elf-run
+          name: elf
+          path: out
       - name: Count base and head
         run: |
           for side in base head; do
-            python head/tools/golden/golden.py bfin --kit "$side/${{ matrix.kit }}" --sdk open-xy \
-              --tools open-xy/local/toolchain/bin --out "out/$side/${{ matrix.kit }}" --run sim/bfin-elf-run
+            python3 tools/golden/golden.py sim --out "out/$side/${{ matrix.kit }}" --run sim/bfin-elf-run
           done
       - name: Counted table
         run: |
-          python head/tools/golden/golden.py counts out/base out/head --kits ${{ matrix.kit }} --md out/counts-${{ matrix.kit }}.md \
+          python3 tools/golden/golden.py counts out/base out/head --kits ${{ matrix.kit }} --md out/counts-${{ matrix.kit }}.md \
             ${{ needs.plan.outputs.identity == 'true' && '--strict' || '' }} > /dev/null || status=$?
           cat out/counts-${{ matrix.kit }}.md >> "$GITHUB_STEP_SUMMARY"
           exit ${status:-0}
@@ -219,5 +223,5 @@ jobs:
           name: counts-${{ matrix.kit }}
           path: |
             out/counts-*.md
-            out/*/*/cycles.txt
-            out/*/*/census.txt
+            out/*/${{ matrix.kit }}/cycles.txt
+            out/*/${{ matrix.kit }}/census.txt
