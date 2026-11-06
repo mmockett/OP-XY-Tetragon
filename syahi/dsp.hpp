@@ -191,6 +191,13 @@ static inline i32 log2u(u32 v) {
 }
 // log2(1 + x) for x in Q16 (x >= 0), Q16.
 static inline i32 log2_1p(i32 x) { return log2u(static_cast<u32>(positive(x)) + 65536u) - 16 * octave; }
+// value * 2^shift, clamped first: no branch (MIN and MAX), for the sample
+// loops. It saturates 2^shift - 1 short of full scale, where shl reaches it.
+static inline i32 shl_clamp(i32 value, u32 shift) {
+    const i32 limit = one >> shift;
+    const i32 v = value > limit ? limit : value;
+    return (v < -limit ? -limit : v) * (static_cast<i32>(1) << shift);
+}
 // value * 2^shift, saturating, for 0 <= shift < 31.
 static inline i32 shl(i32 value, u32 shift) {
     const i32 limit = one >> shift;

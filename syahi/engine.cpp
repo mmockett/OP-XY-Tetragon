@@ -179,8 +179,9 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
     u32 hold_left = f.hold_left;
     const u32 hold = f.hold;
     u32 under = 0;
+    i32 most = 0;
     for (u32 n = 0; n < 64; ++n) {
-        i32 y = shl(multiply(out[n], gain), 7);
+        i32 y = shl_clamp(multiply(out[n], gain), 7);
         if (kind == grit_soft) {
             low += multiply(y - low, soft);
             y = low;
@@ -197,11 +198,17 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
             y = held_y;
         }
         hp += multiply(y - hp, 7323000);   // 1 - e^(-2 pi 24 / 44100), Q31
-        y = shl(multiply(y - hp, level), 3);   // level is Q28
-        if (y > knee_at || y < -knee_at) y = round_off(y, f.knee);
+        y = shl_clamp(multiply(y - hp, level), 3);   // level is Q28
         output[n] = y;
-        if (y < quiet_floor && y > -quiet_floor) ++under;
+        const i32 a = absolute(y);
+        most = a > most ? a : most;
+        under += static_cast<u32>(y + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);   // |y| < the floor
     }
+    // The knee, past the loop (rare: a hit's loudest moments), so the pass
+    // stays a hardware loop. Past the knee is far above the quiet floor.
+    if (most > knee_at)
+        for (u32 n = 0; n < 64; ++n)
+            if (output[n] > knee_at || output[n] < -knee_at) output[n] = round_off(output[n], f.knee);
     f.hp = hp;
     f.low = low;
     f.held = held;

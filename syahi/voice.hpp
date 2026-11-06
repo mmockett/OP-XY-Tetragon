@@ -667,7 +667,7 @@ __attribute__((noinline)) static void buzz_pass(Buzz& z, i32* __restrict out) {
         const i32 b = svf_bandpass(band, cwb, multiply(noise(seed), drive));
         drive += step;
         low += multiply(b - low, top);
-        out[n] += shl(multiply(low, gain), 8);
+        out[n] += shl_clamp(multiply(low, gain), 8);
     }
     z.low = low;
     z.seed = seed;
