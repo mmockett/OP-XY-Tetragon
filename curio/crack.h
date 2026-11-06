@@ -702,11 +702,13 @@ struct Spark {
     u32 pre;
     i32 glass_amp;
     bool glass_on;
+    u32 orng;   // the ozone's own noise
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
+        orng = (x.seed * 2654435761u) | 1u;
         t = 0;
         k = 0;
         const u32 main = 3 + static_cast<u32>(c[0] * 3 >> 12);
@@ -776,7 +778,7 @@ struct Spark {
     // cracks; the noise is drawn in the same order as ever.
     // The burst of band noise (it rings on while its band does), and the
     // noise for the snap and the ozone in draw order.
-    template <bool bursting> __attribute__((noinline)) void burst_pass(i32* y, i32* sb, i32* ob, u32 n) {
+    template <bool bursting> __attribute__((noinline)) void burst_pass(i32* y, i32* sb, u32 n) {
         i32 bv = burst.v, ba = batt, y1 = burstr.y1, y2 = burstr.y2, x1 = burstr.x1, x2 = burstr.x2;
         i32 sv = snap.v;   // the snap's draws stop as it falls quiet, as its own pass's do
         const i32 bk = burst.k, ak = bak, c = bpk.c, r2 = bpk.r2, b = bpk.b, g = bgain, sk = snap.k;
@@ -797,7 +799,6 @@ struct Spark {
                 sv = mul(sv, sk);
                 sb[j] = spiky(r);
             }
-            ob[j] = noise(r);
         }
         burst.v = bv;
         batt = ba;
@@ -826,14 +827,15 @@ struct Spark {
         snap_lp = lp;
     }
     // Ozone, swelling in as the cracks go on.
-    __attribute__((noinline)) void ozone_pass(i32* y, const i32* ob, u32 tt, u32 n) {
+    __attribute__((noinline)) void ozone_pass(i32* y, u32 tt, u32 n) {
+        u32 r = orng;
         i32 lv = oz_level, y1 = oz.y1, y2 = oz.y2, x1 = oz.x1, x2 = oz.x2;
         const i32 ramp = oz_ramp, k = to_k, c = ozk.c, r2 = ozk.r2, b = ozk.b, g = ozgain;
         const u32 last = end;
         for (u32 j = 0; j < n; ++j, ++tt) {
             if (CURIO_UNLIKELY(tt <= last)) lv += ramp;
             else lv = mul(lv, k);
-            const i32 in = mul(ob[j], b);
+            const i32 in = mul(noise(r), b);
             const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
             x2 = x1;
             x1 = in;
@@ -841,6 +843,7 @@ struct Spark {
             y1 = o;
             y[j] += lev(gn(o, g), lv);
         }
+        orng = r;
         oz_level = lv;
         oz.y1 = y1;
         oz.y2 = y2;
@@ -898,17 +901,17 @@ struct Spark {
     }
     // n samples after the pre-delay, between cracks.
     __attribute__((noinline)) void span(i32* y, u32 tt, u32 n) {
-        i32 sb[frames], ob[frames];
+        i32 sb[frames];
         for (u32 j = 0; j < n; ++j) y[j] = 0;
         // The burst, once quiet with its band rung out, stays so until the next crack.
-        if (burst.v > 4096 || burstr.y1 > 4096 || burstr.y1 < -4096) burst_pass<true>(y, sb, ob, n);
-        else burst_pass<false>(y, sb, ob, n);
+        if (burst.v > 4096 || burstr.y1 > 4096 || burstr.y1 < -4096) burst_pass<true>(y, sb, n);
+        else if (snap.v > 4096) burst_pass<false>(y, sb, n);
         snap_pass(y, sb, n);
         if (glass_on) {
             ring_into(glass[0], glassk[0], y, n);
             ring_into(glass[1], glassk[1], y, n);
         }
-        ozone_pass(y, ob, tt, n);
+        ozone_pass(y, tt, n);
         if (c[4] > 0) arc_pass(y, tt, n);
         if (body.v) body_pass(y, n);
         if (c[7] > 0) dist_pass(y, n);
