@@ -1,0 +1,213 @@
+name: Golden renders
+# Three checks of a head against a base, each kit rendered by tools/golden:
+# - identity: every scenario's raw int32 output (the opxy-drum-callback-v1
+#   schedule, control and pad sweeps, every key, the transport on and off),
+#   bit for bit, with g++ and clang. Fails on any difference.
+# - compare: single hits of every model and every preset key, base and head,
+#   as WAVs, with a report of loudness, peak, decay, centroid and bands. Never fails.
+# - counts: the benchmark's schedule cross-compiled with the pinned Blackfin
+#   tools and run in the GDB Blackfin simulator: counted cycles per run, and a
+#   loop census. Fails only alongside identity, if a loop grows or loses its
+#   hardware loop.
+# Pushes to ci/* run identity against v1.0.0. Pushes to perf/* run compare and
+# counts against v1.0.0, and identity against the parent commit when the commit
+# message carries [refactor].
+on:
+  push:
+    branches: ['ci/**', 'perf/**']
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: identity, compare or both
+        default: both
+      base:
+        description: the base ref
+        default: v1.0.0
+permissions:
+  contents: read
+env:
+  OPEN_XY_REPO: mmockett/open-xy
+  OPEN_XY_REF: drum/pad-channel
+  KITS: thunder curio galileo syahi
+  GDB_VERSION: '15.2'
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      identity: ${{ steps.plan.outputs.identity }}
+      identity_base: ${{ steps.plan.outputs.identity_base }}
+      compare: ${{ steps.plan.outputs.compare }}
+      base: ${{ steps.plan.outputs.base }}
+    steps:
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref_name }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+          MODE: ${{ inputs.mode }}
+          BASE: ${{ inputs.base }}
+        run: |
+          base="${BASE:-v1.0.0}"
+          identity=false; compare=false; identity_base="$base"
+          if [ "$EVENT" = workflow_dispatch ]; then
+            case "$MODE" in identity) identity=true;; compare) compare=true;; *) identity=true; compare=true;; esac
+          elif [[ "$REF" == ci/* ]]; then
+            identity=true; compare=true
+          else
+            compare=true
+            if printf '%s' "$MESSAGE" | grep -qF '[refactor]'; then identity=true; identity_base="${GITHUB_SHA}^"; fi
+          fi
+          echo "identity=$identity" >> "$GITHUB_OUTPUT"
+          echo "identity_base=$identity_base" >> "$GITHUB_OUTPUT"
+          echo "compare=$compare" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "identity $identity against $identity_base; compare $compare and counts against $base" >> "$GITHUB_STEP_SUMMARY"
+
+  identity:
+    needs: plan
+    if: needs.plan.outputs.identity == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: head
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPEN_XY_REPO }}
+          ref: ${{ env.OPEN_XY_REF }}
+          path: open-xy
+      - name: Base checkout
+        run: git -C head worktree add --detach ../base "${{ needs.plan.outputs.identity_base }}"
+      - run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Render base and head
+        run: |
+          for side in base head; do
+            for kit in $KITS; do
+              python3 head/tools/golden/golden.py render --kit "$side/$kit" --sdk open-xy --cxx ${{ matrix.cxx }} --out "out/$side/$kit"
+            done
+          done
+      - name: Compare bit for bit
+        run: python3 head/tools/golden/golden.py identity out/base out/head --kits "$KITS" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: identity-${{ matrix.cxx }}
+          path: out/
+
+  compare:
+    needs: plan
+    if: needs.plan.outputs.compare == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: head
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPEN_XY_REPO }}
+          ref: ${{ env.OPEN_XY_REF }}
+          path: open-xy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install numpy==2.3.5
+      - name: Base checkout
+        run: git -C head worktree add --detach ../base "${{ needs.plan.outputs.base }}"
+      - name: Hits, base and head
+        run: |
+          for side in base head; do
+            for kit in $KITS; do
+              python head/tools/golden/golden.py hits --kit "$side/$kit" --sdk open-xy --cxx g++ --out "out/$side/$kit"
+            done
+          done
+      - name: Report
+        run: |
+          python head/tools/golden/golden.py report out/base out/head --kits "$KITS" --md out/report.md --json out/report.json > /dev/null
+          cat out/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the WAVs and the report
+        run: |
+          mkdir -p keep
+          cp out/report.md out/report.json keep/
+          for side in base head; do for kit in $KITS; do
+            mkdir -p "keep/$side/$kit" && cp -r "out/$side/$kit/wav" "out/$side/$kit/hits.json" "keep/$side/$kit/"
+          done; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: compare
+          path: keep/
+
+  counts:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        kit: [thunder, curio, galileo, syahi]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: head
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPEN_XY_REPO }}
+          ref: ${{ env.OPEN_XY_REF }}
+          path: open-xy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Base checkout
+        run: git -C head worktree add --detach ../base "${{ needs.plan.outputs.identity == 'true' && needs.plan.outputs.identity_base || needs.plan.outputs.base }}"
+      - name: Restore the pinned Blackfin tools
+        uses: actions/cache@v4
+        with:
+          path: open-xy/local/toolchain
+          key: toolchain-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('open-xy/profiles/toolchains.json') }}
+      - name: Pinned Blackfin tools
+        working-directory: open-xy
+        run: python sdk.py toolchain fetch
+      - name: Restore the Blackfin simulator
+        id: sim
+        uses: actions/cache@v4
+        with:
+          path: sim
+          key: bfin-sim-gdb-${{ env.GDB_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Build the Blackfin simulator (GDB's bfin-elf-run)
+        if: steps.sim.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y texinfo libgmp-dev libmpfr-dev
+          curl -sSfL "https://ftp.gnu.org/gnu/gdb/gdb-$GDB_VERSION.tar.xz" | tar xJ
+          mkdir build && cd build
+          "../gdb-$GDB_VERSION/configure" --target=bfin-elf --disable-gdb --disable-gdbserver --disable-binutils \
+            --disable-ld --disable-gas --disable-gprof --disable-nls --disable-werror --disable-readline \
+            --disable-sim-hardware --enable-sim > /dev/null
+          make -j"$(nproc)" all-sim MAKEINFO=true > /dev/null
+          mkdir -p ../sim && cp "$(find . -path '*bfin*' -name run -type f | head -1)" ../sim/bfin-elf-run
+          ../sim/bfin-elf-run --version | head -1
+      - name: Count base and head
+        run: |
+          for side in base head; do
+            python head/tools/golden/golden.py bfin --kit "$side/${{ matrix.kit }}" --sdk open-xy \
+              --tools open-xy/local/toolchain/bin --out "out/$side/${{ matrix.kit }}" --run sim/bfin-elf-run
+          done
+      - name: Counted table
+        run: |
+          python head/tools/golden/golden.py counts out/base out/head --kits ${{ matrix.kit }} --md out/counts-${{ matrix.kit }}.md \
+            ${{ needs.plan.outputs.identity == 'true' && '--strict' || '' }} > /dev/null || status=$?
+          cat out/counts-${{ matrix.kit }}.md >> "$GITHUB_STEP_SUMMARY"
+          exit ${status:-0}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: counts-${{ matrix.kit }}
+          path: |
+            out/counts-*.md
+            out/*/*/cycles.txt
+            out/*/*/census.txt
