@@ -409,9 +409,14 @@ def elf_functions(path):
 def profile(out, run, timeout):
     """The simulator's PC samples over the short build, summed per function."""
     work = pathlib.Path(tempfile.mkdtemp())
-    subprocess.run([str(pathlib.Path(run).resolve()), "--profile-pc", "--profile-pc-frequency=1009",
-                    "--profile-pc-granularity=4", str((out / "profile.elf").resolve())],
-                   cwd=work, capture_output=True, text=True, timeout=timeout)
+    # --verbose makes the run print its statistics at exit, which writes gmon.out.
+    r = subprocess.run([str(pathlib.Path(run).resolve()), "--verbose", "--profile-pc", "--profile-pc-frequency=1009",
+                        "--profile-pc-granularity=4", str((out / "profile.elf").resolve())],
+                       cwd=work, capture_output=True, text=True, timeout=timeout)
+    if not (work / "gmon.out").exists():
+        (out / "profile.txt").write_text("no profile: " + (r.stdout + r.stderr)[-2000:])
+        print("no profile written:", (r.stdout + r.stderr)[-2000:])
+        return
     raw = (work / "gmon.out").read_bytes()
     low, high, size = struct.unpack_from("<III", raw, 0)
     counts = struct.unpack_from("<%dH" % ((len(raw) - 12) // 2), raw, 12)
