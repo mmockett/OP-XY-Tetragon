@@ -788,50 +788,167 @@ struct Spark {
         for (int m = 0; m < 2; ++m) dsp::strike(glass[m], glassk[m], lev(lvl[k], m ? glass_amp >> 1 : glass_amp));
         ++k;
     }
+    // The block in passes, each with its state in registers, split at the
+    // cracks; the noise is drawn in the same order as ever.
+    // The burst of band noise (it rings on while its band does), and the
+    // noise for the snap and the ozone in draw order.
+    __attribute__((noinline)) void burst_pass(i32* y, i32* sb, i32* ob, u32 n) {
+        i32 bv = burst.v, ba = batt, y1 = burstr.y1, y2 = burstr.y2, x1 = burstr.x1, x2 = burstr.x2;
+        i32 sv = snap.v;   // the snap's draws stop as it falls quiet, as its own pass's do
+        const i32 bk = burst.k, ak = bak, c = bpk.c, r2 = bpk.r2, b = bpk.b, g = bgain, sk = snap.k;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (bv > 4096 || y1 > 4096 || y1 < -4096) {
+                bv = mul(bv, bk);
+                ba = mul(ba, ak);
+                const i32 in = mul(lev(noise(r), bv - ba), b);
+                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                y[j] += gn(o, g);
+            }
+            if (sv > 4096) {
+                sv = mul(sv, sk);
+                sb[j] = spiky(r);
+            }
+            ob[j] = noise(r);
+        }
+        burst.v = bv;
+        batt = ba;
+        burstr.y1 = y1;
+        burstr.y2 = y2;
+        burstr.x1 = x1;
+        burstr.x2 = x2;
+        rng = r;
+    }
+    // The snap: a shock's broadband click at each crack.
+    __attribute__((noinline)) void snap_pass(i32* y, const i32* sb, u32 n) {
+        i32 v = snap.v, lp = snap_lp;
+        const i32 k = snap.k, a = snap_a;
+        for (u32 j = 0; j < n; ++j) {
+            if (v > 4096) {
+                v = mul(v, k);
+                const i32 sn = lev(sb[j], v);
+                lp += mul(a, sn - lp);
+                y[j] += sn - lp;
+            } else {
+                lp = 0;
+            }
+        }
+        snap.v = v;
+        snap_lp = lp;
+    }
+    // Ozone, swelling in as the cracks go on.
+    __attribute__((noinline)) void ozone_pass(i32* y, const i32* ob, u32 tt, u32 n) {
+        i32 lv = oz_level, y1 = oz.y1, y2 = oz.y2, x1 = oz.x1, x2 = oz.x2;
+        const i32 ramp = oz_ramp, k = to_k, c = ozk.c, r2 = ozk.r2, b = ozk.b, g = ozgain;
+        const u32 last = end;
+        for (u32 j = 0; j < n; ++j, ++tt) {
+            if (tt <= last) lv += ramp;
+            else lv = mul(lv, k);
+            const i32 in = mul(ob[j], b);
+            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            y[j] += lev(gn(o, g), lv);
+        }
+        oz_level = lv;
+        oz.y1 = y1;
+        oz.y2 = y2;
+        oz.x1 = x1;
+        oz.x2 = x2;
+    }
+    // The arc's mains buzz, from half way through the cracks.
+    __attribute__((noinline)) void arc_pass(i32* y, u32 tt, u32 n) {
+        u32 ph = ph120;
+        i32 lp = arc_lp, v = arc.v;
+        const i32 a = arc_a, k = arc.k;
+        const u32 last = end;
+        for (u32 j = 0; j < n; ++j, ++tt) {
+            if (tt * 2 > last) {
+                ph += 11687059u;   // 120 Hz
+                const i32 sq = static_cast<i32>(ph) >= 0 ? one >> 1 : -(one >> 1);
+                const i32 hum = sq + (sine(ph * 2) >> 3);
+                lp += mul(a, hum - lp);
+                if (tt > last) v = mul(v, k);
+                y[j] += lev(lp, v);
+            }
+        }
+        ph120 = ph;
+        arc_lp = lp;
+        arc.v = v;
+    }
+    // The jar's body.
+    __attribute__((noinline)) void body_pass(i32* y, u32 n) {
+        u32 ph = body.ph;
+        const u32 in = body.inc;
+        i32 v = body.v, a = body.a;
+        const i32 vk = body.vk, ak = body.ak;
+        for (u32 j = 0; j < n; ++j) {
+            if (v) {
+                ph += in;
+                v = mul(v, vk);
+                if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+                y[j] += mul(v - a, sine(ph));
+                if (v < 4096) v = 0;
+            }
+        }
+        body.ph = ph;
+        body.v = v;
+        body.a = a;
+    }
+    // The distance: the whole low-passed.
+    __attribute__((noinline)) void dist_pass(i32* y, u32 n) {
+        i32 lp = out_lp;
+        const i32 a = out_a;
+        for (u32 j = 0; j < n; ++j) {
+            lp += mul(a, y[j] - lp);
+            y[j] = lp;
+        }
+        out_lp = lp;
+    }
+    // n samples after the pre-delay, between cracks.
+    __attribute__((noinline)) void span(i32* y, u32 tt, u32 n) {
+        i32 sb[frames], ob[frames];
+        for (u32 j = 0; j < n; ++j) y[j] = 0;
+        burst_pass(y, sb, ob, n);
+        snap_pass(y, sb, n);
+        if (glass_on) {
+            ring_into(glass[0], glassk[0], y, n);
+            ring_into(glass[1], glassk[1], y, n);
+        }
+        ozone_pass(y, ob, tt, n);
+        if (c[4] > 0) arc_pass(y, tt, n);
+        if (body.v) body_pass(y, n);
+        if (c[7] > 0) dist_pass(y, n);
+    }
     void run(i32* out) {
         // The jar's glass rests once it has rung out, until the next crack.
         glass_on = k < n || (glass[0].y1 > 2048 || glass[0].y1 < -2048 || glass[1].y1 > 2048 || glass[1].y1 < -2048);
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (t < pre) { out[i] = 0; continue; }
-            const u32 tt = t - pre;
-            while (k < n && tt == at[k]) crack_now();
-            i32 y = 0;
-            if (burst.v > 4096 || burstr.y1 > 4096 || burstr.y1 < -4096) {
-                const i32 env = burst.step() - (batt = mul(batt, bak));
-                y = gn(bp(burstr, bpk, lev(noise(rng), env)), bgain);
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            if (t0 + i < pre) {
+                // Before the distance's delay: silence.
+                u32 e = pre - t0;
+                if (e > frames) e = frames;
+                for (; i < e; ++i) out[i] = 0;
+                if (i >= frames) break;
             }
-            if (snap.v > 4096) {
-                const i32 sn = lev(spiky(rng), snap.step());
-                snap_lp += mul(snap_a, sn - snap_lp);
-                y += sn - snap_lp;
-            } else if (snap_lp) {
-                snap_lp = 0;
-            }
-            if (glass_on) y += ring(glass[0], glassk[0], 0) + ring(glass[1], glassk[1], 0);
-            // Ozone.
-            if (tt <= end) oz_level += oz_ramp;
-            else oz_level = mul(oz_level, to_k);
-            const i32 o = bp(oz, ozk, noise(rng));
-            y += lev(gn(o, ozgain), oz_level);
-            if (c[4] > 0 && tt * 2 > end) {
-                ph120 += 11687059u;   // 120 Hz
-                const i32 sq = static_cast<i32>(ph120) >= 0 ? one >> 1 : -(one >> 1);
-                const i32 hum = sq + (sine(ph120 * 2) >> 3);
-                arc_lp += mul(arc_a, hum - arc_lp);
-                const i32 a = tt > end ? arc.step() : arc.v;
-                y += lev(arc_lp, a);
-            }
-            if (body.v) {
-                body.ph += body.inc;
-                y += mul(body.level(), sine(body.ph));
-                if (body.v < 4096) body.v = 0;
-            }
-            if (c[7] > 0) {
-                out_lp += mul(out_a, y - out_lp);
-                y = out_lp;
-            }
-            out[i] = y;
+            const u32 tt = t0 + i - pre;
+            // The next crack in this block.
+            u32 e = frames;
+            if (k < n) { const u32 d = at[k] - tt; if (d < frames - i) e = i + d; }
+            if (e > i) span(out + i, tt, e - i);
+            i = e;
+            if (i >= frames) break;
+            const u32 now = t0 + i - pre;
+            while (k < n && now == at[k]) crack_now();
         }
+        t = t0 + frames;
     }
 };
 
