@@ -121,8 +121,9 @@ inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters
     voice.model = voice.next;
     voice.t = 0;
     // A fresh body: nothing rings over from the last note this voice played.
-    unsigned char* bytes = reinterpret_cast<unsigned char*>(&voice.body);
-    for (unsigned i = 0; i < sizeof(voice.body); ++i) bytes[i] = 0;
+    static_assert(sizeof(voice.body) % 4 == 0, "Body is whole words");
+    u32* words = reinterpret_cast<u32*>(&voice.body);
+    for (u32 i = 0; i < sizeof(voice.body) / 4; ++i) words[i] = 0;
     voice.body.due = 0xffffffffu;
     voice.body.seed = 0x243f6a88u ^ (shared.notes * 0x85ebca6bu) ^ voice.owner;
     i32 p[4];
