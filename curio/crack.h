@@ -193,9 +193,12 @@ struct Ice {
     __attribute__((noinline)) void drive_pass(const i32* x, i32* out, u32 n) {
         const i32 dr = drive, ud = undrive << 14;
         for (u32 j = 0; j < n; ++j) {
-            const i32 d = mul(x[j], dr);
-            const i32 s = d < 400000 && d > -400000 ? d << 7 : d >= (1 << 23) ? U(0.99933) : d <= -(1 << 23) ? -U(0.99933) : tanh(d << 7);
-            out[j] = mul(s, ud) << 1;
+            // The curve all the way, held at its shoulder (tanh 4) past it:
+            // no branch for the quiet samples' straight foot.
+            i32 d = mul(x[j], dr);
+            if (CURIO_UNLIKELY(d > (1 << 23))) d = 1 << 23;
+            if (CURIO_UNLIKELY(d < -(1 << 23))) d = -(1 << 23);
+            out[j] = mul(tanh(d << 7), ud) << 1;
         }
     }
     // The lake.
