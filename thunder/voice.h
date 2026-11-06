@@ -820,11 +820,11 @@ inline void setup_chain(Voice& v, i32 most, i32 links, i32 lrel, i32 lo, i32 hi,
 // the state-variable band is only a resonance for f q under 1. It stays at
 // the full rate.)
 // The dice: a slap, 0.4..1 of U / 16, either way, when they fall under the
-// chance; thrown every fourth sample, the sample two on taking what passes
+// chance; thrown every other sample, the odd samples taking what passes
 // certainty (both: any do).
 template <bool both>
 __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra, i32* hit) {
-    for (u32 n = 0; n < frames / 4; ++n) {
+    for (u32 n = 0; n < frames / 2; ++n) {
         seed ^= seed << 13;
         seed ^= seed >> 17;
         seed ^= seed << 5;
@@ -833,16 +833,14 @@ __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra
         const i32 s0 = static_cast<i32>(seed & 1u) - 1;
         const i32 m0 = -static_cast<i32>(static_cast<i32>(seed >> 1) < chance2);
         hit[0] = ((a ^ s0) - s0) & m0;
-        hit[1] = 0;
         if (both) {
             const i32 s1 = static_cast<i32>((seed >> 1) & 1u) - 1;
             const i32 m1 = -static_cast<i32>(static_cast<i32>((seed << 7) >> 1) < extra);
-            hit[2] = ((a ^ s1) - s1) & m1;
+            hit[1] = ((a ^ s1) - s1) & m1;
         } else {
-            hit[2] = 0;
+            hit[1] = 0;
         }
-        hit[3] = 0;
-        hit += 4;
+        hit += 2;
     }
     return seed;
 }
@@ -906,14 +904,12 @@ inline void chain_most(Voice& v, i32 most, i32* out) {
     const i32 f = v.c_f1, q = v.c_q, hk = v.c_hpk, lk = v.c_lpk;
     i32 lp = v.c_r1.lp, bp = v.c_r1.bp, hs = v.c_hp.s, l1 = v.c_l1, l2 = v.c_l2;
     u32 seed = v.seed ? v.seed : 1u;
-    // the dice thrown every fourth sample, at four times the chance; past
-    // certainty a second slap two samples on takes the rest (up to a second
-    // certainty: a chain lifted that hard slaps every other sample)
-    const i32 chance4 = chance > (one >> 2) ? one : chance << 2;
-    const i32 over = chance > (one >> 2) ? chance - (one >> 2) : 0;
-    const i32 extra = over > (one >> 2) ? one : over << 2;
+    // the dice thrown every other sample, at twice the chance; past certainty
+    // the odd samples take the rest
+    const i32 chance2 = chance > (one >> 1) ? one : chance << 1;
+    const i32 extra = chance > (one >> 1) ? (chance - (one >> 1)) << 1 : 0;
     i32 hits[frames];
-    seed = extra ? chain_dice<true>(seed, chance4, extra, hits) : chain_dice<false>(seed, chance4, extra, hits);
+    seed = extra ? chain_dice<true>(seed, chance2, extra, hits) : chain_dice<false>(seed, chance2, extra, hits);
     chain_ring(hits, f, q, hk, lp, bp, hs);
     chain_low(hits, out, lk, gain, l1, l2);
     if (!env1 && absolute(lp) + absolute(bp) + absolute(l1) + absolute(l2) < (1 << 10)) lp = bp = hs = l1 = l2 = 0;
