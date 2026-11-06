@@ -478,25 +478,40 @@ __attribute__((noinline)) inline void field_input(const i32* in, i32* x, i32 gin
         in += 2;
     }
 }
-// One line read from ring position at (0..255) and low-passed into o.
+// The 16-bit rings' step at this scale, 2^13: a value rounded toward zero to
+// it, as those rings stored every write. Rounding toward zero takes a little
+// energy out of every pass, which matters only when the field is quiet, but
+// there it sets how its tail falls away: a quiet field reads its rings so.
+inline i32 ring_step(i32 v) { return (v + ((v >> 31) & 0x1fff)) & ~0x1fff; }
+// One line read from ring position at (0..255) and low-passed into o (step:
+// each value rounded to the 16-bit rings' step).
+template <bool step>
 inline i32 field_read(const i32* ring, u32 at, i32 lp, i32 k, i32* o) {
     const u32 first = line_samples - at < half ? line_samples - at : half;
     const i32* p = ring + at;
     for (u32 n = 0; n < first; ++n) {
-        lp += multiply(*p++ - lp, k);
+        lp += multiply((step ? ring_step(*p++) : *p++) - lp, k);
         *o++ = lp;
     }
     p = ring;
     const u32 rest = half - first;
     for (u32 n = 0; n < rest; ++n) {
-        lp += multiply(*p++ - lp, k);
+        lp += multiply((step ? ring_step(*p++) : *p++) - lp, k);
         *o++ = lp;
     }
     return lp;
 }
-// The four lines (or two), each read and low-passed (one call for them all).
+// The four lines (or two), each read and low-passed (one call for them all);
+// a quiet field (its lines' low-passes all under 2^24, some 66 dB over the
+// 16-bit step) reads them at the 16-bit rings' step.
 __attribute__((noinline)) inline void field_reads(Voice& v, i32* r, u32 w, u32 mask, i32 k, u32 lines) {
-    for (u32 l = 0; l < lines; ++l) v.flp[l] = field_read(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
+    i32 most = 0;
+    for (u32 l = 0; l < lines; ++l) most |= absolute(v.flp[l]);
+    if (most < (1 << 24)) {
+        for (u32 l = 0; l < lines; ++l) v.flp[l] = field_read<true>(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
+    } else {
+        for (u32 l = 0; l < lines; ++l) v.flp[l] = field_read<false>(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
+    }
 }
 // The all-pass (g 0.5, 37 samples) in the first line's loop, from position p.
 inline void field_loop_run(i32* ap, i32* o, u32 count) {
