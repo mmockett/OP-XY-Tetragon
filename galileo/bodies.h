@@ -1084,22 +1084,35 @@ __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 // One bell of the pair: two partials (1 and 1.48), each pure or clanging
-// (its sine's sign at `clang`), under a slow and a fast decay, added.
+// (its sine's sign at `clang`), under a slow and a fast decay, added. KIND 0
+// mixes both; 1 is all pure (no clang); 2 all clang (no pure), where only the
+// sines' signs matter: a sine of the table is negative exactly when its phase
+// is past half a turn, so the squares need no table.
+template <int KIND>
 __attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pure, i32 clang, u32* __restrict ph,
                                         i32* __restrict out, u32 n) {
     i32 slow = es.a, fast = ef.a;
     const i32 rs = es.r, rf = ef.r;
     const u32 inc2 = times(inc, GQ28(1.48));
     u32 p0 = ph[0], p1 = ph[1];
+    // The squares' four levels, as the mixed form rounds them.
+    const i32 up0 = clang >> 1, down0 = (-clang) >> 1;
+    const i32 up1 = multiply(clang, GQ31(0.8)) >> 1, down1 = multiply(-clang, GQ31(0.8)) >> 1;
     for (u32 i = 0; i < n; ++i) {
         slow = multiply(slow, rs);
         fast = multiply(fast, rf);
         p0 += inc;
         p1 += inc2;
-        const i32 s0 = dsp::sine(p0), s1 = dsp::sine(p1);
-        // Each partial at half scale, so their sum (up to 1.8) stays in range.
-        const i32 wave = ((multiply(s0, pure) + (s0 < 0 ? -clang : clang)) >> 1) +
-                         (multiply(multiply(s1, pure) + (s1 < 0 ? -clang : clang), GQ31(0.8)) >> 1);
+        i32 wave;
+        if (KIND == 2) {
+            wave = (p0 > 0x80000000u ? down0 : up0) + (p1 > 0x80000000u ? down1 : up1);
+        } else {
+            const i32 s0 = dsp::sine(p0), s1 = dsp::sine(p1);
+            // Each partial at half scale, so their sum (up to 1.8) stays in range.
+            if (KIND == 1) wave = (multiply(s0, pure) >> 1) + (multiply(multiply(s1, pure), GQ31(0.8)) >> 1);
+            else wave = ((multiply(s0, pure) + (s0 < 0 ? -clang : clang)) >> 1) +
+                        (multiply(multiply(s1, pure) + (s1 < 0 ? -clang : clang), GQ31(0.8)) >> 1);
+        }
         out[i] += multiply(wave, slow + fast) * 2;
     }
     ph[0] = p0; ph[1] = p1;
@@ -1111,7 +1124,10 @@ __attribute__((noinline)) inline void run_bell(Body& b, i32* __restrict out, u32
     for (u32 i = 0; i < count; ++i) out[i] = 0;
     for (u32 w = 0; w < 2; ++w) {
         if (b.env[2 * w].a < 64 && b.env[2 * w + 1].a < 64) continue;
-        bell_run(b.env[2 * w], b.env[2 * w + 1], static_cast<u32>(w ? b.k[1] : b.k[0]), pure, clang, b.sq + 2 * w, out, count);
+        const u32 inc = static_cast<u32>(w ? b.k[1] : b.k[0]);
+        if (!pure) bell_run<2>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
+        else if (!clang) bell_run<1>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
+        else bell_run<0>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
     }
     band_run(b.band[0], out, count);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
