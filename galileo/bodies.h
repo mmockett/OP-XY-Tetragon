@@ -742,10 +742,10 @@ inline void partial(bool sweep, u32& phase, i32& level, i32 r, const u32* inc, i
     if (sweep) partial_run<ADD, SWING, true>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, n);
     else partial_run<ADD, SWING, false>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, n);
 }
-// A skin: writes n samples (a whole number of grains), at gain g (Q28) if
-// given. swing, if given, gets |sine| of the fundamental (Q31) for the snare's
-// wires. A partial that has died away only keeps its phase.
-inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swing = 0, i32 g28 = 0) {
+// A skin: writes n samples (a whole number of grains), or adds them (add), at
+// gain g (Q28) if given. swing, if given, gets |sine| of the fundamental (Q31)
+// for the snare's wires. A partial that has died away only keeps its phase.
+inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swing = 0, i32 g28 = 0, bool add = false) {
     u32 inc[64 / grain + 1];
     const u32 grains = n / grain;
     i32 s = k.s;
@@ -762,9 +762,13 @@ inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swin
         k.s = 0;
         for (u32 g = 0; g <= grains; ++g) inc[g] = k.inc;
     }
-    if (!k.parts) { for (u32 i = 0; i < n; ++i) out[i] = 0; return; }
+    if (!k.parts) {
+        if (!add) for (u32 i = 0; i < n; ++i) out[i] = 0;
+        return;
+    }
     const bool sweeping = k.s != 0;
     if (swing) partial<false, true>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, swing, n);
+    else if (add) partial<true, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, n);
     else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, n);
     for (u32 part = 1; part < k.parts; ++part) {
         if (k.e[part].a < 4096) {                           // under -95 dBFS
@@ -892,9 +896,6 @@ __attribute__((noinline)) void low_run(dsp::Pole& p, i32 c, i32* __restrict io, 
     for (u32 i = 0; i < n; ++i) { s += multiply(io[i] - s, c); io[i] = s; }
     p.s = s;
 }
-__attribute__((noinline)) void add_run(i32* __restrict out, const i32* __restrict in, u32 n) {
-    for (u32 i = 0; i < n; ++i) out[i] += in[i];
-}
 __attribute__((noinline)) void add_gain(i32* __restrict out, const i32* __restrict in, i32 g28, u32 n) {
     for (u32 i = 0; i < n; ++i) out[i] += gain(in[i], g28);
 }
@@ -987,11 +988,7 @@ __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u3
 }
 __attribute__((noinline)) inline void run_skins(Body& b, i32* __restrict out, u32 count) {   // tom, fill
     skin_block(b.skin[0], out, count);
-    if (b.model == kit::fill) {
-        i32 more[64];
-        skin_block(b.skin[1], more, count);
-        add_run(out, more, count);
-    }
+    if (b.model == kit::fill) skin_block(b.skin[1], out, count, 0, 0, true);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_hand(Body& b, i32* __restrict out, u32 count) {
@@ -1014,10 +1011,14 @@ __attribute__((noinline)) inline void run_modes(Body& b, i32* __restrict out, u3
     } else {
         modes_add(b.mode, modes, out, count);
     }
+    // The shell, at its level, added (silent at 0, but ringing on).
     if (b.model == kit::rim || b.model == kit::ratchet) {
-        i32 shell[64];
-        skin_block(b.skin[0], shell, count);
-        add_gain(out, shell, b.g[b.model == kit::ratchet ? 1 : 0], count);
+        const i32 level = b.g[b.model == kit::ratchet ? 1 : 0];
+        if (level) skin_block(b.skin[0], out, count, 0, level, true);
+        else {
+            i32 unheard[64];
+            skin_block(b.skin[0], unheard, count);
+        }
     }
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
