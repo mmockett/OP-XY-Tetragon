@@ -108,9 +108,20 @@ inline void tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 width0, u32 width
     s.soft = dsp::m15(share, dsp::contact(inc, width0));
     s.hard = dsp::m15(share, dsp::contact(inc, width1));
 }
-inline void ring(Struck& s, i32 v15, i32 amplitude15) {
+// late: the strike is due that many samples after now. A mode is linear, so
+// the ring it starts then is started now already carried back: its sine at
+// (1 - late) and -late steps of its pitch. From `late` on it rings exactly as
+// if struck then (but for the decay over those few samples); before, it
+// sounds a fraction of a millisecond early.
+inline void ring(Struck& s, i32 v15, i32 amplitude15, u32 late = 0) {
     const i32 c = s.soft + dsp::m15(s.hard - s.soft, v15);
-    s.m.strike(dsp::m15(amplitude15, c) << 13);
+    const i32 v = dsp::m15(amplitude15, c) << 13;
+    if (!late) {
+        s.m.strike(v);
+        return;
+    }
+    s.m.y1 = dsp::sat_add(s.m.y1, multiply(v, dsp::sine(s.m.increment * (1u - late))));
+    s.m.y2 = dsp::sat_add(s.m.y2, -multiply(v, dsp::sine(s.m.increment * late)));
 }
 // The contact's width (Q8 samples) for a hardness h (Q31): (1.4 - 1.2 h)(1.25 - 0.6 v) ms.
 inline void widths(i32 h, u32& w0, u32& w1) {
@@ -517,13 +528,14 @@ inline i32 touch(const Body& b, i32 v15) {
     const i32 t = dsp::m15(v15, 28835 + static_cast<i32>((h >> 19) & 8191u));   // 0.88 .. 1.13
     return t > 32767 ? 32767 : t;
 }
-inline void strike_modes(Body& b, u32 count, i32 v15, i32 vp, i32 tone15) {
+inline void strike_modes(Body& b, u32 count, i32 v15, i32 vp, i32 tone15, u32 late) {
     const i32 a = dsp::power(v15, vp);
-    for (u32 i = 0; i < count; ++i) ring(b.mode[i], tone15, a);
+    for (u32 i = 0; i < count; ++i) ring(b.mode[i], tone15, a, late);
 }
 
-// An impact at sample b.now; ghost: a strike the body scheduled itself.
-inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = false) {
+// An impact at sample b.now + late (the struck modes ring from then on, the
+// rest strikes at b.now); ghost: a strike the body scheduled itself.
+inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = false, u32 late = 0) {
     using namespace kit;
     if (v15 <= 0) return;
     ++b.count;
@@ -531,7 +543,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     switch (b.model) {
     case kick:
         b.skin[0].strike(v15, vt);
-        strike_modes(b, 2, v15, GQ16(1.3), vt);
+        strike_modes(b, 2, v15, GQ16(1.3), vt, late);
         b.click[0].strike(vt);
         break;
     case snare:
@@ -563,7 +575,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         break;
     }
     case rim:
-        strike_modes(b, 3, v15, GQ16(1.1), vt);
+        strike_modes(b, 3, v15, GQ16(1.1), vt, late);
         b.skin[0].strike(v15, vt);
         b.click[0].strike(vt);
         break;
@@ -574,7 +586,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     case ride:
         b.env[0].strike(dsp::power(v15, GQ16(1.2)));
         b.env[1].strike(dsp::power(v15, GQ16(1.2)));
-        strike_modes(b, 2, v15, GQ16(1.1), vt);
+        strike_modes(b, 2, v15, GQ16(1.1), vt, late);
         b.click[0].strike(vt);
         break;
     case bell: {
@@ -615,22 +627,22 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
             }
         }
         const i32 a = dsp::power(v15, GQ16(1.1));
-        for (u32 i = 0; i < 3; ++i) ring(b.mode[set + i], vt, a);
+        for (u32 i = 0; i < 3; ++i) ring(b.mode[set + i], vt, a, late);
         b.click[0].strike(v15);
         break;
     }
     case clock: {
         const u32 set = (b.count & 1) ? 0 : 2;   // tick, tock, tick...
         const i32 a = dsp::power(v15, GQ16(1.2));
-        ring(b.mode[set], vt, a);
-        ring(b.mode[set + 1], vt, a);
+        ring(b.mode[set], vt, a, late);
+        ring(b.mode[set + 1], vt, a, late);
         const i32 c = dsp::power(v15, GQ16(1.1));
-        for (u32 i = 4; i < 7; ++i) ring(b.mode[i], vt, c);
+        for (u32 i = 4; i < 7; ++i) ring(b.mode[i], vt, c, late);
         b.click[0].strike(v15);
         break;
     }
     case block:
-        strike_modes(b, 3, v15, GQ16(1.1), vt);
+        strike_modes(b, 3, v15, GQ16(1.1), vt, late);
         b.click[0].strike(vt);
         break;
     case clap: {
@@ -644,7 +656,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         b.env[2].strike(v15);
         if (!ghost && b.k[1] > 0) {
             for (u32 i = 0; i < 3; ++i)
-                add_ghost(b, b.now + ((room_delay[i] * static_cast<u32>(b.k[0])) >> 16),
+                add_ghost(b, b.now + late + ((room_delay[i] * static_cast<u32>(b.k[0])) >> 16),
                           dsp::m15(dsp::m15(v15, room_level[i]), b.k[1] >> 16));
         }
         break;
@@ -654,7 +666,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         b.env[0].a += v15 << 13;
         if (b.env[0].a > (3 << 28)) b.env[0].a = 3 << 28;
         b.env[1].strike(dsp::m15(v15, GQ15(0.6)));
-        strike_modes(b, 2, v15 >> 1, GQ16(1.0), vt >> 1);
+        strike_modes(b, 2, v15 >> 1, GQ16(1.0), vt >> 1, late);
         break;
     case ratchet:
         if (!ghost) {
@@ -665,27 +677,30 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
                 const i32 x = static_cast<i32>((q * table::reciprocal[teeth]) >> 1);       // q / teeth, Q15
                 const u32 at = (span * static_cast<u32>(dsp::power(x, GQ16(1.3)))) >> 15;
                 const i32 rise = GQ15(0.55) + dsp::m15(GQ15(0.45), static_cast<i32>((q * table::reciprocal[teeth - 1]) >> 1));
-                add_ghost(b, b.now + at, dsp::m15(v15, rise));
+                add_ghost(b, b.now + late + at, dsp::m15(v15, rise));
             }
             b.skin[0].strike(v15, vt);
             v15 = dsp::m15(v15, GQ15(0.55));
         }
-        strike_modes(b, 3, v15, GQ16(1.1), touch(b, v15));
+        strike_modes(b, 3, v15, GQ16(1.1), touch(b, v15), late);
         b.click[0].strike(v15);
         break;
     default: break;
     }
     (void)kind;
 }
-// Plays the ghosts due at b.now.
+// Plays the ghosts due in the grid's step from b.now (16 samples), each one's
+// modes from its 8-sample step.
 inline void strike_ghosts(Body& b, u32 n) {
-    if (b.due > b.now) return;
+    const u32 end = b.now + 15;
+    if (b.due > end) return;
     for (u32 i = 0; i < ghosts; ++i)
-        if (b.ghost[i].v && b.ghost[i].at <= b.now) {
+        if (b.ghost[i].v && b.ghost[i].at <= end) {
             const i32 v = b.ghost[i].v;
+            const u32 at = b.ghost[i].at & ~7u;
             b.ghost[i].v = 0;
             --b.held;
-            strike(b, v, 0, 0, n, true);
+            strike(b, v, 0, 0, n, true, at > b.now ? at - b.now : 0);
         }
     b.due = 0xffffffffu;
     for (u32 i = 0; i < ghosts; ++i)

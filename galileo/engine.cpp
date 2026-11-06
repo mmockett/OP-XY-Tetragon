@@ -256,15 +256,15 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             at = until;
         }
         if (at >= opxy::block_frames) break;
+        // Each strikes its modes from its 8-sample step, so they ring in the
+        // same phase as they would on that finer grid.
         while (next < count && ((hits[next].at - voice.t) & ~15u) <= at) {
-            body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n);
+            const u32 fine = (hits[next].at - voice.t) & ~7u;
+            body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n, false, fine > at ? fine - at : 0);
             ++next;
         }
         // Ghosts due within this stretch of the grid strike now.
-        const u32 now = b.now;
-        b.now = now + 15;
         body::strike_ghosts(b, n);
-        b.now = now;
     }
     voice.t += opxy::block_frames;
     const i32 peak = finish(sum, voice.gain, output);
