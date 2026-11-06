@@ -768,18 +768,9 @@ __attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restri
 inline void click_add(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
     if (c.e || c.hp.s) click_run(c, seed, out, n, g28);
 }
-// Saturating a - b, for b never -2^31 (a product with a factor under 1): one
-// instruction on the Blackfin.
-inline i32 sat_sub(i32 a, i32 b) {
-#if defined(__bfin__)
-    i32 r;
-    __asm__("%0 = %1 - %2 (S);" : "=d"(r) : "d"(a), "d"(b) : "ASTAT");
-    return r;
-#else
-    return dsp::sat_add(a, -b);
-#endif
-}
-// dsp::resonate, its negated term subtracted in one step.
+// Saturating a - b, for b never -2^31 (a product with a factor under 1).
+inline i32 sat_sub(i32 a, i32 b) { return dsp::sat_add(a, -b); }
+// dsp::resonate.
 inline i32 resonate(i32 a1, i32 y1, i32 a2, i32 y2) { return sat_sub(dsp::twice(multiply(a1, y1)), multiply(a2, y2)); }
 // Two struck modes added into out (n even), each step two samples so the
 // state swaps without moves; at gain g (Q28) when G.
