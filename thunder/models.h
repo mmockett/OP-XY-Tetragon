@@ -88,6 +88,7 @@ inline void setup_boom(Voice& v, const i32* c, i32 tune) {
     v.bend_k = block_decay(mix(L(0.006), L(0.14), c[6]));
     const i32 lt60 = lt0 + L(0.8);
     setup_field(v, lf0 + L(5), slack, lt60 > L(0.08) ? lt60 : L(0.08), c[2]);
+    field_small(v, lt60 > L(0.08) ? lt60 : L(0.08));
     // (0.02 + 0.5 slack^1.5) (0.4 + SPOT), as Q31 x 2
     v.flevel = multiply(Q31(0.01) + (power16(slack, Q16(1.5)) << 13), Q31(0.2) + (c[3] << 14)) << 1;
     if (v.flevel < Q31(0.008)) v.fon = 0;   // a taut sheet's high modes, 40 dB under: not worth running
@@ -536,6 +537,7 @@ inline void setup_tom(Voice& v, const i32* c, i32 tune) {
         v.k[8] = beater_lift(v, lf0, v.k[0], lbend, lt0, Q16(0.5), v.nmodes - 1, lt0 + L(0.6));   // the shell rings 0.6 of the head's time
     }
     setup_field(v, lf0 + L(4), 65535 - tension, lt0 + L(0.6), c[2]);
+    field_small(v, lt0 + L(0.6));
     v.flevel = mix(Q31(0.062), Q31(0.015), c[4]);   // 0.03..0.12 as the sheet slackens, Q31 x 2
     if (v.flevel < Q31(0.02)) v.fon = 0;   // a taut drumhead's high modes, too faint to run
     // the stick's knock: a felt tap (600 Hz to 3 kHz, 4 ms) to a steel tick
@@ -943,6 +945,7 @@ inline void setup_bounce(Voice& v, const i32* c, i32 tune) {
     const i32 lt0 = mix(L(0.6), L(0.02), c[1]);
     setup_modes(v, lf0, c[6], Q16(0.3) + mul16(c[3], Q16(0.6)), lt0, Q16(0.6), Q16(0.3), 8, beater_time(c[2]));
     setup_field(v, lf0 + octave, 65535 - c[6], log16(mul16(exp16(lt0), Q16(1.5)) + Q16(0.02)), Q16(0.5) + (c[2] >> 1));
+    field_small(v, log16(mul16(exp16(lt0), Q16(1.5)) + Q16(0.02)));
     v.flevel = Q31(0.125);
     v.k[0] = beater_time(c[2]);
     v.k[1] = (Q16(0.3) + mul16(beater_click(c[2]), Q16(0.6))) << 15;
@@ -1237,6 +1240,7 @@ inline void setup_shake(Voice& v, const i32* c, i32 tune) {
     const i32 crack = c[6];
     v.k[2] = mix(L(0.008), L(0.0015), crack);                          // a jolt's push (log2 s)
     setup_field(v, lf0 + L(12), 65535 - c[4], lt0, Q16(0.5));
+    field_small(v, lt0);
     v.flevel = Q31(0.5);
     v.k[3] = onepole_k(mix(L(900), L(3000), crack));
     v.k[4] = onepole_k(mix(L(200), L(900), crack));

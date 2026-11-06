@@ -43,7 +43,7 @@ struct Voice {
     u32 fd[4];                // the four lines' lengths
     i32 flp[4];               // their low-passes
     u32 fdiff, dpos;          // the input smeared by two all-passes for a strike's first blocks (crisper, less comb)
-    u32 floop;                // 1: an all-pass in the first line's loop; 2: the rings clip (field_clip)
+    u32 floop;                // 1: an all-pass in the first line's loop; 2: the rings clip (field_clip); 4: two lines (field_small)
     i32 dbuf[23 + 41];
     u32 apos;                 // the first line also passes an all-pass in its loop (37 samples)
     i32 abuf[37];
@@ -406,6 +406,23 @@ inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u
 }
 // A field driven hard enough to fill its rings clips them (ZAP's chirp does).
 inline void field_clip(Voice& v) { v.floop |= 2u; }
+// A small field: two of the four lines (the second and the fourth, so the
+// spread stays), for a sheet whose high modes are a faint shimmer over its
+// body (a kick's, a tom's, a bearing's, the thunder's): half the work. Its
+// gain per pass is set for the two, over sqrt 2 for their mix, and its input
+// is lifted by sqrt 2, as two lines take half the energy four do.
+inline void field_small(Voice& v, i32 lt60) {
+    v.floop |= 4u;
+    v.fd[0] = v.fd[1];
+    v.fd[1] = v.fd[3];
+    for (u32 l = 0; l < 2; ++l) {
+        i32* b = v.buf + (l + 1) * line_samples - v.fd[l];
+        for (u32 n = 0; n < v.fd[l]; ++n) b[n] = 0;
+        v.flp[l] = 0;
+    }
+    v.fg = multiply(expneg(L(6.907755) + log2q(v.fd[0] + v.fd[1]) - octave - lt60 - lhalf), Q31(0.70710678));
+    v.fin = multiply(v.fin, Q31(0.70710678)) << 1;
+}
 // The network's passes, each over the block's 32 half-rate samples with its
 // state in locals (noinline: inlined into one function they spill). The
 // rings are walked by pointer and split where they wrap, so no loop masks an
@@ -435,9 +452,9 @@ inline i32 field_read(const i32* ring, u32 at, i32 lp, i32 k, i32* o) {
     }
     return lp;
 }
-// The four lines, each read and low-passed (one call for the four).
-__attribute__((noinline)) inline void field_reads(Voice& v, i32* r, u32 w, u32 mask, i32 k) {
-    for (u32 l = 0; l < 4; ++l) v.flp[l] = field_read(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
+// The four lines (or two), each read and low-passed (one call for them all).
+__attribute__((noinline)) inline void field_reads(Voice& v, i32* r, u32 w, u32 mask, i32 k, u32 lines) {
+    for (u32 l = 0; l < lines; ++l) v.flp[l] = field_read(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
 }
 // The all-pass (g 0.5, 37 samples) in the first line's loop, from position p.
 inline void field_loop_run(i32* ap, i32* o, u32 count) {
@@ -496,6 +513,34 @@ __attribute__((noinline)) inline i32 field_mix(const i32* r, const i32* x, i32* 
     prev = field_mix_run<fed, clip>(r, x, out, b + at, first, g, level, prev);
     return field_mix_run<fed, clip>(r + first, x + first, out + 2 * first, b, half - first, g, level, prev);
 }
+// The small field's mix: two lines turned through 45 degrees each pass (their
+// sum and difference over sqrt 2, which keeps the energy and, unlike a
+// Hadamard pair, has no resonance at DC), the sum heard, the input into both.
+// g: the loop's gain over sqrt 2.
+template <bool fed>
+inline i32 field_mix2_run(const i32* r, const i32* x, i32* out, i32* w, u32 count, i32 g, i32 level, i32 prev) {
+    for (u32 n = 0; n < count; ++n) {
+        const i32 r0 = r[0], r1 = r[half];
+        const i32 a = r0 + r1;
+        const i32 y = multiply(a, level) << 1;
+        out[0] += prev + y;
+        out[1] += y << 1;
+        prev = y;
+        const i32 xs = fed ? *x++ : 0;
+        w[0] = multiply(a, g) + xs;
+        w[line_samples] = multiply(r1 - r0, g) + xs;
+        ++r;
+        out += 2;
+        ++w;
+    }
+    return prev;
+}
+template <bool fed>
+__attribute__((noinline)) inline i32 field_mix2(const i32* r, const i32* x, i32* out, i32* b, u32 at, i32 g, i32 level, i32 prev) {
+    const u32 first = line_samples - at < half ? line_samples - at : half;
+    prev = field_mix2_run<fed>(r, x, out, b + at, first, g, level, prev);
+    return field_mix2_run<fed>(r + first, x + first, out + 2 * first, b, half - first, g, level, prev);
+}
 // Runs the network over a block of input, adding level (Q31, x2) of its sound to
 // out. Every line is at least half a block long, so a block's reads only see
 // what earlier blocks wrote: each line is read and low-passed in a pass of its
@@ -543,13 +588,16 @@ inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
     i32 r[4 * half];
     const u32 mask = line_samples - 1, w = v.fw;
     const i32 k = v.fk;
-    field_reads(v, r, w, mask, k);
+    const bool small = (v.floop & 4u) != 0;
+    field_reads(v, r, w, mask, k, small ? 2 : 4);
     // the first line passes an all-pass (g 0.5) in its loop, so its echoes
     // never line up: a crisp forest, not a comb
     if (v.floop & 1u) v.apos = field_loop(v.abuf, v.apos, r);
     // mixed, heard and written back
     const i32 g = v.fg >> 1;
-    if (v.floop & 2u) v.fprev = fed ? field_mix<true, true>(r, x, out, v.buf, w & mask, g, level, v.fprev)
+    if (small) v.fprev = fed ? field_mix2<true>(r, x, out, v.buf, w & mask, v.fg, level, v.fprev)
+                             : field_mix2<false>(r, x, out, v.buf, w & mask, v.fg, level, v.fprev);
+    else if (v.floop & 2u) v.fprev = fed ? field_mix<true, true>(r, x, out, v.buf, w & mask, g, level, v.fprev)
                                     : field_mix<false, true>(r, x, out, v.buf, w & mask, g, level, v.fprev);
     else v.fprev = fed ? field_mix<true, false>(r, x, out, v.buf, w & mask, g, level, v.fprev)
                        : field_mix<false, false>(r, x, out, v.buf, w & mask, g, level, v.fprev);
