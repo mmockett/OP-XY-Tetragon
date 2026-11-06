@@ -1136,11 +1136,21 @@ __attribute__((noinline)) void hat_mix(Energy& env, u32& seed, i32 g0, i32 g1, i
     seed = x;
     env.a = a;
 }
-// A zero at Nyquist, no pole, times 4: out = (in + last) 4.
-__attribute__((noinline)) void nyquist_zero(dsp::Pole& p, const i32* __restrict in, i32* __restrict out, u32 n) {
-    i32 last = p.s;
-    for (u32 i = 0; i < n; ++i) { out[i] = (in[i] + last) * 4; last = in[i]; }
-    p.s = last;
+// Two one-pole high-passes at c, then a zero at Nyquist, no pole, times 4:
+// out = (y + last) 4.
+__attribute__((noinline)) void hat_finish(dsp::Pole& p1, dsp::Pole& p2, i32 c, dsp::Pole& z, const i32* __restrict in,
+                                          i32* __restrict out, u32 n) {
+    i32 s1 = p1.s, s2 = p2.s, last = z.s;
+    for (u32 i = 0; i < n; ++i) {
+        i32 y = in[i];
+        s1 += multiply(y - s1, c);
+        y -= s1;
+        s2 += multiply(y - s2, c);
+        y -= s2;
+        out[i] = (y + last) * 4;
+        last = y;
+    }
+    p1.s = s1; p2.s = s2; z.s = last;
 }
 __attribute__((noinline)) inline void run_hat(Body& b, i32* __restrict out, u32 count) {
     if (idle(b.env[0]) && !b.band[0].y1 && !b.band[0].y2 && !b.pole[2].s) {
@@ -1154,10 +1164,9 @@ __attribute__((noinline)) inline void run_hat(Body& b, i32* __restrict out, u32 
     bank6(b.sq, b.sqi, src, count);
     hat_mix(b.env[0], b.seed, b.g[0], b.g[1], src, count);
     band_run(b.band[0], src, count);
-    high_run(b.pole[1], b.pc[1], src, count);
-    high_run(b.pole[2], b.pc[1], src, count);
-    // A zero at Nyquist, no pole: the hiss and the bank's aliases darkened above 10 kHz.
-    nyquist_zero(b.pole[0], src, out, count);
+    // Two high-passes, then a zero at Nyquist, no pole: the hiss and the bank's
+    // aliases darkened above 10 kHz.
+    hat_finish(b.pole[1], b.pole[2], b.pc[1], b.pole[0], src, out, count);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32 count) {
@@ -1243,9 +1252,19 @@ __attribute__((noinline)) inline void run_bell(Body& b, i32* __restrict out, u32
     band_run(b.band[0], out, count);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
-// out 2 + hand g (the bursts' own crack over the cavity's ring).
-__attribute__((noinline)) void clap_mix(i32* __restrict out, const i32* __restrict hand, i32 g28, u32 n) {
-    for (u32 i = 0; i < n; ++i) out[i] = out[i] * 2 + gain(hand[i], g28);
+// out 2 + hand g (the bursts' own crack over the cavity's ring), through two
+// one-pole high-passes at c.
+__attribute__((noinline)) void clap_mix(i32* __restrict out, const i32* __restrict hand, i32 g28, dsp::Pole& p1,
+                                        dsp::Pole& p2, i32 c, u32 n) {
+    i32 s1 = p1.s, s2 = p2.s;
+    for (u32 i = 0; i < n; ++i) {
+        i32 y = out[i] * 2 + gain(hand[i], g28);
+        s1 += multiply(y - s1, c);
+        y -= s1;
+        s2 += multiply(y - s2, c);
+        out[i] = y - s2;
+    }
+    p1.s = s1; p2.s = s2;
 }
 __attribute__((noinline)) inline void run_clap(Body& b, i32* __restrict out, u32 count) {
     i32 hand[64];
@@ -1265,9 +1284,7 @@ __attribute__((noinline)) inline void run_clap(Body& b, i32* __restrict out, u32
     b.seed = x;
     b.env[0].a = e0; b.env[1].a = e1; b.env[2].a = e2;
     band_run(b.band[0], out, count);
-    clap_mix(out, hand, b.g[1], count);
-    high_run(b.pole[0], b.pc[0], out, count);
-    high_run(b.pole[1], b.pc[0], out, count);
+    clap_mix(out, hand, b.g[1], b.pole[0], b.pole[1], b.pc[0], count);
     knee_run(out, count, GQ28(0.6), GQ28(0.3), GQ28(1 / 0.3));
 }
 // The woodblock: its modes and its click, then a soft knee of its own: the
