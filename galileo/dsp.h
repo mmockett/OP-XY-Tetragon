@@ -3,8 +3,8 @@
 //
 // Everything is integer: the OP-XY's Blackfin has no floating point, no divide
 // instruction and no 64-bit helpers in the module, so there is no `/` or `%` by
-// a variable anywhere here (udiv is a loop, used only when a note starts or the
-// tempo changes). Inside a voice a signal's unit amplitude is 2^28, a sixteenth
+// a variable anywhere here but udiv's (a call, used only when a note starts or
+// a body is tuned, or the tempo changes). Inside a voice a signal's unit amplitude is 2^28, a sixteenth
 // of full scale, so sums of parts never overflow.
 #include <opxy/q31.hpp>
 #include "tables.h"
@@ -39,16 +39,10 @@ inline i32 twice(i32 a) { return sat_add(a, a); }
 // r^2 < 1, so a2 y2 is never -2^31 and its negation never overflows.
 inline i32 resonate(i32 a1, i32 y1, i32 a2, i32 y2) { return sat_add(twice(multiply(a1, y1)), -multiply(a2, y2)); }
 
-// Unsigned division by a shift and subtract: notes and tempo changes only.
-inline u32 udiv(u32 n, u32 d) {
-    if (!d) return 0xffffffffu;
-    u32 quotient = 0, rest = 0;
-    for (int i = 31; i >= 0; --i) {
-        rest = (rest << 1) | ((n >> i) & 1u);
-        if (rest >= d) { rest -= d; quotient |= 1u << i; }
-    }
-    return quotient;
-}
+// Unsigned division, all ones for a zero divisor: notes and tempo changes only.
+// On the Blackfin `/` calls the SDK's ___udivsi3 (sdk/platform/blackfin), which
+// runs only the quotient's significant shift-and-subtract steps.
+inline u32 udiv(u32 n, u32 d) { return d ? n / d : 0xffffffffu; }
 // floor(sqrt(n)).
 inline u32 isqrt(u32 n) {
     u32 root = 0, bit = 1u << 30;
