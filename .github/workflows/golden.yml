@@ -200,7 +200,7 @@ jobs:
       - name: Build the simulator
         if: steps.sim.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update > /dev/null && sudo apt-get install -y libgmp-dev libmpfr-dev zlib1g-dev texinfo > /dev/null
+          sudo apt-get update > /dev/null && sudo apt-get install -y libgmp-dev libmpfr-dev zlib1g-dev libreadline-dev texinfo > /dev/null
           tools/golden/build_sim.sh "$GDB_VERSION" sim
       - uses: actions/download-artifact@v4
         with:
