@@ -185,8 +185,9 @@ struct Ball {
         const u32 in = o.inc << 1;
         i32 v = o.v, a = o.a, sw = sweep[1];
         const i32 vk = mul(o.vk, o.vk), ak = mul(o.ak, o.ak), swk = mul(sweepk, sweepk), d = sdi[1];
+        // Once under its floor it rests until the next bounce (checked a span at a time).
+        if (v < 4096 && v > -4096) { o.v = o.a = 0; return; }
         for (u32 j = 0; j < n; ++j) {
-            if (CURIO_UNLIKELY(v < 4096 && v > -4096)) { v = a = 0; break; }   // and so it stays
             sw = mul(sw, swk);
             ph += in + (static_cast<u32>(mul(sw, d)) << 1);
             v = mul(v, vk);
@@ -771,8 +772,9 @@ struct Drip {
         const u32 df = static_cast<u32>(b.df);
         i32 v = b.v, a = b.a;
         const i32 vk = b.vk, ak = b.ak;
+        // Once under its floor it rests until the next drop (checked a span at a time).
+        if (v < 4096 && v > -4096) { b.v = b.a = 0; return; }
         for (u32 j = 0; j < n; ++j) {
-            if (CURIO_UNLIKELY(v < 4096 && v > -4096)) { v = a = 0; break; }
             ph += f;
             f += df;
             v = mul(v, vk);
