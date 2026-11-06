@@ -29,7 +29,7 @@ env:
   OPEN_XY_REPO: mmockett/open-xy
   OPEN_XY_REF: drum/pad-channel
   KITS: thunder curio galileo syahi
-  GDB_VERSION: '15.2'
+  GDB_VERSION: '16.3'
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -142,9 +142,28 @@ jobs:
           name: compare
           path: keep/
 
+  # GDB's Blackfin simulator, built once (and cached) with the Blackfin+ multiply.
+  simulator:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the simulator
+        id: sim
+        uses: actions/cache@v4
+        with:
+          path: sim
+          key: bfin-sim-gdb-${{ env.GDB_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/golden/sim_patch.py', 'tools/golden/build_sim.sh') }}
+      - name: Build the simulator
+        if: steps.sim.outputs.cache-hit != 'true'
+        run: tools/golden/build_sim.sh "$GDB_VERSION" sim
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bfin-sim
+          path: sim/
+
   # The pinned Blackfin tools have reviewed downloads for macOS arm64 and Windows only.
   counts:
-    needs: plan
+    needs: [plan, simulator]
     runs-on: macos-latest
     timeout-minutes: 90
     strategy:
@@ -174,24 +193,11 @@ jobs:
       - name: Pinned Blackfin tools
         working-directory: open-xy
         run: python sdk.py toolchain fetch
-      - name: Restore the Blackfin simulator
-        id: sim
-        uses: actions/cache@v4
+      - uses: actions/download-artifact@v4
         with:
+          name: bfin-sim
           path: sim
-          key: bfin-sim-gdb-${{ env.GDB_VERSION }}-${{ runner.os }}-${{ runner.arch }}
-      - name: Build the Blackfin simulator (GDB's bfin-elf-run)
-        if: steps.sim.outputs.cache-hit != 'true'
-        run: |
-          brew install gmp mpfr > /dev/null || true
-          curl -sSfL "https://ftp.gnu.org/gnu/gdb/gdb-$GDB_VERSION.tar.xz" | tar xJ
-          mkdir build && cd build
-          "../gdb-$GDB_VERSION/configure" --target=bfin-elf --disable-gdb --disable-gdbserver --disable-binutils \
-            --disable-ld --disable-gas --disable-gprof --disable-nls --disable-werror --disable-readline \
-            --enable-sim --with-gmp="$(brew --prefix gmp)" --with-mpfr="$(brew --prefix mpfr)" > /dev/null
-          make -j"$(sysctl -n hw.ncpu)" all-sim MAKEINFO=true > /dev/null
-          mkdir -p ../sim && cp "$(find . -path '*bfin*' -name run -type f | head -1)" ../sim/bfin-elf-run
-          ../sim/bfin-elf-run --version | head -1
+      - run: chmod +x sim/bfin-elf-run
       - name: Count base and head
         run: |
           for side in base head; do
