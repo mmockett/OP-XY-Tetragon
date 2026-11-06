@@ -20,6 +20,7 @@ struct Mode { i32 lp, bp, f, r, gw; u32 inc; };   // r: its decay over 8 samples
 const u32 field_samples = 2048;
 const u32 line_samples = 512;   // each of the four lines' ring
 const u32 swing_samples = 128;
+const u32 swing_keep = 76;      // the swing's delay is 11..72 samples: it keeps the last 76
 
 struct Voice {
     u32 owner, model, next, pending, done, quiet;
@@ -61,7 +62,7 @@ struct Voice {
     OnePole c_hp;
     // the swaying sheet: a comb whose delay swings
     i32 sw_depth;
-    u32 sw_phase, sw_inc, sw_pos;
+    u32 sw_phase, sw_inc, sw_pos;   // (sw_pos unused: the swing keeps its buffer in order)
     // each model's own coefficients and states
     i32 k[24];
     i32 s[13];                // (13 keeps the voice its declared size)
@@ -665,7 +666,37 @@ inline void setup_swing(Voice& v, i32 depth, i32 lrate) {
     v.sw_inc = increment(lrate) << 6;   // a block's worth
     v.sw_phase = v.seed;
     v.sw_pos = 0;
-    for (u32 i = 0; i < swing_samples; ++i) v.sw_buf[i] = 0;
+    for (u32 i = 0; i < swing_keep; ++i) v.sw_buf[i] = 0;
+}
+// The comb and the turn in one pass (noinline, its state in locals). The
+// delay is 11..72 samples, so the pass keeps the last 76 samples heard (the
+// first 76 places of the buffer, in order) and works in a straight line: the
+// 76 kept, then the block's own.
+typedef u32 __attribute__((may_alias)) word;
+__attribute__((noinline)) inline void swing_run(i16* kept, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
+    word line_words[(swing_keep + frames) / 2];
+    i16* line = reinterpret_cast<i16*>(line_words);
+    const word* from = reinterpret_cast<const word*>(kept);
+    for (u32 n = 0; n < swing_keep / 2; ++n) line_words[n] = from[n];
+    i16* at = line + swing_keep;
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 xi = *x;
+        *at = static_cast<i16>(clamp(xi >> 14, -32768, 32767));
+        const i16* back = at - (static_cast<u32>(d) >> 8);
+        const i32 s0 = back[0], s1 = back[-1];
+        const i32 delayed = (s0 << 8) + (s1 - s0) * (d & 0xff);   // Q8 of the stored scale
+        // Kept as it is, overflow and all: on a loud hit, delayed * wet can
+        // pass 2^31 and wrap (key 62's default does). Apple clang -O2 wraps it
+        // too here, so the host renders, the calibration and the OP-XY all
+        // agree; computing the unwrapped product would change the calibrated
+        // sound (UB audit, 2026-11-06). UBSan reports it; it is known.
+        *x++ = multiply(xi + ((delayed * wet) >> 10), g);       // back to signal: << 14 >> 8 >> 16
+        ++at;
+        d += step;
+        g += gs;
+    }
+    word* to = reinterpret_cast<word*>(kept);
+    for (u32 n = 0; n < swing_keep / 2; ++n) to[n] = line_words[frames / 2 + n];
 }
 inline void run_swing(Voice& v, i32* x) {
     if (!v.sw_depth) return;
@@ -678,28 +709,10 @@ inline void run_swing(Voice& v, i32* x) {
     const i32 d1 = 2822 + multiply(15805, multiply(depth << 15, b << 15));
     const i32 step = (d1 - d) >> 6;
     const i32 wet = multiply(Q31(0.9), q31_root(depth)) >> 15;   // Q16
-    const u32 mask = swing_samples - 1;
-    u32 pos = v.sw_pos;
-    i16* buf = v.sw_buf;
-    for (unsigned i = 0; i < frames; ++i) {
-        buf[pos] = static_cast<i16>(clamp(x[i] >> 14, -32768, 32767));
-        const u32 back = pos - (static_cast<u32>(d) >> 8);
-        const i32 s0 = buf[back & mask], s1 = buf[(back - 1) & mask];
-        const i32 delayed = (s0 << 8) + (s1 - s0) * (d & 0xff);   // Q8 of the stored scale
-        // Kept as it is, overflow and all: on a loud hit, delayed * wet can
-        // pass 2^31 and wrap (key 62's default does). Apple clang -O2 wraps it
-        // too here, so the host renders, the calibration and the OP-XY all
-        // agree; computing the unwrapped product would change the calibrated
-        // sound (UB audit, 2026-11-06). UBSan reports it; it is known.
-        x[i] += (delayed * wet) >> 10;                           // back to signal: << 14 >> 8 >> 16
-        pos = (pos + 1) & mask;
-        d += step;
-    }
-    v.sw_pos = pos;
     // and the sheet turning away as it swings: up to 9 dB quieter at the far end of its swing
     const i32 turn = multiply(q31(depth), Q31(0.65));
-    i32 g = one - multiply(turn, a << 15);
+    const i32 g = one - multiply(turn, a << 15);
     const i32 gs = ((one - multiply(turn, b << 15)) - g) >> 6;
-    for (unsigned i = 0; i < frames; ++i, g += gs) x[i] = multiply(x[i], g);
+    swing_run(v.sw_buf, x, d, step, wet, g, gs);
 }
 }
