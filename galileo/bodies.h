@@ -120,8 +120,12 @@ inline void ring(Struck& s, i32 v15, i32 amplitude15, u32 late = 0) {
         s.m.strike(v);
         return;
     }
-    s.m.y1 = dsp::sat_add(s.m.y1, multiply(v, dsp::sine(s.m.increment * (1u - late))));
-    s.m.y2 = dsp::sat_add(s.m.y2, -multiply(v, dsp::sine(s.m.increment * late)));
+    // Carried back, the ring is r^-late as loud: about 1 + late (1 - r^2) / 2.
+    u32 lift = late * (static_cast<u32>(dsp::one - s.m.a2) >> 5);
+    if (lift > 0x07ffffffu) lift = 0x07ffffffu;
+    const i32 vl = v + multiply(v, static_cast<i32>(lift << 4));
+    s.m.y1 = dsp::sat_add(s.m.y1, multiply(vl, dsp::sine(s.m.increment * (1u - late))));
+    s.m.y2 = dsp::sat_add(s.m.y2, -multiply(vl, dsp::sine(s.m.increment * late)));
 }
 // The contact's width (Q8 samples) for a hardness h (Q31): (1.4 - 1.2 h)(1.25 - 0.6 v) ms.
 inline void widths(i32 h, u32& w0, u32& w1) {
@@ -132,6 +136,8 @@ inline void widths(i32 h, u32& w0, u32& w1) {
     w1 = (samples_q8 * 13) >> 4;           // * 0.65 (1.25 - 0.6)
 }
 
+// The grid impacts strike on (samples, a whole number of skin grains).
+const u32 step = 32;
 // A pending strike the body schedules itself: a clap's reflections, a ratchet's teeth.
 struct Ghost { u32 at; i32 v; };
 const u32 ghosts = 32;
@@ -692,10 +698,10 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     }
     (void)kind;
 }
-// Plays the ghosts due in the grid's step from b.now (16 samples), each one's
-// modes from its 8-sample step.
+// Plays the ghosts due in the grid's step from b.now, each one's modes from
+// its 8-sample step.
 inline void strike_ghosts(Body& b, u32 n) {
-    const u32 end = b.now + 15;
+    const u32 end = b.now + step - 1;
     if (b.due > end) return;
     // One walk over the slots held, in order: the due strike, the rest give
     // the next due. (A ghost's strike lays no ghosts.)

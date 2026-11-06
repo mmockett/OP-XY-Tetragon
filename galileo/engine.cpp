@@ -240,15 +240,15 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     i32 sum[opxy::block_frames];
     u32 at = 0, next = 0;
     const u32 n = voice.run.n;
-    // Impacts and ghosts strike on a 16-sample grid (0.36 ms): a block splits into
-    // at most four stretches however many balls land in it, and each stretch
-    // runs the body's parts once.
+    // Impacts and ghosts strike on a 32-sample grid (0.73 ms): a block splits into
+    // at most two stretches however many balls land in it, and each stretch
+    // runs the body's parts once. (Struck modes keep their 8-sample phase.)
     while (at < opxy::block_frames) {
         u32 until = opxy::block_frames;
-        if (next < count && ((hits[next].at - voice.t) & ~15u) < until) until = (hits[next].at - voice.t) & ~15u;
+        if (next < count && ((hits[next].at - voice.t) & ~(body::step - 1)) < until) until = (hits[next].at - voice.t) & ~(body::step - 1);
         const u32 ghost = body::ghost_due(b);
         if (ghost != 0xffffffffu) {
-            const u32 g = ghost > b.now ? ((ghost - b.now + at) & ~15u) : at;
+            const u32 g = ghost > b.now ? ((ghost - b.now + at) & ~(body::step - 1)) : at;
             if (g < until) until = g < at ? at : g;
         }
         if (until > at) {
@@ -258,7 +258,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
         if (at >= opxy::block_frames) break;
         // Each strikes its modes from its 8-sample step, so they ring in the
         // same phase as they would on that finer grid.
-        while (next < count && ((hits[next].at - voice.t) & ~15u) <= at) {
+        while (next < count && ((hits[next].at - voice.t) & ~(body::step - 1)) <= at) {
             const u32 fine = (hits[next].at - voice.t) & ~7u;
             body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n, false, fine > at ? fine - at : 0);
             ++next;
