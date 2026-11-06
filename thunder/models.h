@@ -824,19 +824,45 @@ inline void setup_grit(Voice& v, const i32* c, i32 tune) {
     setup_chain(v, Q16(0.9), Q16(0.8), L(0.05), L(1800), L(6000), c[6]);
     v.waiting = 1;
 }
-inline void grit_grain(Voice& v, u32 which, i32 level) {
-    const u32 r = lcg(v.seed);
+// A grain on the sheet: its band (which of two) retuned near the grains'
+// pitch, and struck, as loud as the pour is now. r: its own throw of the dice.
+inline void grit_grain(Voice& v, u32 which, u32 r, i32 level) {
     // one of three bead sizes (each within 3%): a rattle of ticks, not a hiss
     static const i32 size[4] = {-Q16(0.32), 0, Q16(0.27), Q16(0.55)};
     const i32 lf = v.k[3] + size[(r >> 12) % 3u == 0 ? 0 : (r >> 12) & 3u] + static_cast<i32>((r >> 20) & 0x7ffu) - 1024;
     Svf& s = v.sv[which & 1];
     v.k[10 + (which & 1)] = svf_f(increment(lf));
     v.k[12 + (which & 1)] = svf_q(lf, v.k[4]);
-    // as loud as the pour is now, each grain 0.3..1 as hard
+    // each grain 0.3..1 as hard
     const i32 a = multiply(level, Q31(0.3) + static_cast<i32>((r >> 9) & 0x3fffffu) * 256) >> 4;
     s.bp += (r & 1u) ? a : -a;
-    v.s[1] = U;
 }
+// A band ringing on its own over count samples, into out (or added to it).
+template <bool add>
+__attribute__((noinline)) inline void grit_band(Svf& sv, i32 f, i32 q, i32* out, u32 count) {
+    i32 lp = sv.lp, bp = sv.bp;
+    for (u32 n = 0; n < count; ++n) {
+        lp += multiply(f, bp);
+        const i32 hp = 0 - lp - multiply(q, bp);
+        bp += multiply(f, hp);
+        *out = add ? *out + bp : bp;
+        ++out;
+    }
+    sv.lp = lp;
+    sv.bp = bp;
+}
+// out += (the ring high-passed at 1.5 kHz) at its level.
+__attribute__((noinline)) inline void grit_ring(Voice& v, const i32* x, i32* out) {
+    const i32 k = v.k[8], lv = v.flevel;
+    i32 h = v.op[1].s;
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 xi = *x++;
+        h += multiply(xi - h, k);
+        *out++ += multiply(xi - h, lv) << 1;
+    }
+    v.op[1].s = h;
+}
+struct Grain { u32 at, which, r; i32 level; };
 __attribute__((noinline)) inline void block_grit(Voice& v, Work& w, i32* out) {
     // The pour's envelope at the block's end: a rise as (t / peak)^1.5, a fall
     // within the pour (fast when SWELL starts it hard), then DAMP's fall.
@@ -855,27 +881,52 @@ __attribute__((noinline)) inline void block_grit(Voice& v, Work& w, i32* out) {
     v.s[0] = e1;
     v.waiting = t < v.u[1];
     const i32 es = (e1 - e0) >> 6;
-    i32 e = e0;
-    i32 rasp = v.s[1];
-    for (unsigned i = 0; i < frames; ++i, e += es) {
-        const u32 r = lcg(v.seed);
-        i32 hit = 0;
-        if ((r >> 1) < static_cast<u32>(multiply(v.k[2], e))) {
-            grit_grain(v, v.u[2]++, e);
-            hit = (r & 2u) ? (e >> 4) : -(e >> 4);
+    // The dice, in the order they are thrown: a grain's chance each sample,
+    // each grain's own throw, and the rasp's noise (its rasp, v.s[1], stays
+    // silent: it was never lifted from 0).
+    Grain grain[frames];
+    u32 grains = 0;
+    {
+        // (lcg's guard against a zero state, once: xorshift never reaches zero)
+        u32 seed = v.seed ? v.seed : 0x9e3779b9u;
+        const i32 k2 = v.k[2];
+        i32 e = e0;
+        for (u32 i = 0; i < frames; ++i, e += es) {
+            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+            const u32 r = seed;
+            i32 hit = 0;
+            if ((r >> 1) < static_cast<u32>(multiply(k2, e))) {
+                seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+                grain[grains].at = i;
+                grain[grains].which = v.u[2]++;
+                grain[grains].r = seed;
+                grain[grains].level = e;
+                ++grains;
+                hit = (r & 2u) ? (e >> 4) : -(e >> 4);
+            }
+            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+            w.fin[i] = hit >> 2;
+            w.body[i] = e >> 4;
         }
-        const i32 a = v.sv[0].band(0, v.k[10], v.k[12]);
-        const i32 b = v.sv[1].band(0, v.k[11], v.k[13]);
-        const i32 n = v.op[0].high(multiply(noise(v.seed) >> 4, rasp), v.k[7]);
-        rasp = multiply(rasp, v.k[6]);
-        out[i] = a + b + multiply(n, v.k[5]);
-        w.fin[i] = hit >> 2;
-        w.body[i] = e >> 4;
-        w.aux[i] = 0;
+        v.seed = seed;
     }
-    v.s[1] = rasp;
+    // the two bands, each split at its grains
+    for (u32 j = 0; j < 2; ++j) {
+        u32 at = 0;
+        for (u32 g = 0; g <= grains; ++g) {
+            const u32 end = g < grains ? grain[g].at : frames;
+            if (g < grains && (grain[g].which & 1u) != j) continue;
+            if (end > at) {
+                if (j) grit_band<true>(v.sv[1], v.k[11], v.k[13], out + at, end - at);
+                else grit_band<false>(v.sv[0], v.k[10], v.k[12], out + at, end - at);
+            }
+            at = end;
+            if (g < grains) grit_grain(v, grain[g].which, grain[g].r, grain[g].level);
+        }
+    }
+    clear(w.aux);
     run_field(v, w.fin, w.aux, Q31(0.5));
-    for (unsigned i = 0; i < frames; ++i) out[i] += multiply(v.op[1].high(w.aux[i], v.k[8]), v.flevel) << 1;
+    grit_ring(v, w.aux, out);
     run_chain(v, w.body, out);
 }
 
