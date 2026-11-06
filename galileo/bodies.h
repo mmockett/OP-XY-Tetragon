@@ -144,7 +144,7 @@ struct Body {
     i32 g[8];          // mixing gains, Q28
     i32 k[4];          // model specifics
     Ghost ghost[ghosts];
-    u32 pending;
+    u32 ready;         // model, p and the coefficients prepare() set hold
     u32 due;           // the earliest ghost's time, or 0xffffffff for none
     i32 tuned[2];      // a tine set's pitch as last tuned (log2 Hz), so a repeat isn't tuned again
 };
@@ -180,6 +180,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
     using namespace kit;
     b.model = model;
     for (u32 i = 0; i < 4; ++i) b.p[i] = p[i];
+    b.ready = 1;
     const i32 p0 = p[0], p1 = p[1], p2 = p[2], p3 = p[3];
     switch (model) {
     case kick: {   // tune, punch, decay, beater
@@ -367,7 +368,6 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         b.k[3] = p3;
         prepare_click(b.click[0], 300, 3000);
         b.cg[0] = multiply(GQ28(0.12), p3);
-        b.pending = 0xffffffffu;   // modes tuned per strike
         break;
     }
     case clock: {  // tune, decay, tock, case
@@ -462,6 +462,31 @@ inline void prepare(Body& b, u32 model, const i32* p) {
     }
     default: break;
     }
+}
+
+// Whether a body's prepared coefficients can serve another note: its strikes
+// don't retune it (a fill sets each head, a clap's and a shot's bursts and a
+// tine's modes are set per strike).
+inline bool keeps(u32 model) {
+    return model != kit::fill && model != kit::clap && model != kit::shaker && model != kit::tine;
+}
+// Clears everything that rings or counts, keeping what prepare() set: a fresh
+// note on a body prepared for the same model and controls.
+inline void clear_state(Body& b) {
+    b.held = b.count = b.now = 0;
+    for (u32 i = 0; i < 2; ++i) {
+        Skin& k = b.skin[i];
+        for (u32 j = 0; j < 3; ++j) { k.ph[j] = 0; k.e[j].a = 0; }
+        k.s = 0;
+    }
+    for (u32 i = 0; i < 7; ++i) b.mode[i].m.y1 = b.mode[i].m.y2 = 0;
+    for (u32 i = 0; i < 3; ++i) b.band[i].reset();
+    for (u32 i = 0; i < 4; ++i) b.pole[i].s = 0;
+    for (u32 i = 0; i < 2; ++i) b.click[i].e = b.click[i].hp.s = 0;
+    for (u32 i = 0; i < 4; ++i) b.env[i].a = 0;
+    for (u32 i = 0; i < 8; ++i) b.sq[i] = 0;
+    for (u32 i = 0; i < ghosts; ++i) b.ghost[i].at = b.ghost[i].v = 0;
+    b.tuned[0] = b.tuned[1] = 0;
 }
 
 // ----------------------------------------------------------------- strike --

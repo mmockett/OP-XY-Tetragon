@@ -38,6 +38,7 @@ inline void initialize(Voice& voice, Shared& shared, u32 owner) {
     voice.space = voice.feel = 0;
     voice.seed = 0x6a09e667u ^ (owner * 0x9e3779b9u);
     voice.planned[1] = 0;
+    voice.body.ready = 0;
     ++shared.active;
 }
 inline void destroy(Voice&, Shared& shared, u32) {
@@ -122,15 +123,22 @@ inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters
     voice.model = voice.next;
     voice.t = 0;
     // A fresh body: nothing rings over from the last note this voice played.
-    static_assert(sizeof(voice.body) % 4 == 0, "Body is whole words");
-    u32* words = reinterpret_cast<u32*>(&voice.body);
-    for (u32 i = 0; i < sizeof(voice.body) / 4; ++i) words[i] = 0;
-    voice.body.due = 0xffffffffu;
-    voice.body.seed = 0x243f6a88u ^ (shared.notes * 0x85ebca6bu) ^ voice.owner;
+    // A body prepared for the same model and controls keeps its coefficients.
     i32 p[4];
     for (u32 i = 0; i < 4; ++i) p[i] = q31(parameters[i]);
-    body::prepare(voice.body, voice.model, p);
-    voice.gain = trimmed_gain(voice.model, p);
+    body::Body& b = voice.body;
+    if (b.ready && b.model == voice.model && body::keeps(voice.model) && b.p[0] == p[0] && b.p[1] == p[1] &&
+        b.p[2] == p[2] && b.p[3] == p[3]) {
+        body::clear_state(b);
+    } else {
+        static_assert(sizeof(voice.body) % 4 == 0, "Body is whole words");
+        u32* words = reinterpret_cast<u32*>(&b);
+        for (u32 i = 0; i < sizeof(voice.body) / 4; ++i) words[i] = 0;
+        body::prepare(b, voice.model, p);
+        voice.gain = trimmed_gain(voice.model, p);
+    }
+    b.due = 0xffffffffu;
+    b.seed = 0x243f6a88u ^ (shared.notes * 0x85ebca6bu) ^ voice.owner;
     const motion::Feel feel = motion::feel(voice.feel);
     // The run depends only on these: a repeat of the same key keeps the last one's.
     const u32 key[3] = {raw(parameters[4]) | raw(parameters[5]) << 8 | raw(parameters[6]) << 16 | raw(parameters[7]) << 24,
