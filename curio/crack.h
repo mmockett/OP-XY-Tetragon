@@ -21,13 +21,16 @@ inline i32 spiky(u32& rng) {
 struct Ice {
     u32 rng, t;
     i32 c[8], tune;
-    // The chirps: a falling sine and a band of noise riding it, three in turn.
-    struct Chirp { u32 ph, f, df; i32 u, v, a; Res z; ResK k; i32 hi_inc, lo_inc; };
+    // The chirps: a falling sine and a band of noise riding it, two in turn.
+    struct Chirp { u32 ph, f, df; i32 u, v, a; i32 hi_inc, lo_inc; };
     Chirp ch[2];
     u32 turn, newest;
-    Res zr;
-    ResK zk;
-    i32 uk, chirp_amp, chk, chak, zing, zgate;
+    // The band: its own noise, low-passed at a sixteenth of the chirp's
+    // pitch and rung by the chirp's sine, so it rides the pitch as a band
+    // of an eighth of it.
+    u32 zrng;
+    i32 zlp, za;
+    i32 uk, chirp_amp, chk, chak, zgate;
     // Cracks: the snap's envelope; the shards and the far shore's echoes.
     Env crack;
     i32 crack_k, crack_amp, crack_lp, crack_a;
@@ -56,7 +59,6 @@ struct Ice {
         h.f = static_cast<u32>(h.lo_inc + h.hi_inc);
         h.df = 0;
         h.v = h.a = mul(mul(chirp_amp, g), F(0.75));
-        h.z = Res();
         if (echo_hit) {
             body.hit(mul(body_amp, g), body.vk, decay(1000));
             hiss.v += lev(mul(hiss_amp, mul(g, F(0.5))), hiss_gain << 12);
@@ -69,7 +71,9 @@ struct Ice {
         t = 0;
         turn = 0;
         newest = 0;
-        zr = Res();
+        zrng = (x.seed * 2654435761u) | 1u;
+        zlp = 0;
+        za = 0;
         echo = 0;
         const i32 sheet = c[1];
         // The chirp falls from fhi to flo as 1 / (1 + t / tc)^2.
@@ -82,14 +86,12 @@ struct Ice {
             ch[s].u = 0;
             ch[s].hi_inc = static_cast<i32>(hi - lo_);
             ch[s].lo_inc = static_cast<i32>(lo_);
-            ch[s].z = Res();
         }
         const i32 tch = 20000 + sc(310000, pw(c[4], C(1.6)));
         chk = decay(static_cast<u32>(tch));
         chak = mul(chk, decay(800));
         chirp_amp = U(0.08) + sc(U(0.7), c[3]);
         zgate = mul(chirp_amp, F(0.75 / 16));
-        zing = band_gain(hz(2000), C(8.0));
         // The snap: 4 ms of high-passed, spiky noise.
         crack.v = 0;
         crack.k = decay(static_cast<u32>(1800 - sc(800, c[0])));
@@ -134,30 +136,41 @@ struct Ice {
     bool waiting() const { return shards > 0 || (c[7] > 0 && echo < 4); }
     // The block in passes, each with its state in registers, split at the
     // shards and echoes; the noise is drawn in the same order as ever.
-    // A chirp into y; the newest also leaves its level where its band of
-    // noise sounds, and zero where it rests (it sounds only well above zero).
-    template <bool band> __attribute__((noinline)) void chirp_pass(Chirp& h, i32* y, i32* lz, u32 n) {
-        u32 ph = h.ph, f = h.f;
+    // A chirp into y; the newest carries its band of noise while it sounds
+    // well above zero (under -24 dB of its start the band is lost under the
+    // tone: it rests).
+    template <bool band> __attribute__((noinline)) void chirp_pass(Chirp& h, i32* y, u32 n) {
+        u32 ph = h.ph, f = h.f, zr = zrng;
         const u32 df = h.df;
-        i32 v = h.v, a = h.a;
-        const i32 k = chk, ka = chak, gate = zgate;
+        i32 v = h.v, a = h.a, zl = zlp;
+        const i32 k = chk, ka = chak, gate = zgate, zk = za;
         for (u32 j = 0; j < n; ++j) {
-            const bool zon = v - a > gate;   // under -24 dB of its start the band is lost under the tone: it rests
+            const bool zon = v - a > gate;
             ph += f;
             f += df;
             v = mul(v, k);
             if (CURIO_UNLIKELY(a)) { a = mul(a, ka); if (a < 64) a = 0; }
             const i32 level = v - a;   // three quarters of the chirp's level (start)
-            y[j] += mul(level, sine(ph));
-            if (band) lz[j] = zon ? level : 0;
+            const i32 s = sine(ph);
+            i32 o = mul(level, s);
+            if (band && zon) {
+                // Unit RMS at 2 kHz as the band-pass had, 0.35 of the tone.
+                zl += mul(zk, noise(zr) - zl);
+                o += lev(gn(mul(zl, s), 459000), level);   // 15 x 0.35 / 0.75, Q16
+            }
+            y[j] += o;
         }
         h.ph = ph;
         h.f = f;
         h.v = v;
         h.a = a;
+        if (band) {
+            zrng = zr;
+            zlp = zl;
+        }
     }
     // The snap, and the noise for the band and the surface in draw order.
-    template <bool cracking> __attribute__((noinline)) void noise_pass(i32* y, const i32* lz, i32* zn, i32* hn, opxy::u8* gt, u32 n) {
+    template <bool cracking> __attribute__((noinline)) void noise_pass(i32* y, i32* hn, opxy::u8* gt, u32 n) {
         i32 cv = crack.v, lp = crack_lp, hv = hiss.v;
         const i32 ck = crack.k, ca = crack_a, hk = hiss.k;
         const u32 gp = grain_p;
@@ -169,7 +182,6 @@ struct Ice {
                 lp += mul(ca, cr - lp);
                 y[j] += cr - lp;
             }
-            if (CURIO_LIKELY(lz[j])) zn[j] = noise(r);
             if (CURIO_LIKELY(hv > 4096)) {
                 hv = mul(hv, hk);
                 gt[j] = r < gp;
@@ -179,27 +191,6 @@ struct Ice {
         crack.v = cv;
         crack_lp = lp;
         rng = r;
-    }
-    // The band of noise riding the newest chirp's pitch.
-    __attribute__((noinline)) void band_pass(i32* y, const i32* lz, const i32* zn, u32 n) {
-        i32 y1 = zr.y1, y2 = zr.y2, x1 = zr.x1, x2 = zr.x2;
-        const i32 c = zk.c, r2 = zk.r2, b = zk.b, g = zing;
-        for (u32 j = 0; j < n; ++j) {
-            const i32 l = lz[j];
-            if (CURIO_LIKELY(l)) {
-                const i32 in = mul(zn[j], b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                y[j] += lev(mul(gn(o, g), F(0.35 / 0.75)), l);
-            }
-        }
-        zr.y1 = y1;
-        zr.y2 = y2;
-        zr.x1 = x1;
-        zr.x2 = x2;
     }
     // Load drives the crack and the chirps (quiet samples pass the curve's
     // straight foot); the lake and the surface stay clean beneath them, so
@@ -266,23 +257,18 @@ struct Ice {
     // noise riding its pitch), the snap and the noise, the band, the drive,
     // the lake and the surface.
     __attribute__((noinline)) void span(i32* out, u32 n) {
-        i32 x[frames], lz[frames], zn[frames], hn[frames];
+        i32 x[frames], hn[frames];
         opxy::u8 gt[frames];
         for (u32 j = 0; j < n; ++j) x[j] = 0;
         for (u32 s = 0; s < 2; ++s) {
             Chirp& h = ch[s];
-            const bool live = h.v || h.a;
-            if (s == newest) {
-                if (live) chirp_pass<true>(h, x, lz, n);
-                else for (u32 j = 0; j < n; ++j) lz[j] = 0;
-            } else if (live) {
-                chirp_pass<false>(h, x, lz, n);
-            }
+            if (!h.v && !h.a) continue;
+            if (s == newest) chirp_pass<true>(h, x, n);
+            else chirp_pass<false>(h, x, n);
         }
         // The snap, once under its floor, stays there until the next crack.
-        if (crack.v > 4096) noise_pass<true>(x, lz, zn, hn, gt, n);
-        else noise_pass<false>(x, lz, zn, hn, gt, n);
-        band_pass(x, lz, zn, n);
+        if (crack.v > 4096) noise_pass<true>(x, hn, gt, n);
+        else noise_pass<false>(x, hn, gt, n);
         drive_pass(x, out, n);
         body_pass(out, n);
         hiss_pass(out, hn, gt, n);
@@ -316,7 +302,8 @@ struct Ice {
             const u32 f1 = static_cast<u32>(h.lo_inc + mul(h.hi_inc, mul(h.u, h.u)));
             h.f = f0;
             h.df = static_cast<u32>(static_cast<i32>(f1 - f0) >> 6);
-            if (s == static_cast<int>(newest)) tune_band(zk, f0);
+            // The band's low-pass: 1 - exp(-w / 16) at the chirp's pitch.
+            if (s == static_cast<int>(newest)) za = mul(static_cast<i32>(f0 >> 1), F(3.14159265 / 8.0));
         }
         const u32 t0 = t;
         for (u32 i = 0;;) {
@@ -331,17 +318,6 @@ struct Ice {
             events();
         }
         t = t0 + frames;
-    }
-    static void tune_band(ResK& k, u32 f) {
-        // A band of quality 8 at the chirp's pitch.
-        i32 s, c;
-        sincos(f, s, c);
-        const i32 r = full - mul(static_cast<i32>(f), F(3.14159265 / 16.0));   // 1 - pi f / (8 rate)
-        k.c = mul(r, c) << 1;
-        k.r2 = mul(r, r) >> 1;
-        k.s = s << 1;
-        k.g = mul(full - r, s) << 2;
-        k.b = full - r;
     }
 };
 
