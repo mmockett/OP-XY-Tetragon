@@ -12,6 +12,7 @@
 
 namespace thunder {
 const i32 U = 1 << 27;
+const unsigned half = frames / 2;   // a block at half the sample rate
 
 // A low mode of the sheet: a Chamberlin resonator scaled so that it sounds at
 // its weight: the force enters its band state times its weight (gw, Q31), and
@@ -65,7 +66,9 @@ struct Voice {
     u32 sw_phase, sw_inc, sw_pos;   // (sw_pos unused: the swing keeps its buffer in order)
     // each model's own coefficients and states
     i32 k[24];
-    i32 s[13];                // (13 keeps the voice its declared size)
+    i32 s[11];                // (11 keeps the voice its declared size)
+    i32 mprev;                // the half-rate modes' last sample heard
+    u32 nhalf;                // how many of the modes (the first) run at half rate
     u32 u[16];
     Svf sv[4];
     OnePole op[6];
@@ -173,6 +176,34 @@ inline void setup_modes(Voice& v, i32 lf0, i32 tension, i32 spot, i32 ltau0, i32
     }
     v.nmodes = kept;
 }
+// The modes low enough to (under 3.5 kHz at their highest bend or wobble)
+// run at half the sample rate, which halves their cost: they are moved to
+// the front, their pitch and their decay set for the half rate. A model's
+// setup calls this once its modes are set.
+const u32 half_top = 690000000u / 2;   // svf_f's top, as a full-rate increment at half rate
+inline u32 half_inc(u32 inc) { return inc > half_top ? 2 * half_top : inc << 1; }
+inline void split_modes(Voice& v) {
+    const i32 m28 = (1 << 28) + (v.bend > 0 ? v.bend : 0);
+    Mode m[8];
+    u32 n = 0;
+    for (u32 pass = 0; pass < 2; ++pass) {
+        for (u32 k = 0; k < v.nmodes; ++k) {
+            u32 peak = static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4;
+            peak += peak >> 4;   // and a wobble
+            if ((peak <= half_top) == (pass == 0)) m[n++] = v.mode[k];
+        }
+        if (!pass) v.nhalf = n;
+    }
+    for (u32 k = 0; k < n; ++k) {
+        if (k < v.nhalf) {
+            m[k].f = svf_f(half_inc(m[k].inc));
+            m[k].r = multiply(m[k].r, m[k].r);   // its decay over 8 half-rate samples
+        }
+        v.mode[k] = m[k];
+    }
+}
+// A mode's pitch coefficient for a (full-rate) increment, at the rate it runs.
+inline i32 mode_f(const Voice& v, u32 k, u32 inc) { return svf_f(k < v.nhalf ? half_inc(inc) : inc); }
 // CAMBER: every mode's pitch rises by bend * env, which falls away each block.
 inline void glide_modes(Voice& v) {
     if (!v.bend) return;
@@ -180,7 +211,7 @@ inline void glide_modes(Voice& v) {
     for (u32 k = 0; k < v.nmodes; ++k) {
         Mode& m = v.mode[k];
         const u32 inc = static_cast<u32>(multiply(static_cast<i32>(m.inc >> 1), m28)) << 4;
-        m.f = svf_f(inc);
+        m.f = mode_f(v, k, inc);
     }
     v.bend_env = multiply(v.bend_env, v.bend_k);
 }
@@ -188,34 +219,39 @@ inline void glide_modes(Voice& v) {
 // mode is a lossless state-variable pair (its exact pitch, f = 2 sin(pi fc /
 // SR)), decayed every 8 samples; two modes share a pass. A mode that has
 // rung down under about -100 dB with nothing driving it is stopped: fixed
-// point would otherwise keep it circling a few steps above zero.
-inline void run_pair(Mode& a, Mode& b, const i32* x, i32* out, bool drive) {
+// point would otherwise keep it circling a few steps above zero. A pass runs
+// over count samples (the block, or its 32 half-rate samples), and adds to
+// out, or with add false writes it.
+template <u32 count, bool add>
+__attribute__((noinline)) inline void run_pair(Mode& a, Mode& b, const i32* x, i32* out, bool drive) {
     i32 al = a.lp, ab = a.bp, bl = b.lp, bb = b.bp;
-    const i32 af = a.f, bf = b.f, ag = a.gw, bg = b.gw;
-    for (unsigned s = 0; s < frames; s += 8) {
+    const i32 af = a.f, bf = b.f, ag = a.gw, bg = b.gw, ar = a.r, br = b.r;
+    for (u32 s = 0; s < count; s += 8) {
         i32 touch = 0;
-        if (drive) for (unsigned i = s; i < s + 8; ++i) touch |= x[i];
+        if (drive) for (u32 i = 0; i < 8; ++i) touch |= x[i];
         if (touch) {
-            for (unsigned i = s; i < s + 8; ++i) {
+            for (u32 i = 0; i < 8; ++i) {
                 al += multiply(af, ab);
                 ab += multiply(x[i], ag) - multiply(af, al);
                 bl += multiply(bf, bb);
                 bb += multiply(x[i], bg) - multiply(bf, bl);
-                out[i] += ab + bb;
+                out[i] = add ? out[i] + ab + bb : ab + bb;
             }
         } else {
-            for (unsigned i = s; i < s + 8; ++i) {
+            for (u32 i = 0; i < 8; ++i) {
                 al += multiply(af, ab);
                 ab -= multiply(af, al);
                 bl += multiply(bf, bb);
                 bb -= multiply(bf, bl);
-                out[i] += ab + bb;
+                out[i] = add ? out[i] + ab + bb : ab + bb;
             }
         }
-        al = multiply(al, a.r);
-        ab = multiply(ab, a.r);
-        bl = multiply(bl, b.r);
-        bb = multiply(bb, b.r);
+        al = multiply(al, ar);
+        ab = multiply(ab, ar);
+        bl = multiply(bl, br);
+        bb = multiply(bb, br);
+        x += 8;
+        out += 8;
     }
     if (!drive) {
         if (absolute(al) + absolute(ab) < (1 << 11)) al = ab = 0;
@@ -226,16 +262,45 @@ inline void run_pair(Mode& a, Mode& b, const i32* x, i32* out, bool drive) {
     b.lp = bl;
     b.bp = bb;
 }
+// The half-rate modes' sound back at the full rate: each sample, and between
+// two the mean of them.
+__attribute__((noinline)) inline i32 modes_up(const i32* y, i32* out, i32 prev) {
+    for (u32 n = 0; n < half; ++n) {
+        const i32 s = *y++;
+        out[0] += (prev + s) >> 1;
+        out[1] += s;
+        prev = s;
+        out += 2;
+    }
+    return prev;
+}
 inline void run_modes(Voice& v, const i32* x, i32* out) {
     i32 drive = 0;
     for (unsigned i = 0; i < frames; ++i) drive |= x[i];
     // an odd mode out is paired with a silent one
     Mode spare = {0, 0, 0, one, 0, 0};
-    for (u32 k = 0; k < v.nmodes; k += 2) {
+    const u32 nh = v.nhalf;
+    if (nh || v.mprev) {
+        // the force at half rate: pairs summed (a mode takes its area)
+        i32 x2[half], y2[half];
+        if (drive) for (u32 i = 0; i < half; ++i) x2[i] = x[2 * i] + x[2 * i + 1];
+        bool sounding = false;
+        for (u32 k = 0; k < nh; k += 2) {
+            Mode& a = v.mode[k];
+            Mode& b = k + 1 < nh ? v.mode[k + 1] : spare;
+            if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
+            if (sounding) run_pair<half, true>(a, b, x2, y2, drive != 0);
+            else run_pair<half, false>(a, b, x2, y2, drive != 0);
+            sounding = true;
+        }
+        if (!sounding) for (u32 i = 0; i < half; ++i) y2[i] = 0;
+        v.mprev = modes_up(y2, out, v.mprev);
+    }
+    for (u32 k = nh; k < v.nmodes; k += 2) {
         Mode& a = v.mode[k];
         Mode& b = k + 1 < v.nmodes ? v.mode[k + 1] : spare;
         if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
-        run_pair(a, b, x, out, drive != 0);
+        run_pair<frames, true>(a, b, x, out, drive != 0);
     }
 }
 
@@ -247,7 +312,6 @@ inline void run_modes(Voice& v, const i32* x, i32* out) {
 // leaves above 11 kHz are more of the same forest, its sizzle.
 // lbase: log2 Hz of the base line; spread: Q16, how unequal the lines are;
 // lt60: log2 s; bright: Q16 (the loop's low-pass, dark to open).
-const unsigned half = frames / 2;
 const i32 lhalf = lsr - octave;   // log2 of the half rate
 // diffuse: 1 for a field struck by an impulse (its first 6 blocks' input is
 // smeared), 2 for one fed noise (no smearing needed); either puts an all-pass

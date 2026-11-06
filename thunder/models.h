@@ -1094,7 +1094,7 @@ inline void block_shake(Voice& v, Work& w, i32* out) {
         const i32 m28 = (1 << 28) + (wob >> 3);
         for (u32 k = 0; k < v.nmodes; ++k) {
             Mode& m = v.mode[k];
-            m.f = svf_f(static_cast<u32>(multiply(static_cast<i32>(m.inc >> 1), m28)) << 4);
+            m.f = mode_f(v, k, static_cast<u32>(multiply(static_cast<i32>(m.inc >> 1), m28)) << 4);
         }
     }
     clear(w.fin);
@@ -1143,6 +1143,7 @@ inline void setup_model(Voice& v, u32 model, const i32* c, i32 tune) {
     case BOW: setup_bow(v, c, tune); break;
     default: setup_shake(v, c, tune); break;
     }
+    split_modes(v);
 }
 inline void block_model(Voice& v, Work& w, i32* out) {
     switch (v.model) {
