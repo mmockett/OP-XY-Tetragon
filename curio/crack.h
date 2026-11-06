@@ -486,7 +486,7 @@ struct Sheet {
     }
     // A ringing mode through n samples, driven by x when drive, added into y:
     // two samples a turn, so the last two outputs trade places, not move.
-    template <bool drive> __attribute__((noinline)) static void ring_live(Res& z, const ResK& k, i32 g, const i32* x, i32* y, u32 n) {
+    template <bool drive> __attribute__((always_inline)) static void ring_live(Res& z, const ResK& k, i32 g, const i32* x, i32* y, u32 n) {
         i32 a = z.y1, b = z.y2;   // the last output and the one before
         const i32 c = k.c, r = k.r2;
         if (n & 1) {
@@ -508,6 +508,13 @@ struct Sheet {
         }
         z.y1 = a;
         z.y2 = b;
+    }
+    // The ringing modes listed in which, in one call.
+    template <bool drive> __attribute__((noinline)) void ring_lives(const u32* which, u32 count, const i32* x, i32* y, u32 n) {
+        for (u32 q = 0; q < count; ++q) {
+            const u32 m = which[q];
+            ring_live<drive>(mode[m], modek[m], gain[m], x, y, n);
+        }
     }
     // A resting mode rings only where the blow drives it.
     __attribute__((noinline)) static void ring_rest(Res& z, const ResK& k, i32 g, const i32* x, i32* y, u32 n) {
@@ -644,12 +651,10 @@ struct Sheet {
         }
         for (u32 s = 0, i = 0; s <= strikes; ++s) {
             const u32 end = s < strikes ? strike_i[s] : frames;
-            if (end > i)
-                for (u32 q = 0; q < n; ++q) {
-                    const u32 m = live[q];
-                    if (blow) ring_live<true>(mode[m], modek[m], gain[m], xb + i, out + i, end - i);
-                    else ring_live<false>(mode[m], modek[m], gain[m], xb + i, out + i, end - i);
-                }
+            if (end > i) {
+                if (blow) ring_lives<true>(live, n, xb + i, out + i, end - i);
+                else ring_lives<false>(live, n, xb + i, out + i, end - i);
+            }
             i = end;
             // A roll's stroke strikes the modes outright.
             if (s < strikes)
