@@ -694,6 +694,50 @@ struct Drip {
         drop(full, 0, false);
     }
     bool waiting() const { return drops > 0 || (c[7] > 0 && echo < 6); }
+    // The block in passes, each with its state in registers, split at the
+    // drops and the room's echoes.
+    // A bubble that has died away costs nothing until the next drop.
+    template <bool wobble> __attribute__((noinline)) static void bubble_pass(Bubble& b, i32* y, u32 n, i32 vib) {
+        u32 ph = b.ph, f = b.f;
+        const u32 df = static_cast<u32>(b.df);
+        i32 v = b.v, a = b.a;
+        const i32 vk = b.vk, ak = b.ak;
+        for (u32 j = 0; j < n; ++j) {
+            if (v < 4096 && v > -4096) { v = a = 0; break; }
+            ph += f;
+            f += df;
+            v = mul(v, vk);
+            a = mul(a, ak);
+            const i32 s = mul(v - a, sine(ph));
+            y[j] += s;
+            if (wobble) y[j] += mul(s, vib) * 5;   // the bubble's wobble flutters its level too
+        }
+        b.ph = ph;
+        b.f = f;
+        b.v = v;
+        b.a = a;
+    }
+    __attribute__((noinline)) void splash_pass(i32* y, u32 n) {
+        i32 v = splash.v, lp = splash_lp;
+        const i32 k = splash.k, sa = splash_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (v > 4096) {
+                v = mul(v, k);
+                const i32 sp = lev(noise(r), v);
+                lp += mul(sa, sp - lp);
+                y[j] += sp - lp;
+            } else if (lp) {
+                v = 0;
+                y[j] -= lp;
+                lp -= lp >> 4;
+                if (lp < 64 && lp > -64) lp = 0;
+            }
+        }
+        splash.v = v;
+        splash_lp = lp;
+        rng = r;
+    }
     void run(i32* out) {
         static const u32 at[6] = {1367, 2073, 3219, 4851, 7056, 10143};   // 31 .. 230 ms
         static const i32 eg[6] = {F(0.7), F(0.55), F(0.45), F(0.3), F(0.2), F(0.12)};
@@ -713,7 +757,27 @@ struct Drip {
             b.df = static_cast<i32>(f1 - f0) >> 6;
             b.rise = r1;
         }
-        for (u32 i = 0; i < frames; ++i, ++t) {
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            // The next drop or echo in this block.
+            u32 e = frames;
+            if (drops) { const u32 d = next_drop - t0; if (d < e && d >= i) e = d; }
+            if (c[7] > 0 && echo < 6) { const u32 d = base_t + at[echo] - t0; if (d < e && d >= i) e = d; }
+            if (e > i) {
+                const u32 n = e - i;
+                for (int s = 0; s < 3; ++s) {
+                    Bubble& b = bub[s];
+                    if (!b.v && !b.a) continue;
+                    if (wob) bubble_pass<true>(b, out + i, n, vib);
+                    else bubble_pass<false>(b, out + i, n, vib);
+                }
+                for (int m = 0; m < 4; ++m) ring_into(basin[m], basink[m], out + i, n);
+                splash_pass(out + i, n);
+            }
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
             if (drops && t == next_drop) {
                 --drops;
                 last_amp = F(0.5) + mul(F(0.4), draw(rng) << 19);   // 0.5 .. 0.9
@@ -727,32 +791,8 @@ struct Drip {
                 drop(mul(mul(last_amp, eg[echo]), c[7] << 19), last_ratio, true);
                 ++echo;
             }
-            i32 y = 0;
-            for (int s = 0; s < 3; ++s) {
-                Bubble& b = bub[s];
-                if (!b.v && !b.a) continue;
-                // A bubble that has died away costs nothing until the next drop.
-                if (b.v < 4096 && b.v > -4096) { b.v = b.a = 0; continue; }
-                b.ph += b.f;
-                b.f += static_cast<u32>(b.df);
-                b.v = mul(b.v, b.vk);
-                b.a = mul(b.a, b.ak);
-                y += mul(b.v - b.a, sine(b.ph));
-                if (wob) y += mul(mul(b.v - b.a, sine(b.ph)), vib) * 5;   // the bubble's wobble flutters its level too
-            }
-            for (int m = 0; m < 4; ++m) y += ring(basin[m], basink[m], 0);
-            if (splash.v > 4096) {
-                const i32 sp = lev(noise(rng), splash.step());
-                splash_lp += mul(splash_a, sp - splash_lp);
-                y += sp - splash_lp;
-            } else if (splash_lp) {
-                splash.v = 0;
-                y -= splash_lp;
-                splash_lp -= splash_lp >> 4;
-                if (splash_lp < 64 && splash_lp > -64) splash_lp = 0;
-            }
-            out[i] = y;
         }
+        t = t0 + frames;
     }
 };
 }
