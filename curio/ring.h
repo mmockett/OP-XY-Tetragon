@@ -112,7 +112,7 @@ struct Glass {
         i32 cv = click.v, y1 = clickr.y1, y2 = clickr.y2, x1 = clickr.x1, x2 = clickr.x2;
         const i32 ck = click.k, c = clickk.c, r2 = clickk.r2, b = clickk.b, g = click_gain;
         for (u32 j = 0; j < frames; ++j) {
-            if (cv > 4096) {
+            if (CURIO_LIKELY(cv > 4096)) {
                 const i32 in = mul(nb[j], b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
@@ -135,7 +135,7 @@ struct Glass {
         u32 p = ph90;
         const i32 ck = crk.k, c = crackk.c, r2 = crackk.r2, b = crackk.b;
         for (u32 j = 0; j < frames; ++j) {
-            if (cv > 4096) {
+            if (CURIO_LIKELY(cv > 4096)) {
                 p += 8765280u;   // 90 Hz
                 const i32 in = mul(nb[j], b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;

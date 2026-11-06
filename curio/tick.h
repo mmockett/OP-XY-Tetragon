@@ -181,25 +181,31 @@ struct Cicada {
             ring_into(shell[2], shellk[2], out, n);
             ring_into(shell[3], shellk[3], out, n);
         }
-        noise_pass(out, sb, wb, n);
-        sizzle_pass(out, sb, n);
-        if (wing.v > 4096) wing_pass(out, wb, n);
+        // The wing, once under its floor, stays there.
+        if (wing.v > 4096) {
+            noise_pass<true>(out, sb, wb, n);
+            sizzle_pass(out, sb, n);
+            wing_pass(out, wb, n);
+        } else {
+            noise_pass<false>(out, sb, wb, n);
+            sizzle_pass(out, sb, n);
+        }
     }
     // The tick, and the noise for the sizzle and the wing in draw order.
-    __attribute__((noinline)) void noise_pass(i32* y, i32* sb, i32* wb, u32 n) {
+    template <bool winging> __attribute__((noinline)) void noise_pass(i32* y, i32* sb, i32* wb, u32 n) {
         i32 ev = env[0].v, tv = tick.v, lp = tick_lp, wv = wing.v;
         const i32 ek = env[0].k, tk = tick.k, ta = tick_a, wk = wing.k;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
             ev = mul(ev, ek);
-            if (ev > 4096) sb[j] = noise(r);
+            if (CURIO_LIKELY(ev > 4096)) sb[j] = noise(r);
             if (tv > 4096) {
                 tv = mul(tv, tk);
                 const i32 x = lev(noise(r), tv);
                 lp += mul(ta, x - lp);
                 y[j] += x - lp;
             }
-            if (wv > 4096) {
+            if (winging && CURIO_LIKELY(wv > 4096)) {
                 wv = mul(wv, wk);
                 wb[j] = noise(r);
             }
@@ -213,9 +219,14 @@ struct Cicada {
     __attribute__((noinline)) void sizzle_pass(i32* y, const i32* sb, u32 n) {
         i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2, x1 = hi.x1, x2 = hi.x2;
         const i32 ek = env[0].k, c = hik.c, r2 = hik.r2, b = hik.b, bg = band_gain_now, sl = sizzle_level;
+        if (ev <= 4096) {   // under its floor until the next click: only the envelope moves
+            for (u32 j = 0; j < n; ++j) ev = mul(ev, ek);
+            env[0].v = ev;
+            return;
+        }
         for (u32 j = 0; j < n; ++j) {
             ev = mul(ev, ek);
-            if (ev > 4096) {
+            if (CURIO_LIKELY(ev > 4096)) {
                 const i32 in = mul(sb[j], b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
@@ -237,7 +248,7 @@ struct Cicada {
         i32 wv = wing.v, av = wingatt.v, y1 = wingr.y1, y2 = wingr.y2, x1 = wingr.x1, x2 = wingr.x2;
         const i32 wk = wing.k, ak = wingatt.k, c = wingk.c, r2 = wingk.r2, b = wingk.b, g = wing_gain;
         for (u32 j = 0; j < n; ++j) {
-            if (wv > 4096) {
+            if (CURIO_LIKELY(wv > 4096)) {
                 wv = mul(wv, wk);
                 av = mul(av, ak);
                 const i32 in = mul(wb[j], b);
@@ -450,14 +461,14 @@ struct Pod {
         for (u32 j = 0; j < frames; ++j) {
             const u32 tt = t + j;
             // The pulse (two decays apart) peaks at 0.43 of its size.
-            if (tt == bump_at && bump_amp) bd = bu = bump_amp;
+            if (CURIO_UNLIKELY(tt == bump_at && bump_amp)) bd = bu = bump_amp;
             dv = mul(dv, dk);
             uv = mul(uv, uk);
             i32 e = dv - uv;
             bd = mul(bd, bdk);
             bu = mul(bu, buk);
             bb[j] = bd - bu;
-            if (tt + 882 > stop) e = tt >= stop ? 0 : mul(e, static_cast<i32>((stop - tt) * 2434995u));   // / 882
+            if (CURIO_UNLIKELY(tt + 882 > stop)) e = tt >= stop ? 0 : mul(e, static_cast<i32>((stop - tt) * 2434995u));   // / 882
             eb[j] = e;
         }
         down.v = dv;
@@ -467,7 +478,7 @@ struct Pod {
     }
     // Seeds: a strike when the draw falls under the envelope's share of the
     // rate; the swish's noise; the stragglers.
-    __attribute__((noinline)) void seed_pass(const i32* eb, const i32* bb, i32* ib, i32* sb, i32* lb) {
+    template <bool scatter> __attribute__((noinline)) void seed_pass(const i32* eb, const i32* bb, i32* ib, i32* sb, i32* lb) {
         u32 r = rng;
         const i32 rp = static_cast<i32>(rate_p >> 1), pi = peak_inv << 16;
         i32 lv = late_env.v;
@@ -482,7 +493,7 @@ struct Pod {
             if (r < p) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r));   // 0.5 .. 1.5
             ib[j] = imp;
             sb[j] = noise(r);
-            if (late_norm && tt > 2205 && tt < late_end) {
+            if (scatter && tt > 2205 && tt < late_end) {
                 noise(r);
                 lv = mul(lv, lk);
                 lb[j] = r < lp ? lv >> 3 : 0;
@@ -560,7 +571,8 @@ struct Pod {
     void run(i32* out) {
         i32 eb[frames], bb[frames], ib[frames], sb[frames], lb[frames];
         env_pass(eb, bb);
-        seed_pass(eb, bb, ib, sb, lb);
+        if (late_norm) seed_pass<true>(eb, bb, ib, sb, lb);
+        else seed_pass<false>(eb, bb, ib, sb, lb);
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
         shell_pass<false>(r[0], rk[0], ib, out, 0);
         shell_pass<true>(r[1], rk[1], ib, out, F(0.7));
@@ -661,10 +673,9 @@ struct Match {
         fl_a.v = av;
     }
     // The flame's noise, and the phosphorus's crackle, in draw order.
-    __attribute__((noinline)) void noise_pass(const i32* eb, i32* nb, i32* cb, u32 n) {
+    template <bool phos_on> __attribute__((noinline)) void noise_pass(const i32* eb, i32* nb, i32* cb, u32 n) {
         u32 r = rng;
         const u32 p = phos_p;
-        const bool phos_on = phos_amp != 0;
         for (u32 j = 0; j < n; ++j) {
             nb[j] = noise(r);
             if (phos_on) {
@@ -717,10 +728,9 @@ struct Match {
         phos.y2 = y2;
     }
     // The burning wood's roar under the flare, and the puff.
-    __attribute__((noinline)) void wood_pass(i32* y, const i32* eb, const i32* nb, u32 n) {
+    template <bool wood_on> __attribute__((noinline)) void wood_pass(i32* y, const i32* eb, const i32* nb, u32 n) {
         i32 wl = wood_lp, pl = puff_lp, pv = puff.v;
         const i32 wa = wood_a, amp = wood_amp, pa = puff_a, pk = puff.k;
-        const bool wood_on = wood_amp != 0;
         for (u32 j = 0; j < n; ++j) {
             const i32 x = nb[j];
             if (wood_on) {
@@ -746,11 +756,13 @@ struct Match {
             i32* y = out + d;
             i32 eb[frames], nb[frames], cb[frames];
             flare_pass(eb, n);
-            noise_pass(eb, nb, cb, n);
+            if (phos_amp) noise_pass<true>(eb, nb, cb, n);
+            else noise_pass<false>(eb, nb, cb, n);
             squeal_pass(y, n);
             flame_pass(y, eb, nb, n);
             if (phos_amp) phos_pass(y, cb, n);
-            if (wood_amp || puff.v > 4096) wood_pass(y, eb, nb, n);
+            if (wood_amp) wood_pass<true>(y, eb, nb, n);
+            else if (puff.v > 4096) wood_pass<false>(y, eb, nb, n);
         }
         t += frames;
     }

@@ -13,7 +13,7 @@ struct Tone {
     i32 level() {
         v = mul(v, vk);
         // The attack is over in a few ms: then it costs nothing.
-        if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+        if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
         return v - a;
     }
     // Adds a strike of amplitude g (Q28) with decay k and attack decay ka.
@@ -33,7 +33,7 @@ __attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n, u32 in) 
         ph += in;
         p = table::sine + (ph >> 20);
         v = mul(v, vk);
-        if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+        if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
         y[j] += mul(v - a, s);
     }
     o.ph = ph - in;
@@ -165,7 +165,7 @@ struct Ball {
             const i32 r = mul(sw, d);
             ph += in + static_cast<u32>(r);
             v = mul(v, vk);
-            if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
             y[j] += mul(v - a, sine(ph));
             rise[j] = r;
         }
@@ -182,11 +182,11 @@ struct Ball {
         i32 v = o.v, a = o.a, sw = sweep[1];
         const i32 vk = o.vk, ak = o.ak, swk = sweepk, d = sdi[1];
         for (u32 j = 0; j < n; ++j) {
-            if (v < 4096 && v > -4096) { v = a = 0; continue; }
+            if (CURIO_UNLIKELY(v < 4096 && v > -4096)) { v = a = 0; break; }   // and so it stays
             sw = mul(sw, swk);
             ph += in + static_cast<u32>(mul(sw, d));
             v = mul(v, vk);
-            if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
             y[j] += mul(v - a, sine(ph));
         }
         o.ph = ph;
@@ -200,8 +200,9 @@ struct Ball {
         const u32 i1 = inc_edge[0], i2 = inc_edge[1], i3 = inc_edge[2];
         i32 ev = edge.v;
         const i32 ek = edge.k;
+        if (ev <= 4096) return;   // and so it stays
         for (u32 j = 0; j < n; ++j) {
-            if (ev > 4096) {
+            if (CURIO_LIKELY(ev > 4096)) {
                 const i32 r = rise[j];   // adding nothing where it is 0
                 p1 += i1 + (static_cast<u32>(mul(r, F(1.59 / 2))) << 1);
                 p2 += i2 + (static_cast<u32>(mul(r, F(2.14 / 4))) << 2);
@@ -221,8 +222,9 @@ struct Ball {
         const u32 inf = incf, in190 = inc190;
         i32 fv = fl.v;
         const i32 fk = fl.k;
+        if (fv <= 4096) return;   // and so it stays
         for (u32 j = 0; j < n; ++j) {
-            if (fv > 4096) {
+            if (CURIO_LIKELY(fv > 4096)) {
                 pf += inf;
                 p190 += in190;
                 fv = mul(fv, fk);
@@ -238,8 +240,9 @@ struct Ball {
         const u32 ip = incp;
         i32 pv = ping.v;
         const i32 pk = ping.k;
+        if (pv <= 4096) return;   // and so it stays
         for (u32 j = 0; j < n; ++j) {
-            if (pv > 4096) {
+            if (CURIO_LIKELY(pv > 4096)) {
                 pp += ip;
                 pv = mul(pv, pk);
                 y[j] += mul(pv, sine(pp));
@@ -254,7 +257,7 @@ struct Ball {
         const i32 ck = clk.k, ca = clk_a;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (cv > 4096 || lp > 4096 || lp < -4096) {
+            if (CURIO_LIKELY(cv > 4096 || lp > 4096 || lp < -4096)) {
                 cv = mul(cv, ck);
                 const i32 c = lev(noise(r), cv);
                 lp += mul(ca, c - lp);
@@ -413,16 +416,15 @@ struct Cask {
     // The block in passes, each with its state in registers, split at the
     // cellar's taps.
     // The air's pitch each sample: the knock's blip, the bung's bend, the slosh.
-    __attribute__((noinline)) void pitch_pass(u32* fb, u32 n, i32 vib) {
+    template <bool blipping, bool bunged, bool sloshing> __attribute__((noinline)) void pitch_pass(u32* fb, u32 n, i32 vib) {
         const u32 in = inca;
         i32 bv = blip.v, ev = bend.v, sv = slosh_on.v;
         const i32 bk = blip.k, ek = bend.k, sk = slosh_on.k, bg = bung;
-        const bool slosh = slosh_depth != 0;
         for (u32 j = 0; j < n; ++j) {
             u32 f = in;
-            if (bv > (1 << 20)) { bv = mul(bv, bk); f += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.35), bv))); }
-            if (bg) { ev = mul(ev, ek); f -= static_cast<u32>(mul(static_cast<i32>(f), mul(bg, full - ev))); }
-            if (slosh) {
+            if (blipping && CURIO_LIKELY(bv > (1 << 20))) { bv = mul(bv, bk); f += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.35), bv))); }
+            if (bunged) { ev = mul(ev, ek); f -= static_cast<u32>(mul(static_cast<i32>(f), mul(bg, full - ev))); }
+            if (sloshing) {
                 sv = mul(sv, sk);
                 f += static_cast<u32>(mul(static_cast<i32>(f), vib));
             }
@@ -432,6 +434,18 @@ struct Cask {
         bend.v = ev;
         slosh_on.v = sv;
     }
+    // Each sample's pitch, the parts that move it chosen once a span (the
+    // blip, once under its floor, stays there).
+    void pitch(u32* fb, u32 n, i32 vib) {
+        const bool b = blip.v > (1 << 20), g = bung != 0, s = slosh_depth != 0;
+        if (b) {
+            if (g) { if (s) pitch_pass<true, true, true>(fb, n, vib); else pitch_pass<true, true, false>(fb, n, vib); }
+            else { if (s) pitch_pass<true, false, true>(fb, n, vib); else pitch_pass<true, false, false>(fb, n, vib); }
+        } else {
+            if (g) { if (s) pitch_pass<false, true, true>(fb, n, vib); else pitch_pass<false, true, false>(fb, n, vib); }
+            else { if (s) pitch_pass<false, false, true>(fb, n, vib); else pitch_pass<false, false, false>(fb, n, vib); }
+        }
+    }
     // The air's boom, swelling with the slosh.
     template <bool am_on> __attribute__((noinline)) void air_pass(i32* y, const u32* fb, u32 n, i32 am) {
         u32 ph = air.ph;
@@ -440,7 +454,7 @@ struct Cask {
         for (u32 j = 0; j < n; ++j) {
             ph += fb[j];
             v = mul(v, vk);
-            if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
             i32 s = mul(v - a, sine(ph));
             if (am_on) s += mul(s, am);
             y[j] += s;
@@ -455,7 +469,7 @@ struct Cask {
         const i32 ck = clk.k, tk = thud.k, ca = clk_a, ta = thud_a;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (cv > 4096 || tv > 4096) {
+            if (CURIO_LIKELY(cv > 4096 || tv > 4096)) {
                 const i32 x = noise(r);
                 cv = mul(cv, ck);
                 cl += mul(ca, lev(x, cv) - cl);
@@ -477,7 +491,7 @@ struct Cask {
     // switched off.
     __attribute__((noinline)) void span(i32* out, u32 n, i32 vib, i32 am) {
         u32 fb[frames];
-        pitch_pass(fb, n, vib);
+        pitch(fb, n, vib);
         if (slosh_am) air_pass<true>(out, fb, n, am);
         else air_pass<false>(out, fb, n, am);
         for (int m = 0; m < 4; ++m) ring_into(wood[m], woodk[m], out, n);
@@ -581,12 +595,12 @@ struct Stone {
         rng = r;
     }
     // The dust's patter, while it lasts.
-    __attribute__((noinline)) void dust_pass(i32* y, const i32* nb, bool on) {
+    template <bool on> __attribute__((noinline)) void dust_pass(i32* y, const i32* nb) {
         i32 d = dust.v, y1 = dustr.y1, y2 = dustr.y2, x1 = dustr.x1, x2 = dustr.x2;
         const i32 k = dust.k, c = dustk.c, r2 = dustk.r2, b = dustk.b, g = dust_gain << 12;
         for (u32 j = 0; j < frames; ++j) {
             d = mul(d, k);
-            if (d > 256) {
+            if (CURIO_LIKELY(d > 256)) {
                 const i32 in = mul(nb[j], b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
@@ -614,7 +628,10 @@ struct Stone {
         i32 nb[frames];
         chip_pass(out, nb);
         // Once the dust is under its floor it stays there.
-        if (dust.v > 256) dust_pass(out, nb, on);
+        if (dust.v > 256) {
+            if (on) dust_pass<true>(out, nb);
+            else dust_pass<false>(out, nb);
+        }
         t += frames;
     }
 };
@@ -710,7 +727,7 @@ struct Drip {
         i32 v = b.v, a = b.a;
         const i32 vk = b.vk, ak = b.ak;
         for (u32 j = 0; j < n; ++j) {
-            if (v < 4096 && v > -4096) { v = a = 0; break; }
+            if (CURIO_UNLIKELY(v < 4096 && v > -4096)) { v = a = 0; break; }
             ph += f;
             f += df;
             v = mul(v, vk);
@@ -727,6 +744,7 @@ struct Drip {
     __attribute__((noinline)) void splash_pass(i32* y, u32 n) {
         i32 v = splash.v, lp = splash_lp;
         const i32 k = splash.k, sa = splash_a;
+        if (v <= 4096 && !lp) return;   // still, until the next drop
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
             if (v > 4096) {

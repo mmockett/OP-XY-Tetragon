@@ -19,6 +19,11 @@ const i32 full = 0x7fffffff;
 const u32 frames = opxy::block_frames;
 
 inline i32 mul(i32 a, i32 b) { return opxy::q31::multiply(a, b); }
+// Branch hints for the sample loops, so a part that sounds keeps to the
+// straight path: an untaken branch costs a cycle, a taken one five and a
+// mispredicted one nine.
+#define CURIO_LIKELY(x) __builtin_expect(!!(x), 1)
+#define CURIO_UNLIKELY(x) __builtin_expect(!!(x), 0)
 // x << 1 kept in a data register: left alone, the Blackfin compiler folds a
 // doubling and the add after it into the address unit, moving both through
 // P registers and stalling on them. The same bits either way.
@@ -43,7 +48,7 @@ inline i32 sc(i32 v, i32 c) { return mul(v, c << 19); }
 inline i32 lerp(i32 a, i32 b, i32 c) { return a + sc(b - a, c); }
 
 // 2^(x / 4096) as a whole number, x in 0 .. 31 * 4096; below 0 it is 0.
-inline u32 ex2(i32 x) {
+__attribute__((noinline)) inline u32 ex2(i32 x) {
     if (x < 0) return 0;
     if (x >= 31 * 4096) return 0x7fffffffu;
     const u32 o = static_cast<u32>(x) >> 12, f = static_cast<u32>(x) & 4095u, i = f >> 4, r = f & 15u;

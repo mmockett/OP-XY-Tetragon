@@ -146,7 +146,7 @@ struct Ice {
             ph += f;
             f += df;
             v = mul(v, k);
-            if (a) { a = mul(a, ka); if (a < 64) a = 0; }
+            if (CURIO_UNLIKELY(a)) { a = mul(a, ka); if (a < 64) a = 0; }
             const i32 level = v - a;   // three quarters of the chirp's level (start)
             y[j] += mul(level, sine(ph));
             if (band) lz[j] = zon ? level : 0;
@@ -157,20 +157,20 @@ struct Ice {
         h.a = a;
     }
     // The snap, and the noise for the band and the surface in draw order.
-    __attribute__((noinline)) void noise_pass(i32* y, const i32* lz, i32* zn, i32* hn, opxy::u8* gt, u32 n) {
+    template <bool cracking> __attribute__((noinline)) void noise_pass(i32* y, const i32* lz, i32* zn, i32* hn, opxy::u8* gt, u32 n) {
         i32 cv = crack.v, lp = crack_lp, hv = hiss.v;
         const i32 ck = crack.k, ca = crack_a, hk = hiss.k;
         const u32 gp = grain_p;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (cv > 4096) {
+            if (cracking && cv > 4096) {
                 cv = mul(cv, ck);
                 const i32 cr = lev(spiky(r), cv);
                 lp += mul(ca, cr - lp);
                 y[j] += cr - lp;
             }
-            if (lz[j]) zn[j] = noise(r);
-            if (hv > 4096) {
+            if (CURIO_LIKELY(lz[j])) zn[j] = noise(r);
+            if (CURIO_LIKELY(hv > 4096)) {
                 hv = mul(hv, hk);
                 gt[j] = r < gp;
                 hn[j] = noise(r);
@@ -186,7 +186,7 @@ struct Ice {
         const i32 c = zk.c, r2 = zk.r2, b = zk.b, g = zing;
         for (u32 j = 0; j < n; ++j) {
             const i32 l = lz[j];
-            if (l) {
+            if (CURIO_LIKELY(l)) {
                 const i32 in = mul(zn[j], b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
@@ -218,12 +218,13 @@ struct Ice {
         const u32 in = body.inc;
         i32 v = body.v, a = body.a, bv = blip.v;
         const i32 vk = body.vk, ak = body.ak, bk = blip.k;
+        if (v <= 4096) return;   // until the next echo
         for (u32 j = 0; j < n; ++j) {
-            if (v > 4096) {
+            if (CURIO_LIKELY(v > 4096)) {
                 ph += in;
-                if (bv > (1 << 24)) { bv = mul(bv, bk); ph += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.6), bv))); }
+                if (CURIO_UNLIKELY(bv > (1 << 24))) { bv = mul(bv, bk); ph += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.6), bv))); }
                 v = mul(v, vk);
-                if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+                if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
                 y[j] += mul(v - a, sine(ph));
             }
         }
@@ -238,8 +239,9 @@ struct Ice {
         const i32 hk = hiss.k, gk = grain.k;
         i32 y1 = nz.y1, y2 = nz.y2, x1 = nz.x1, x2 = nz.x2;
         const i32 c = nzk.c, r2 = nzk.r2, b = nzk.b;
+        if (hv <= 4096) return;   // until the next echo
         for (u32 j = 0; j < n; ++j) {
-            if (hv > 4096) {
+            if (CURIO_LIKELY(hv > 4096)) {
                 if (gt[j]) gv = one;
                 hv = mul(hv, hk);
                 i32 level = hv;
@@ -277,7 +279,9 @@ struct Ice {
                 chirp_pass<false>(h, x, lz, n);
             }
         }
-        noise_pass(x, lz, zn, hn, gt, n);
+        // The snap, once under its floor, stays there until the next crack.
+        if (crack.v > 4096) noise_pass<true>(x, lz, zn, hn, gt, n);
+        else noise_pass<false>(x, lz, zn, hn, gt, n);
         band_pass(x, lz, zn, n);
         drive_pass(x, out, n);
         body_pass(out, n);
@@ -489,9 +493,13 @@ struct Sheet {
         const i32 k = burst.k, a = burst_a;
         u32 r = brng;
         i32 any = 0;
+        if (v <= 4096) {   // until the next shake
+            for (u32 j = 0; j < n; ++j) xb[j] = 0;
+            return false;
+        }
         for (u32 j = 0; j < n; ++j) {
             i32 x = 0;
-            if (v > 4096) {
+            if (CURIO_LIKELY(v > 4096)) {
                 v = mul(v, k);
                 lp += mul(a, lev(noise(r), v) - lp);
                 x = lp * 2;
@@ -535,7 +543,7 @@ struct Sheet {
         const i32 c = k.c, r = k.r2;
         for (u32 j = 0; j < n; ++j) {
             const i32 xj = x[j];
-            if (xj) {
+            if (CURIO_LIKELY(xj)) {
                 const i32 v = twice(mul(c, y1) - mul(r, y2)) + lev(xj, g);
                 y2 = y1;
                 y1 = v;
@@ -547,13 +555,13 @@ struct Sheet {
     }
     // The beater's clank and the block's level; and the noise the rattle
     // and the thunder share, drawn after the clank's as before.
-    __attribute__((noinline)) void clank_pass(i32* yb, i32* nb, u32 n) {
+    template <bool clanking> __attribute__((noinline)) void clank_pass(i32* yb, i32* nb, u32 n) {
         i32 cv = clank.v, lp = clank_lp, s = sum;
         const i32 k = clank.k, a = clank_a;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
             i32 y = yb[j];
-            if (cv > 4096) {
+            if (clanking && cv > 4096) {
                 // The beater's own clank on the iron, brighter and louder for a rod.
                 cv = mul(cv, k);
                 const i32 ck = lev(noise(r), cv);
@@ -596,7 +604,7 @@ struct Sheet {
         i32 tv = thunder.v, ta = thatt.v, lp = th_lp;
         const i32 tk = thunder.k, tak = thatt.k, a = th_a;
         for (u32 j = 0; j < frames; ++j) {
-            if (tv > 4096) {
+            if (CURIO_LIKELY(tv > 4096)) {
                 tv = mul(tv, tk);
                 ta = mul(ta, tak);
                 lp += mul(a, nb[j] - lp);
@@ -682,7 +690,11 @@ struct Sheet {
         i32 nb[frames];
         for (u32 s = 0, i = 0;;) {
             const u32 end = s < strikes ? strike_i[s] : frames;
-            if (end > i) clank_pass(out + i, nb + i, end - i);
+            if (end > i) {
+                // The clank, once under its floor, stays there until the next stroke.
+                if (clank.v > 4096) clank_pass<true>(out + i, nb + i, end - i);
+                else clank_pass<false>(out + i, nb + i, end - i);
+            }
             i = end;
             if (s >= strikes) break;
             while (s < strikes && strike_i[s] == i) clank.v += mul(-strike_a[s++], F(0.5));
@@ -827,8 +839,9 @@ struct Spark {
     __attribute__((noinline)) void snap_pass(i32* y, const i32* sb, u32 n) {
         i32 v = snap.v, lp = snap_lp;
         const i32 k = snap.k, a = snap_a;
+        if (v <= 4096) { snap_lp = 0; return; }   // until the next crack
         for (u32 j = 0; j < n; ++j) {
-            if (v > 4096) {
+            if (CURIO_LIKELY(v > 4096)) {
                 v = mul(v, k);
                 const i32 sn = lev(sb[j], v);
                 lp += mul(a, sn - lp);
@@ -846,7 +859,7 @@ struct Spark {
         const i32 ramp = oz_ramp, k = to_k, c = ozk.c, r2 = ozk.r2, b = ozk.b, g = ozgain;
         const u32 last = end;
         for (u32 j = 0; j < n; ++j, ++tt) {
-            if (tt <= last) lv += ramp;
+            if (CURIO_UNLIKELY(tt <= last)) lv += ramp;
             else lv = mul(lv, k);
             const i32 in = mul(ob[j], b);
             const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
@@ -869,12 +882,12 @@ struct Spark {
         const i32 a = arc_a, k = arc.k;
         const u32 last = end;
         for (u32 j = 0; j < n; ++j, ++tt) {
-            if (tt * 2 > last) {
+            if (CURIO_LIKELY(tt * 2 > last)) {
                 ph += 11687059u;   // 120 Hz
                 const i32 sq = static_cast<i32>(ph) >= 0 ? one >> 1 : -(one >> 1);
                 const i32 hum = sq + (sine(ph * 2) >> 3);
                 lp += mul(a, hum - lp);
-                if (tt > last) v = mul(v, k);
+                if (CURIO_LIKELY(tt > last)) v = mul(v, k);
                 y[j] += lev(lp, v);
             }
         }
@@ -889,12 +902,12 @@ struct Spark {
         i32 v = body.v, a = body.a;
         const i32 vk = body.vk, ak = body.ak;
         for (u32 j = 0; j < n; ++j) {
-            if (v) {
+            if (CURIO_LIKELY(v)) {
                 ph += in;
                 v = mul(v, vk);
-                if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+                if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
                 y[j] += mul(v - a, sine(ph));
-                if (v < 4096) v = 0;
+                if (CURIO_UNLIKELY(v < 4096)) v = 0;
             }
         }
         body.ph = ph;
@@ -1058,7 +1071,7 @@ struct Cork {
             fall = mul(fall, fk);
             ph += in - static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.3), fall)));
             v = mul(v, vk);
-            if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
             y[j] += mul(v - a, sine(ph));
         }
         pop.ph = ph;
@@ -1073,12 +1086,12 @@ struct Cork {
         const u32 p = fizz_p;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (thocking && tv > 4096) {
+            if (thocking && CURIO_LIKELY(tv > 4096)) {
                 tv = mul(tv, tk);
                 lp += mul(a, lev(noise(r), tv) - lp);
                 y[j] += lp;
             }
-            if (fizzing && fv > 4096) {
+            if (fizzing && CURIO_LIKELY(fv > 4096)) {
                 fv = mul(fv, fk);
                 noise(r);
                 cb[j] = r < p ? noise(r) : 0;
@@ -1095,11 +1108,11 @@ struct Cork {
         i32 v = gl.v, a = gl.a, rise = gl_rise;
         const i32 vk = gl.vk, ak = gl.ak;
         for (u32 j = 0; j < n; ++j) {
-            if (v > 4096) {
+            if (CURIO_LIKELY(v > 4096)) {
                 rise += 190;   // 8 / 44100 each sample, Q20
                 ph += in + static_cast<u32>(mul(static_cast<i32>(in), rise << 11));
                 v = mul(v, vk);
-                if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+                if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
                 y[j] += mul(v - a, sine(ph));
             }
         }
@@ -1113,7 +1126,7 @@ struct Cork {
         i32 fv = fizz.v, y1 = fz.y1, y2 = fz.y2, hp = fz_hp;
         const i32 fk = fizz.k, c = fzk.c, r2 = fzk.r2, g = fzk.g, a = fz_a;
         for (u32 j = 0; j < n; ++j) {
-            if (fv > 4096) {
+            if (CURIO_LIKELY(fv > 4096)) {
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(cb[j], g);
                 y2 = y1;
                 y1 = o;
