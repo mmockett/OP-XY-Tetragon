@@ -245,11 +245,12 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     v.nstep = static_cast<i32>(exp2i(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
     // The rattle.
     v.cwb.set(q_wires, s.wire_tone);
-    v.wire_high_c = one_pole(-lg(2 * 3.14159265 * 900));
-    // Two one-poles at 1.55 x the corner make the prototype's second-order corner.
-    v.wire_top_c = one_pole(-(s.wire_top + lg(1.55 * 2 * 3.14159265)));
-    v.follow_c = one_pole(lg(0.0006));
-    v.drive_c = one_pole(s.wire_time - lg(4.5));
+    // The follower (0.6 ms), the buzz's rise (0.3 ms) and its fall over WIRE's
+    // time, each as its share of the way a block moves (1 - (1 - c)^64).
+    v.wire_top_c = one_pole(-(s.wire_top + lg(2 * 3.14159265)));
+    v.follow_c = one - power(one - one_pole(lg(0.0006)), 64);
+    v.wire_high_c = one - power(one - q31(0.073), 64);
+    v.drive_c = one - power(one - one_pole(s.wire_time - lg(4.5)), 64);
     // 40 x the threshold-passed motion, through noise of a third of its swing.
     v.wire_gain = multiply(s.wires, q31(0.4 * wire_drive * 1.732 / 32));   // Q28 * 2^-5 -> Q23
     // The wash.
@@ -617,38 +618,76 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
     v.n1 = z.f1; v.r0 = z.g0;
     v.noise_quiet = nb > silent || np > silent ? 0 : v.noise_quiet + 1;
 }
-__attribute__((noinline)) static void rattle_pass(Core& v, i32* __restrict out) {
-    const Spec& s = v.spec;
-    // The wires: a follower on the head's swing (0.6 ms, so they slap with the
-    // stick); past the gap they buzz, answering at once (a 0.3 ms rise) and
-    // settling over WIRE's time.
-    i32 follow = v.follow, peak = v.peak, drive = v.drive, high = v.wire_high, low1 = v.wire_low1, low2 = v.wire_low2;
-    const i32 fc = v.follow_c, dc = v.drive_c, hc = v.wire_high_c, tc = v.wire_top_c, gap = s.wire_gap, wg = v.wire_gain;
-    const i32 tilt = v.tilt;
-    i32 last = v.tilt_last;
-    u32 seed = v.seed;
-    Svf band = v.wb;
-    const SvfCoefficients cwb = v.cwb;
+// METAL's tilt: a zero at Nyquist (half the sum of this sample and the last)
+// darkens the spray to a cymbal's with no filter pole. Returns the block's
+// mean swing |y|, which the wires follow.
+template <bool tilted>
+__attribute__((noinline)) static i32 swing_pass(i32* __restrict out, i32 tilt, i32& last_sample) {
+    i32 last = last_sample, sum = 0;
     for (u32 n = 0; n < 64; ++n) {
-        // METAL's tilt first: a zero at Nyquist (half the sum of this sample
-        // and the last) darkens the spray to a cymbal's with no filter pole.
         const i32 x = out[n];
-        const i32 y = x + multiply(last - x, tilt);
+        const i32 y = tilted ? x + multiply(last - x, tilt) : x;
         last = x;
-        follow += multiply(absolute(y) - follow, fc);
-        if (follow > peak) peak = follow;
-        const i32 past = positive(follow - multiply(peak, gap));
-        drive += multiply(past - drive, past > drive ? q31(0.073) : dc);
-        const i32 b = svf_bandpass(band, cwb, multiply(noise(seed), drive));
-        high += multiply(b - high, hc);                // a one-pole high-pass at 900 Hz
-        low1 += multiply((b - high) - low1, tc);       // two one-poles for the low-pass: no notch at
-        low2 += multiply(low1 - low2, tc);             // Nyquist, so the top octave keeps its air
-        out[n] = y + shl(multiply(low2, wg), 8);
+        if (tilted) out[n] = y;
+        sum += absolute(y) >> 6;
     }
-    v.follow = follow; v.peak = peak; v.drive = drive; v.wire_high = high; v.wire_low1 = low1; v.wire_low2 = low2;
-    v.tilt_last = last;
-    v.seed = seed;
-    v.wb = band;
+    last_sample = last;
+    return sum;
+}
+// The wires' buzz: noise at the drive's level (stepped through the block),
+// through their band and one low-pass, added to the head.
+struct Buzz {
+    i32 drive, step, low, top, gain;
+    u32 seed;
+    Svf band;
+    SvfCoefficients cwb;
+};
+__attribute__((noinline)) static void buzz_pass(Buzz& z, i32* __restrict out) {
+    i32 drive = z.drive, low = z.low;
+    const i32 step = z.step, top = z.top, gain = z.gain;
+    u32 seed = z.seed;
+    Svf band = z.band;
+    const SvfCoefficients cwb = z.cwb;
+    for (u32 n = 0; n < 64; ++n) {
+        const i32 b = svf_bandpass(band, cwb, multiply(noise(seed), drive));
+        drive += step;
+        low += multiply(b - low, top);
+        out[n] += shl(multiply(low, gain), 8);
+    }
+    z.low = low;
+    z.seed = seed;
+    z.band = band;
+}
+static inline void rattle_pass(Core& v, i32* out) {
+    const Spec& s = v.spec;
+    // The wires follow the head's swing a block at a time (0.6 ms, so they slap
+    // with the stick); past the gap they buzz, answering at once (a 0.3 ms
+    // rise) and settling over WIRE's time.
+    const i32 swing = v.tilt ? swing_pass<true>(out, v.tilt, v.tilt_last) : swing_pass<false>(out, 0, v.tilt_last);
+    if (!s.wires) return;
+    v.follow += multiply(swing - v.follow, v.follow_c);
+    if (v.follow > v.peak) v.peak = v.follow;
+    const i32 past = positive(v.follow - multiply(v.peak, s.wire_gap));
+    const i32 drive = v.drive + multiply(past - v.drive, past > v.drive ? v.wire_high_c : v.drive_c);
+    // Nothing to buzz and nothing ringing: the wires are still.
+    if (drive < 64 && v.drive < 64 && absolute(v.wire_low1) < 64) {
+        v.drive = drive;
+        return;
+    }
+    Buzz z;
+    z.drive = v.drive;
+    z.step = (drive - v.drive) >> 6;
+    z.low = v.wire_low1;
+    z.top = v.wire_top_c;
+    z.gain = v.wire_gain;
+    z.seed = v.seed;
+    z.band = v.wb;
+    z.cwb = v.cwb;
+    buzz_pass(z, out);
+    v.drive = drive;
+    v.wire_low1 = z.low;
+    v.seed = z.seed;
+    v.wb = z.band;
 }
 
 static inline void render_core(Core& v, Scratch& scratch, i32* out) {
