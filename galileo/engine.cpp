@@ -37,6 +37,7 @@ inline void initialize(Voice& voice, Shared& shared, u32 owner) {
     voice.quiet = voice.kept = 0;
     voice.space = voice.feel = 0;
     voice.seed = 0x6a09e667u ^ (owner * 0x9e3779b9u);
+    voice.planned[1] = 0;
     ++shared.active;
 }
 inline void destroy(Voice&, Shared& shared, u32) {
@@ -131,8 +132,15 @@ inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters
     body::prepare(voice.body, voice.model, p);
     voice.gain = trimmed_gain(voice.model, p);
     const motion::Feel feel = motion::feel(voice.feel);
-    motion::plan(voice.run, raw(parameters[4]), raw(parameters[5]), raw(parameters[6]), raw(parameters[7]),
-                 voice.space, feel, sixteenth(shared));
+    // The run depends only on these: a repeat of the same key keeps the last one's.
+    const u32 key[3] = {raw(parameters[4]) | raw(parameters[5]) << 8 | raw(parameters[6]) << 16 | raw(parameters[7]) << 24,
+                        (static_cast<u32>(voice.space) & 0xffffu) | static_cast<u32>(voice.feel) << 16 | 1u << 31,
+                        sixteenth(shared)};
+    if (key[0] != voice.planned[0] || key[1] != voice.planned[1] || key[2] != voice.planned[2]) {
+        motion::plan(voice.run, raw(parameters[4]), raw(parameters[5]), raw(parameters[6]), raw(parameters[7]),
+                     voice.space, feel, key[2]);
+        for (u32 i = 0; i < 3; ++i) voice.planned[i] = key[i];
+    }
     voice.balls = voice.run.m;
     for (u32 b = 0; b < voice.run.m; ++b) motion::begin(voice.cursor[b], voice.run, b, jitter(voice, feel.lax));
 }

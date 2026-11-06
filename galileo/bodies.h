@@ -135,8 +135,8 @@ struct Body {
     Skin skin[2];
     Struck mode[7];
     dsp::Band band[3];
-    dsp::Pole pole[6];
-    i32 pc[6];
+    dsp::Pole pole[4];
+    i32 pc[4];
     dsp::Click click[2];
     i32 cg[2];         // the clicks' gains, Q28
     Energy env[4];
