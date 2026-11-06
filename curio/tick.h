@@ -53,8 +53,24 @@ struct Cicada {
         tuned[s] = lp;
         // The shell rings for q / (pi f): its decay from its quality.
         const u32 tau = ex2(lq - lp);
-        dsp::tune(shellk[s * 2], inc(lp), decay(tau));
-        dsp::tune(shellk[s * 2 + 1], inc(lp + 2276), decay(static_cast<u32>(mul(static_cast<i32>(tau), F(0.68)))));   // 1.47
+        tune_quick(shellk[s * 2], inc(lp), decay(tau));
+        tune_quick(shellk[s * 2 + 1], inc(lp + 2276), decay(static_cast<u32>(mul(static_cast<i32>(tau), F(0.68)))));   // 1.47
+    }
+    // dsp::tune with sin and cos read from the sine table and interpolated
+    // (to about 3e-5, a fraction of a hertz in the pole) rather than summed
+    // from their series: a rib's retune is a quarter of the work.
+    static void tune_quick(ResK& k, u32 increment, i32 r) {
+        const u32 f = (increment >> 4) & 0xffffu;   // 16 bits between table entries
+        const u32 is = increment >> 20, ic = (increment + 0x40000000u) >> 20;
+        const i32 s0 = table::sine[is], s1 = table::sine[(is + 1) & 4095u];
+        const i32 c0 = table::sine[ic], c1 = table::sine[(ic + 1) & 4095u];
+        const i32 sn = (s0 << 15) + ((s1 - s0) * static_cast<i32>(f) >> 1);   // Q30
+        const i32 cs = (c0 << 15) + ((c1 - c0) * static_cast<i32>(f) >> 1);
+        k.c = mul(r, cs) << 1;
+        k.r2 = mul(r, r) >> 1;
+        k.s = sn << 1;
+        k.g = mul(full - r, sn) << 2;
+        k.b = full - r;
     }
     __attribute__((noinline)) void click(u32 who) {
         const int s = who ? 1 : 0;
