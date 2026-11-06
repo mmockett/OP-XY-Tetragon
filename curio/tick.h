@@ -33,7 +33,7 @@ struct Cicada {
     i32 tuned[2];       // the pitch each shell is tuned to now
     Res shell[4];       // the main's two, the swarm's two
     ResK shellk[4];
-    i32 q;
+    i32 q, lq;
     Env env[2];
     i32 tone_amp, sizzle_amp, tone_norm, sizzle_norm;
     Res hi, lo, wingr;
@@ -47,12 +47,12 @@ struct Cicada {
     u32 fall_q, fall_rq, amp_q, amp_rq;
     i32 chirp, len;
 
-    void tune_shell(int s, i32 lp) {
+    __attribute__((noinline)) void tune_shell(int s, i32 lp) {
         // A train that doesn't fall keeps its shell's tuning from rib to rib.
         if (lp == tuned[s]) return;
         tuned[s] = lp;
         // The shell rings for q / (pi f): its decay from its quality.
-        const u32 tau = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875);
+        const u32 tau = ex2(lq - lp);
         dsp::tune(shellk[s * 2], inc(lp), decay(tau));
         dsp::tune(shellk[s * 2 + 1], inc(lp + 2276), decay(static_cast<u32>(mul(static_cast<i32>(tau), F(0.68)))));   // 1.47
     }
@@ -102,6 +102,7 @@ struct Cicada {
         lcf[0] = dsp::lo(hz(3500) + sc(C(1.6), c[2]) + tune, hz(12000));
         lcf[1] = dsp::lo(lcf[0] + mul(jitter(rng), F(0.3)), hz(12000));
         q = C(2.0) + sc(C(28.0), pw(c[3], C(1.5)));
+        lq = lg2(static_cast<u32>(q)) - (12 << 12) + 74875;   // log2 of q / pi, us, less the pitch: each click's shell
         chirp = c[5];
         for (int s = 0; s < 4; ++s) shell[s] = Res();
         tuned[0] = tuned[1] = -(1 << 30);   // nothing yet
