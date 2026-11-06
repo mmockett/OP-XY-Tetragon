@@ -623,7 +623,7 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
         v.fin = static_cast<i32>(pow2(55 * octave - log2q(static_cast<u32>(v.fk))));
     }
     v.k[0] = onepole_k(lf0 + L(1.5));                                    // the body's high-pass
-    v.k[1] = onepole_k(mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]));   // the ring's (twice): struck near the bell, darker
+    v.k[1] = onepole_k(mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]) + octave);   // the ring's (twice, at half rate): struck near the bell, darker
     v.k[2] = multiply(mix(Q31(0.12), Q31(0.9), c[4]), mix(Q31(0.99), Q31(0.3), c[3]));   // the body's share, less toward the edge
     v.env[0].set(one, block_decay(lt60 + log16(mix(Q16(1.0), Q16(0.12), c[4]))));
     // SWELL: noise into the high modes along (t / peak) e^(1 - t / peak)
@@ -631,6 +631,8 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     v.k[4] = multiply(q31(c[5]), Q31(0.02 * 2.718 * 1.7 * 3));   // the wash swelling up after it
     v.s[1] = one;   // the swell's two leaky stages
     v.s[2] = 0;
+    v.s[3] = 0;     // the ring's last half-rate sample
+    field_raw(v);
     click(v, (Q16(0.1) + mul16(beater_click(c[2]), Q16(0.3))) << 15, beater_click(c[2]), L(2500), 0, L(0.003));
     setup_swing(v, c[6], mix(L(1.5), L(4), c[6]));
     v.env[1].set(one, block_decay(lt60 - octave));
@@ -640,21 +642,39 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     strike(v, beater_time(c[2]), U);
     v.s[0] = U / 3;   // the strike into the wash: a third, so the hit doesn't spike over the wash
 }
-// The body, high-passed, at its share, and the ring, high-passed twice, as the hand damps it.
-__attribute__((noinline)) inline void crash_mix(Voice& v, const i32* body, const i32* aux, i32* out, i32 damp, i32 ds) {
-    const i32 k0 = v.k[0], k1 = v.k[1], share = v.k[2];
-    i32 h0 = v.op[0].s, h2 = v.op[2].s, h3 = v.op[3].s;
-    for (u32 n = 0; n < frames; ++n, damp += ds) {
-        const i32 b = *body++, x = *aux++;
-        h0 += multiply(b - h0, k0);
+// The ring at half rate (the field's sound as it is): high-passed twice, as
+// the hand damps it, at the level the full rate's held samples gave it.
+__attribute__((noinline)) inline void crash_ring(Voice& v, i32* y, i32 damp, i32 ds) {
+    const i32 k1 = v.k[1];
+    i32 h2 = v.op[2].s, h3 = v.op[3].s;
+    for (u32 n = 0; n < half; ++n, damp += ds) {
+        const i32 x = *y;
         h2 += multiply(x - h2, k1);
         const i32 a = x - h2;
         h3 += multiply(a - h3, k1);
-        *out++ = multiply(b - h0, share) + multiply((a - h3) << 1, damp);
+        *y++ = multiply(a - h3, damp) << 3;
     }
-    v.op[0].s = h0;
     v.op[2].s = h2;
     v.op[3].s = h3;
+}
+// The body, high-passed, at its share, and the ring brought back to the full
+// rate (each half-rate sample, and between two their mean).
+__attribute__((noinline)) inline void crash_mix(Voice& v, const i32* body, const i32* ring, i32* out) {
+    const i32 k0 = v.k[0], share = v.k[2];
+    i32 h0 = v.op[0].s, prev = v.s[3];
+    for (u32 n = 0; n < half; ++n) {
+        const i32 r = *ring++;
+        i32 b = *body++;
+        h0 += multiply(b - h0, k0);
+        out[0] = multiply(b - h0, share) + ((prev + r) >> 1);
+        b = *body++;
+        h0 += multiply(b - h0, k0);
+        out[1] = multiply(b - h0, share) + r;
+        prev = r;
+        out += 2;
+    }
+    v.op[0].s = h0;
+    v.s[3] = prev;
 }
 // the swell's noise into the high modes, at half rate
 __attribute__((noinline)) inline u32 crash_swell(i32* x, u32 seed, i32 sw, i32 sws) {
@@ -675,7 +695,6 @@ __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     const i32 sws = (multiply(v.s[2], v.k[4]) - sw) >> 6;
     excite(v, w.exc);
     clear(w.body);
-    clear(w.aux);
     // the swell's noise and the strike, made at half rate for the field: one
     // draw a pair, at the level two halved draws summed would have
     i32 x2[half];
@@ -688,10 +707,14 @@ __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     x2[0] += v.s[0] >> 1;
     v.s[0] = 0;
     run_modes(v, w.exc, w.body);
-    run_field_half(v, x2, fed, w.aux, Q31(0.5));
+    // the ring: the field's sound at half rate (silent once it has stopped)
+    i32* ring = w.aux;
+    run_field_half(v, x2, fed, ring, Q31(0.5));
+    if (!v.fon) clear(ring);
     i32 damp;
     const i32 ds = v.env[0].step(damp);
-    crash_mix(v, w.body, w.aux, out, damp, ds);
+    crash_ring(v, ring, damp + ds, ds << 1);   // (the hand's level at each half-rate sample's place)
+    crash_mix(v, w.body, ring, out);
     add_click(v, out);
     run_swing(v, out);
     if (v.c_amount) {

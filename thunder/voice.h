@@ -43,7 +43,7 @@ struct Voice {
     u32 fd[4];                // the four lines' lengths
     i32 flp[4];               // their low-passes
     u32 fdiff, dpos;          // the input smeared by two all-passes for a strike's first blocks (crisper, less comb)
-    u32 floop;                // 1: an all-pass in the first line's loop; 2: the rings clip (field_clip); 4: two lines (field_small)
+    u32 floop;                // 1: an all-pass in the first line's loop; 2: the rings clip (field_clip); 4: two lines (field_small); 8: heard at half rate (field_raw)
     i32 dbuf[23 + 41];
     u32 apos;                 // the first line also passes an all-pass in its loop (37 samples)
     i32 abuf[37];
@@ -411,6 +411,9 @@ inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u
 }
 // A field driven hard enough to fill its rings clips them (ZAP's chirp does).
 inline void field_clip(Voice& v) { v.floop |= 2u; }
+// A field whose sound is written at half rate, as it is (32 values a block,
+// replacing what was there), for its model to filter and bring up itself.
+inline void field_raw(Voice& v) { v.floop |= 8u; }
 // A small field: two of the four lines (the second and the fourth, so the
 // spread stays), for a sheet whose high modes are a faint shimmer over its
 // body (a kick's, a tom's, a bearing's, the thunder's): half the work. Its
@@ -492,31 +495,37 @@ __attribute__((noinline)) inline u32 field_loop(i32* ap, u32 p, i32* o) {
 const i32 ring_top = 32767 << 13, ring_bottom = -32768 * (1 << 13);
 template <bool fed, bool clip>
 inline i32 ring_write(i32 h) { return clip ? clamp(h, ring_bottom, ring_top) : h; }
-template <bool fed, bool clip>
+// raw: the sum heard is written at half rate (one value a pass), as it is,
+// for a model that filters it there before bringing it back to the full rate.
+template <bool fed, bool clip, bool raw>
 inline i32 field_mix_run(const i32* r, const i32* x, i32* out, i32* w, u32 count, i32 g, i32 level, i32 prev) {
     for (u32 n = 0; n < count; ++n) {
         const i32 r0 = r[0], r1 = r[half], r2 = r[2 * half], r3 = r[3 * half];
         const i32 a0 = r0 + r1, a1 = r0 - r1, a2 = r2 + r3, a3 = r2 - r3;
         const i32 y = multiply(a0 - a3, level) << 1;   // l0 + l1 - l2 + l3: with the inputs' signs, no resonance at DC
-        out[0] += prev + y;
-        out[1] += y << 1;
-        prev = y;
+        if (raw) {
+            *out++ = y;
+        } else {
+            out[0] += prev + y;
+            out[1] += y << 1;
+            prev = y;
+            out += 2;
+        }
         const i32 xs = fed ? *x++ : 0;
         w[0] = ring_write<fed, clip>(multiply(a0 + a2, g) + xs);
         w[line_samples] = ring_write<fed, clip>(multiply(a1 + a3, g) + xs);
         w[2 * line_samples] = ring_write<fed, clip>(multiply(a0 - a2, g) + xs);
         w[3 * line_samples] = ring_write<fed, clip>(multiply(a1 - a3, g) - xs);
         ++r;
-        out += 2;
         ++w;
     }
     return prev;
 }
-template <bool fed, bool clip>
+template <bool fed, bool clip, bool raw = false>
 __attribute__((noinline)) inline i32 field_mix(const i32* r, const i32* x, i32* out, i32* b, u32 at, i32 g, i32 level, i32 prev) {
     const u32 first = line_samples - at < half ? line_samples - at : half;
-    prev = field_mix_run<fed, clip>(r, x, out, b + at, first, g, level, prev);
-    return field_mix_run<fed, clip>(r + first, x + first, out + 2 * first, b, half - first, g, level, prev);
+    prev = field_mix_run<fed, clip, raw>(r, x, out, b + at, first, g, level, prev);
+    return field_mix_run<fed, clip, raw>(r + first, x + first, out + (raw ? 1 : 2) * first, b, half - first, g, level, prev);
 }
 // The small field's mix: two lines turned through 45 degrees each pass (their
 // sum and difference over sqrt 2, which keeps the energy and, unlike a
@@ -602,7 +611,10 @@ __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i3
     const i32 g = v.fg >> 1;
     if (small) v.fprev = fed ? field_mix2<true>(r, x, out, v.buf, w & mask, v.fg, level, v.fprev)
                              : field_mix2<false>(r, x, out, v.buf, w & mask, v.fg, level, v.fprev);
-    else if (v.floop & 2u) v.fprev = fed ? field_mix<true, true>(r, x, out, v.buf, w & mask, g, level, v.fprev)
+    else if (v.floop & 8u) {
+        if (fed) field_mix<true, false, true>(r, x, out, v.buf, w & mask, g, level, 0);
+        else field_mix<false, false, true>(r, x, out, v.buf, w & mask, g, level, 0);
+    } else if (v.floop & 2u) v.fprev = fed ? field_mix<true, true>(r, x, out, v.buf, w & mask, g, level, v.fprev)
                                     : field_mix<false, true>(r, x, out, v.buf, w & mask, g, level, v.fprev);
     else v.fprev = fed ? field_mix<true, false>(r, x, out, v.buf, w & mask, g, level, v.fprev)
                        : field_mix<false, false>(r, x, out, v.buf, w & mask, g, level, v.fprev);
