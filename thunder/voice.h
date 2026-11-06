@@ -66,9 +66,11 @@ struct Voice {
     u32 sw_phase, sw_inc, sw_pos;   // (sw_pos unused: the swing keeps its buffer in order)
     // each model's own coefficients and states
     i32 k[24];
-    i32 s[11];                // (11 keeps the voice its declared size)
+    i32 s[9];                 // (9 keeps the voice its declared size)
     i32 mprev;                // the half-rate modes' last sample heard
-    u32 nhalf;                // how many of the modes (the first) run at half rate
+    u32 nhalf;                // how many of the modes (the first) run at half rate or lower
+    i32 qprev;                // the quarter-rate modes' last sample heard
+    u32 nquarter;             // how many of those (the first) run at a quarter of the rate
     u32 u[16];
     Svf sv[4];
     OnePole op[6];
@@ -184,25 +186,34 @@ __attribute__((noinline)) inline i32 block_or(const i32* x) {
     return any;
 }
 // The modes low enough to (under 3.5 kHz at their highest bend or wobble)
-// run at half the sample rate, which halves their cost: they are moved to
-// the front, their pitch and their decay set for the half rate. A model's
-// setup calls this once its modes are set.
+// run at half the sample rate, which halves their cost, and those under
+// 1 kHz at a quarter of it: they are moved to the front, slowest first,
+// their pitch and their decay set for their rate. A model's setup calls this
+// once its modes are set.
 const u32 half_top = 690000000u / 2;   // svf_f's top, as a full-rate increment at half rate
+const u32 quarter_top = 97391000u;     // 1 kHz (its images then stay 40 dB down)
 inline u32 half_inc(u32 inc) { return inc > half_top ? 2 * half_top : inc << 1; }
+inline u32 quarter_inc(u32 inc) { return inc > half_top / 2 ? 2 * half_top : inc << 2; }
 inline void split_modes(Voice& v) {
     const i32 m28 = (1 << 28) + (v.bend > 0 ? v.bend : 0);
     Mode m[8];
     u32 n = 0;
-    for (u32 pass = 0; pass < 2; ++pass) {
+    for (u32 pass = 0; pass < 3; ++pass) {
         for (u32 k = 0; k < v.nmodes; ++k) {
             u32 peak = static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4;
             peak += peak >> 4;   // and a wobble
-            if ((peak <= half_top) == (pass == 0)) m[n++] = v.mode[k];
+            const u32 tier = peak <= quarter_top ? 0 : peak <= half_top ? 1 : 2;
+            if (tier == pass) m[n++] = v.mode[k];
         }
-        if (!pass) v.nhalf = n;
+        if (pass == 0) v.nquarter = n;
+        if (pass == 1) v.nhalf = n;
     }
     for (u32 k = 0; k < n; ++k) {
-        if (k < v.nhalf) {
+        if (k < v.nquarter) {
+            m[k].f = svf_f(quarter_inc(m[k].inc));
+            const i32 r2 = multiply(m[k].r, m[k].r);
+            m[k].r = multiply(r2, r2);   // its decay over 8 quarter-rate samples
+        } else if (k < v.nhalf) {
             m[k].f = svf_f(half_inc(m[k].inc));
             m[k].r = multiply(m[k].r, m[k].r);   // its decay over 8 half-rate samples
         }
@@ -210,7 +221,9 @@ inline void split_modes(Voice& v) {
     }
 }
 // A mode's pitch coefficient for a (full-rate) increment, at the rate it runs.
-inline i32 mode_f(const Voice& v, u32 k, u32 inc) { return svf_f(k < v.nhalf ? half_inc(inc) : inc); }
+inline i32 mode_f(const Voice& v, u32 k, u32 inc) {
+    return svf_f(k < v.nquarter ? quarter_inc(inc) : k < v.nhalf ? half_inc(inc) : inc);
+}
 // CAMBER: every mode's pitch rises by bend * env, which falls away each block.
 inline void glide_modes(Voice& v) {
     if (!v.bend) return;
@@ -267,6 +280,20 @@ __attribute__((noinline)) inline void run_pair(Mode& a, Mode& b, const i32* x, i
     b.lp = bl;
     b.bp = bb;
 }
+// The quarter-rate modes' sound back at the full rate: from each sample to the
+// next in four steps.
+__attribute__((noinline)) inline i32 modes_up4(const i32* y, i32* out, i32 prev) {
+    for (u32 n = 0; n < frames / 4; ++n) {
+        const i32 s = *y++, d = s - prev;
+        out[0] += prev + (d >> 2);
+        out[1] += prev + (d >> 1);
+        out[2] += s - (d >> 2);
+        out[3] += s;
+        prev = s;
+        out += 4;
+    }
+    return prev;
+}
 // The half-rate modes' sound back at the full rate: each sample, and between
 // two the mean of them.
 __attribute__((noinline)) inline i32 modes_up(const i32* y, i32* out, i32 prev) {
@@ -283,13 +310,29 @@ inline void run_modes(Voice& v, const i32* x, i32* out) {
     const i32 drive = block_or(x);
     // an odd mode out is paired with a silent one
     Mode spare = {0, 0, 0, one, 0, 0};
-    const u32 nh = v.nhalf;
-    if (nh || v.mprev) {
+    const u32 nq = v.nquarter, nh = v.nhalf;
+    if (nq || v.qprev) {
+        // the force at a quarter rate: fours summed (a mode takes its area)
+        i32 x4[frames / 4], y4[frames / 4];
+        if (drive) for (u32 i = 0; i < frames / 4; ++i) x4[i] = x[4 * i] + x[4 * i + 1] + x[4 * i + 2] + x[4 * i + 3];
+        bool sounding = false;
+        for (u32 k = 0; k < nq; k += 2) {
+            Mode& a = v.mode[k];
+            Mode& b = k + 1 < nq ? v.mode[k + 1] : spare;
+            if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
+            if (sounding) run_pair<frames / 4, true>(a, b, x4, y4, drive != 0);
+            else run_pair<frames / 4, false>(a, b, x4, y4, drive != 0);
+            sounding = true;
+        }
+        if (!sounding) for (u32 i = 0; i < frames / 4; ++i) y4[i] = 0;
+        v.qprev = modes_up4(y4, out, v.qprev);
+    }
+    if (nh > nq || v.mprev) {
         // the force at half rate: pairs summed (a mode takes its area)
         i32 x2[half], y2[half];
         if (drive) for (u32 i = 0; i < half; ++i) x2[i] = x[2 * i] + x[2 * i + 1];
         bool sounding = false;
-        for (u32 k = 0; k < nh; k += 2) {
+        for (u32 k = nq; k < nh; k += 2) {
             Mode& a = v.mode[k];
             Mode& b = k + 1 < nh ? v.mode[k + 1] : spare;
             if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
