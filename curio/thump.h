@@ -61,6 +61,7 @@ struct Ball {
     i32 drive, undrive, follow, follow_a, buzz_gain;
     Res buzz;
     ResK buzzk;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void strike_at(i32 amp) {
         // The skin's pitch rises a little with each bounce at an edge strike.
@@ -110,6 +111,7 @@ struct Ball {
         clk_lp = 0;
         buzz = Res();
         follow = 0;
+        hlast = 0;
         // The skin: 30..120 Hz.
         inc0 = inc(hz(30) + 2 * c[2] + tune);
         tau_us = 60000 + sc(1100000, pw(c[4], C(1.6)));
@@ -152,17 +154,19 @@ struct Ball {
     }
     bool waiting() const { return next != 0; }
     // The block in passes, each with its state in registers, split at the
-    // bounces; the noise is drawn in the same order as ever.
+    // bounces. The skin's tones, its edge, the floor and the ping are all
+    // well under 11 kHz: they run at half the rate, two samples a step, and
+    // are drawn back up to the full rate once a block.
     // The drop's tone (it never rests), and how far its sweep has risen.
     __attribute__((noinline)) void drop_pass(i32* y, i32* rise, u32 n) {
         Tone& o = tone[0];
         u32 ph = o.ph;
-        const u32 in = o.inc;
+        const u32 in = o.inc << 1;
         i32 v = o.v, a = o.a, sw = sweep[0];
-        const i32 vk = o.vk, ak = o.ak, swk = sweepk, d = sdi[0];
+        const i32 vk = mul(o.vk, o.vk), ak = mul(o.ak, o.ak), swk = mul(sweepk, sweepk), d = sdi[0];
         for (u32 j = 0; j < n; ++j) {
             sw = mul(sw, swk);
-            const i32 r = mul(sw, d);
+            const i32 r = mul(sw, d) << 1;
             ph += in + static_cast<u32>(r);
             v = mul(v, vk);
             if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
@@ -178,13 +182,13 @@ struct Ball {
     __attribute__((noinline)) void bounce_pass(i32* y, u32 n) {
         Tone& o = tone[1];
         u32 ph = o.ph;
-        const u32 in = o.inc;
+        const u32 in = o.inc << 1;
         i32 v = o.v, a = o.a, sw = sweep[1];
-        const i32 vk = o.vk, ak = o.ak, swk = sweepk, d = sdi[1];
+        const i32 vk = mul(o.vk, o.vk), ak = mul(o.ak, o.ak), swk = mul(sweepk, sweepk), d = sdi[1];
         for (u32 j = 0; j < n; ++j) {
             if (CURIO_UNLIKELY(v < 4096 && v > -4096)) { v = a = 0; break; }   // and so it stays
             sw = mul(sw, swk);
-            ph += in + static_cast<u32>(mul(sw, d));
+            ph += in + (static_cast<u32>(mul(sw, d)) << 1);
             v = mul(v, vk);
             if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
             y[j] += mul(v - a, sine(ph));
@@ -197,9 +201,9 @@ struct Ball {
     // The skin's edge modes, risen with the drop's sweep.
     __attribute__((noinline)) void edge_pass(i32* y, const i32* rise, u32 n) {
         u32 p1 = ph1, p2 = ph2, p3 = ph3;
-        const u32 i1 = inc_edge[0], i2 = inc_edge[1], i3 = inc_edge[2];
+        const u32 i1 = inc_edge[0] << 1, i2 = inc_edge[1] << 1, i3 = inc_edge[2] << 1;
         i32 ev = edge.v;
-        const i32 ek = edge.k;
+        const i32 ek = mul(edge.k, edge.k);
         if (ev <= 4096) return;   // and so it stays
         for (u32 j = 0; j < n; ++j) {
             if (CURIO_LIKELY(ev > 4096)) {
@@ -219,9 +223,9 @@ struct Ball {
     // The floor's ring and the ping of the ball.
     __attribute__((noinline)) void floor_pass(i32* y, u32 n) {
         u32 pf = phf, p190 = ph190;
-        const u32 inf = incf, in190 = inc190;
+        const u32 inf = incf << 1, in190 = inc190 << 1;
         i32 fv = fl.v;
-        const i32 fk = fl.k;
+        const i32 fk = mul(fl.k, fl.k);
         if (fv <= 4096) return;   // and so it stays
         for (u32 j = 0; j < n; ++j) {
             if (CURIO_LIKELY(fv > 4096)) {
@@ -237,9 +241,9 @@ struct Ball {
     }
     __attribute__((noinline)) void ping_pass(i32* y, u32 n) {
         u32 pp = php;
-        const u32 ip = incp;
+        const u32 ip = incp << 1;
         i32 pv = ping.v;
-        const i32 pk = ping.k;
+        const i32 pk = mul(ping.k, ping.k);
         if (pv <= 4096) return;   // and so it stays
         for (u32 j = 0; j < n; ++j) {
             if (CURIO_LIKELY(pv > 4096)) {
@@ -297,30 +301,46 @@ struct Ball {
         buzz.x1 = x1;
         buzz.x2 = x2;
     }
-    // n samples between bounces.
-    __attribute__((noinline)) void span(i32* out, u32 n) {
-        i32 rise[frames], nb[frames];
-        drop_pass(out, rise, n);
-        bounce_pass(out, n);
-        edge_pass(out, rise, n);
-        floor_pass(out, n);
-        ping_pass(out, n);
-        if (c[7] > 0) {
-            click_pass<true>(out, nb, n);
-            grit_pass(out, nb, n);
-        } else {
-            click_pass<false>(out, nb, n);
+    // n half-rate samples between bounces.
+    __attribute__((noinline)) void half_span(i32* h, u32 n) {
+        i32 rise[frames / 2];
+        drop_pass(h, rise, n);
+        bounce_pass(h, n);
+        edge_pass(h, rise, n);
+        floor_pass(h, n);
+        ping_pass(h, n);
+    }
+    // The half-rate parts back up to the full rate, each new sample halfway
+    // between two (a sample later).
+    __attribute__((noinline)) void up_pass(const i32* h, i32* y) {
+        i32 last = hlast;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            const i32 x = h[j];
+            y[0] += (last >> 1) + (x >> 1);
+            y[1] += x;
+            last = x;
+            y += 2;
         }
+        hlast = last;
     }
     void run(i32* out) {
+        i32 h[frames / 2], nb[frames];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        const bool grit = c[7] > 0;
         const u32 t0 = t;
-        for (u32 i = 0;;) {
+        for (u32 i = 0, hi = 0;;) {
             // The next bounce in this block.
             u32 e = frames;
             if (next) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
-            if (e > i) span(out + i, e - i);
+            const u32 he = (e + 1) >> 1;
+            if (he > hi) half_span(h + hi, he - hi);
+            if (e > i) {
+                if (grit) click_pass<true>(out + i, nb + i, e - i);
+                else click_pass<false>(out + i, nb + i, e - i);
+            }
             i = e;
+            hi = he;
             if (i >= frames) break;
             t = t0 + i;
             if (next && t == next) {
@@ -329,6 +349,8 @@ struct Ball {
                 schedule();
             }
         }
+        up_pass(h, out);
+        if (grit) grit_pass(out, nb, frames);
         t = t0 + frames;
     }
 };
