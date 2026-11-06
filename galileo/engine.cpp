@@ -172,6 +172,30 @@ inline i32 ceiling(i32 x) {
     return x < 0 ? -y : y;
 }
 
+// The body's sum at the model's gain, held within full scale (never wrapped
+// round), then through the ceiling. Straight under the knee, so a block that
+// stays under it needs neither: the first pass only scales. Returns the
+// block's peak.
+__attribute__((noinline)) i32 finish(const i32* __restrict sum, i32 g, i32* __restrict output) {
+    i32 most = 0;
+    for (u32 i = 0; i < opxy::block_frames; ++i) {
+        const i32 m = dsp::multiply(sum[i], g);
+        output[i] = static_cast<i32>(static_cast<u32>(m) << 5);   // rewritten below if it is over
+        const i32 a = m < 0 ? -m : m;
+        if (a > most) most = a;
+    }
+    if (most <= 901943132 / 32) return most * 32;
+    i32 peak = 0;
+    for (u32 i = 0; i < opxy::block_frames; ++i) {
+        const i32 m = dsp::multiply(sum[i], g);
+        const i32 y = ceiling(m > 0x3ffffff ? dsp::one : m < -0x3ffffff ? -dsp::one : m * 32);
+        output[i] = y;
+        const i32 a = y < 0 ? -y : y;
+        if (a > peak) peak = a;
+    }
+    return peak;
+}
+
 inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy::Parameters parameters, opxy::Pitch) {
     // The kit's clock: the first voice to render in a block moves it on.
     if (voice.stamp == shared.block) {
@@ -227,16 +251,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
         b.now = now;
     }
     voice.t += opxy::block_frames;
-    const i32 g = voice.gain;
-    i32 peak = 0;
-    for (unsigned i = 0; i < opxy::block_frames; ++i) {
-        // Held within full scale before the ceiling, never wrapped round.
-        const i32 m = dsp::multiply(sum[i], g);
-        const i32 y = ceiling(m > 0x3ffffff ? dsp::one : m < -0x3ffffff ? -dsp::one : m * 32);
-        output[i] = y;
-        const i32 a = y < 0 ? -y : y;
-        if (a > peak) peak = a;
-    }
+    const i32 peak = finish(sum, voice.gain, output);
     const bool waiting = voice.balls > 0 || body::ghost_due(b) != 0xffffffffu;
     voice.quiet = peak < quiet_floor && !waiting ? voice.quiet + 1 : 0;
     if (voice.quiet >= quiet_blocks) voice.done = 1;
