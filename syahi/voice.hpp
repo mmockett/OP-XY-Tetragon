@@ -595,8 +595,10 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
     u32 begin = 0;
     for (u32 i = 0; i <= strikes.count; ++i) {
         const u32 end = i < strikes.count ? strikes.at[i] : 64;
-        if (end > begin) {
-            const u32 count = end - begin;
+        // In steps of at most 16 samples, so a burst a few samples long keeps
+        // its attack and its fall.
+        for (u32 at = begin; at < end;) {
+            const u32 count = end - at < 16 ? end - at : 16;
             const i32 fall = power(nd, count);
             const i32 ramp_end = ramp > one - static_cast<i32>(count) * step || static_cast<i32>(count) * step < 0 ? one
                                : ramp + static_cast<i32>(count) * step;
@@ -608,12 +610,13 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
             z.level = from;
             z.step = per_sample(to - from, count);
             if (z.ring) {
-                if (z.air) noise_run<true, true>(z, out, begin, count);
-                else noise_run<false, true>(z, out, begin, count);
+                if (z.air) noise_run<true, true>(z, out, at, count);
+                else noise_run<false, true>(z, out, at, count);
             } else {
-                if (z.air) noise_run<true, false>(z, out, begin, count);
-                else noise_run<false, false>(z, out, begin, count);
+                if (z.air) noise_run<true, false>(z, out, at, count);
+                else noise_run<false, false>(z, out, at, count);
             }
+            at += count;
         }
         if (i < strikes.count) {
             nb += multiply(np, ramp);
