@@ -1112,14 +1112,13 @@ inline void setup_zap(Voice& v, const i32* c, i32 tune) {
     v.waiting = 1;
 }
 // A chirp over count samples: its phase stepping by an increment that steps
-// by is, at a level stepping by es. The sine is read from the table without
-// interpolating (its 1024 steps leave their error some 60 dB down, under a
-// sweep that never holds a pitch).
+// by is, at a level stepping by es. (The sine is interpolated: a shallow
+// chirp settles on its last pitch, where the table's steps would show.)
 __attribute__((noinline)) inline u32 zap_chirp(i32* out, u32 count, u32 ph, u32 in, i32 is, i32 lev, i32 es) {
     for (u32 n = 0; n < count; ++n) {
         ph += in;
         in += static_cast<u32>(is);
-        *out++ += multiply(static_cast<i32>(tables::sine[ph >> 22]) << 12, lev);
+        *out++ += multiply(sine(ph) >> 4, lev);
         lev += es;
     }
     return ph;
