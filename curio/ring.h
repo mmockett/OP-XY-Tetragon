@@ -256,24 +256,62 @@ struct BellJar {
         next = n > 1 ? per : 0;
     }
     bool waiting() const { return k < n; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (k < n && t == next) {
-                stroke(U(0.7) + sc(U(0.1), draw(rng)));
-                ++k;
-                next += per;
-            }
-            i32 y = ring(mode[0], modek[0], 0) + ring(mode[1], modek[1], 0) + ring(mode[2], modek[2], 0) + ring(mode[3], modek[3], 0);
-            const i32 ck = lev(noise(rng), clk.step());
-            clk_lp += mul(clk_a, ck - clk_lp);
-            y += ck - clk_lp;
-            y += ring(base, basek, 0);
-            if (jar_amp) {
-                const i32 j = ring(jar, jark, mul(y, jark.g));
-                y = lev(y, dry) + lev(j, jar_amp);
-            }
-            out[i] = y;
+    // The block in passes, each with its state in registers, split at the
+    // hammer's strokes.
+    // The hammer's tick.
+    __attribute__((noinline)) void click_pass(i32* y, u32 n) {
+        i32 v = clk.v, lp = clk_lp;
+        const i32 k = clk.k, a = clk_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            v = mul(v, k);
+            const i32 ck = lev(noise(r), v);
+            lp += mul(a, ck - lp);
+            y[j] += ck - lp;
         }
+        clk.v = v;
+        clk_lp = lp;
+        rng = r;
+    }
+    // The jar: its air's resonance at 420 Hz, fed by the bell.
+    __attribute__((noinline)) void jar_pass(i32* y, u32 n) {
+        i32 y1 = jar.y1, y2 = jar.y2;
+        const i32 c = jark.c, r2 = jark.r2, g = jark.g, d = dry, ja = jar_amp;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 x = y[j];
+            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(x, g);
+            y2 = y1;
+            y1 = o;
+            y[j] = lev(x, d) + lev(o, ja);
+        }
+        jar.y1 = y1;
+        jar.y2 = y2;
+    }
+    void run(i32* out) {
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            // The next stroke in this block.
+            u32 e = frames;
+            if (k < n) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
+            if (e > i) {
+                const u32 m = e - i;
+                for (int q = 0; q < 4; ++q) ring_into(mode[q], modek[q], out + i, m);
+                click_pass(out + i, m);
+                ring_into(base, basek, out + i, m);
+                if (jar_amp) jar_pass(out + i, m);
+            }
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
+            if (k < n && t == next) next_stroke();
+        }
+        t = t0 + frames;
+    }
+    __attribute__((noinline)) void next_stroke() {
+        stroke(U(0.7) + sc(U(0.1), draw(rng)));
+        ++k;
+        next += per;
     }
 };
 
