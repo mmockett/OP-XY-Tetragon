@@ -19,6 +19,23 @@ struct Tone {
     // Adds a strike of amplitude g (Q28) with decay k and attack decay ka.
     void hit(i32 g, i32 k, i32 ka) { v += g; a += g; vk = k; ak = mul(k, ka); }
 };
+// A tone at its own pitch through n samples, added into y: ph += inc and
+// y += level() sine(ph) each sample, its state held in registers.
+__attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n) {
+    u32 ph = o.ph;
+    const u32 in = o.inc;
+    i32 v = o.v, a = o.a;
+    const i32 vk = o.vk, ak = o.ak;
+    for (u32 j = 0; j < n; ++j) {
+        ph += in;
+        v = mul(v, vk);
+        if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+        y[j] += mul(v - a, sine(ph));
+    }
+    o.ph = ph;
+    o.v = v;
+    o.a = a;
+}
 
 // --------------------------------------------------------------------- BALL
 // A ball dropped on a stretched hide, bouncing to rest: each bounce strikes
@@ -539,27 +556,59 @@ struct Stone {
         dustr = Res();
     }
     bool waiting() const { return false; }
+    // The chip, and the noise it shares with the dust.
+    __attribute__((noinline)) void chip_pass(i32* y, i32* nb) {
+        i32 v = chip.v, lp = chip_lp;
+        const i32 k = chip.k, a = chip_a;
+        u32 r = rng;
+        for (u32 j = 0; j < frames; ++j) {
+            const i32 x = noise(r);
+            v = mul(v, k);
+            const i32 ch = lev(x, v);
+            lp += mul(a, ch - lp);
+            y[j] += ch - lp;
+            nb[j] = x;
+        }
+        chip.v = v;
+        chip_lp = lp;
+        rng = r;
+    }
+    // The dust's patter, while it lasts.
+    __attribute__((noinline)) void dust_pass(i32* y, const i32* nb, bool on) {
+        i32 d = dust.v, y1 = dustr.y1, y2 = dustr.y2, x1 = dustr.x1, x2 = dustr.x2;
+        const i32 k = dust.k, c = dustk.c, r2 = dustk.r2, b = dustk.b, g = dust_gain << 12;
+        for (u32 j = 0; j < frames; ++j) {
+            d = mul(d, k);
+            if (d > 256) {
+                const i32 in = mul(nb[j], b);
+                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                if (on) y[j] += mul(mul(o, g) << 3, d << 3);
+            }
+        }
+        dust.v = d;
+        dustr.y1 = y1;
+        dustr.y2 = y2;
+        dustr.x1 = x1;
+        dustr.x2 = x2;
+    }
     void run(i32* out) {
         ph37 += 64u * 3603060u;   // 37 Hz, the dust's patter
         const bool on = static_cast<i32>(ph37) >= 0;
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            i32 y = 0;
-            for (int m = 0; m < 5; ++m) y += ring(mode[m], modek[m], 0);
-            for (int m = 0; m < 2; ++m) {
-                stack[m].ph += stack[m].inc;
-                y += mul(stack[m].level(), sine(stack[m].ph));
-            }
-            const i32 n = noise(rng);
-            const i32 ch = lev(n, chip.step());
-            chip_lp += mul(chip_a, ch - chip_lp);
-            y += ch - chip_lp;
-            const i32 d = dust.step();
-            if (d > 256) {
-                const i32 b = bp(dustr, dustk, n);
-                if (on) y += mul(mul(b, dust_gain << 12) << 3, d << 3);
-            }
-            out[i] = y;
-        }
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        // The block in passes, each with its state in registers. A mode above
+        // 0.45 of the rate is silent: it rings nothing.
+        for (int m = 0; m < 5; ++m)
+            if (modek[m].c || modek[m].r2) ring_into(mode[m], modek[m], out, frames);
+        for (int m = 0; m < 2; ++m) tone_into(stack[m], out, frames);
+        i32 nb[frames];
+        chip_pass(out, nb);
+        // Once the dust is under its floor it stays there.
+        if (dust.v > 256) dust_pass(out, nb, on);
+        t += frames;
     }
 };
 
