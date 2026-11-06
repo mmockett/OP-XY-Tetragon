@@ -358,6 +358,12 @@ def cmd_bfin(a):
         subprocess.run([str(asm), "-mcpu=bf707", "-o", str(out / o), str(s)], check=True)
         objs.append(str(out / o))
     subprocess.run([str(ld), "-e", "start", "-Ttext=0x10000", "-o", str(out / "golden.elf"), *objs], check=True)
+    # A short build (200 blocks a run) for the simulator's PC profile.
+    dp = defines(info) + ["-DGOLDEN_BENCH_BLOCKS=200", "-DGOLDEN_BFIN"]
+    subprocess.run([str(cxx), *BFIN_FLAGS, *dp, *inc, "-S", str(HERE / "golden.cpp"), "-o", str(out / "profile.s")], check=True)
+    subprocess.run([str(asm), "-mcpu=bf707", "-o", str(out / "profile.o"), str(out / "profile.s")], check=True)
+    subprocess.run([str(ld), "-e", "start", "-Ttext=0x10000", "-o", str(out / "profile.elf"),
+                    str(out / "profile.o"), *objs[1:]], check=True)
     census = subprocess.run([sys.executable, str(HERE / "census.py"), str(out / "golden-g.s")], capture_output=True, text=True)
     (out / "census.txt").write_text(census.stdout + census.stderr)
     print(f"{info['id']}: built {out / 'golden.elf'}")
@@ -376,6 +382,54 @@ def simulate(out, run, timeout):
 
 def cmd_sim(a):
     simulate(a.out, a.run, a.timeout)
+    if a.profile:
+        profile(pathlib.Path(a.out), a.run, a.timeout)
+
+
+def elf_functions(path):
+    """(start, size, name) of every function symbol in a little-endian ELF32."""
+    data = pathlib.Path(path).read_bytes()
+    shoff, = struct.unpack_from("<I", data, 32)
+    shentsize, shnum = struct.unpack_from("<HH", data, 46)
+    sections = [struct.unpack_from("<IIIIIIIIII", data, shoff + i * shentsize) for i in range(shnum)]
+    out = []
+    for sh in sections:
+        if sh[1] != 2:   # SHT_SYMTAB
+            continue
+        strtab = sections[sh[6]]
+        for off in range(sh[4], sh[4] + sh[5], 16):
+            name, value, size, info, _, _ = struct.unpack_from("<IIIBBH", data, off)
+            if info & 15 != 2 or not size:   # STT_FUNC
+                continue
+            end = data.index(b"\0", strtab[4] + name)
+            out.append((value, size, data[strtab[4] + name:end].decode()))
+    return sorted(out)
+
+
+def profile(out, run, timeout):
+    """The simulator's PC samples over the short build, summed per function."""
+    work = pathlib.Path(tempfile.mkdtemp())
+    subprocess.run([str(pathlib.Path(run).resolve()), "--profile-pc", "--profile-pc-frequency=1009",
+                    "--profile-pc-granularity=4", str((out / "profile.elf").resolve())],
+                   cwd=work, capture_output=True, text=True, timeout=timeout)
+    raw = (work / "gmon.out").read_bytes()
+    low, high, size = struct.unpack_from("<III", raw, 0)
+    counts = struct.unpack_from("<%dH" % ((len(raw) - 12) // 2), raw, 12)
+    step = (high - low) / max(1, len(counts))
+    funcs = elf_functions(out / "profile.elf")
+    totals, total = {}, 0
+    for i, c in enumerate(counts):
+        if not c:
+            continue
+        pc = low + int(i * step)
+        total += c
+        name = next((n for s, z, n in funcs if s <= pc < s + z), "?")
+        totals[name] = totals.get(name, 0) + c
+    lines = [f"PC samples: {total} (every 1009 cycles; 200 blocks a run; 65535 caps a bucket)"]
+    for name, c in sorted(totals.items(), key=lambda x: -x[1])[:45]:
+        lines.append(f"{100.0 * c / max(1, total):6.2f}%  {name}")
+    (out / "profile.txt").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines[:25]))
 
 
 def load_cycles(folder):
@@ -473,6 +527,7 @@ def main():
     q.add_argument("--blocks", type=int, default=1500)
     q.add_argument("--timeout", type=int, default=3000)
     q = s.add_parser("sim")
+    q.add_argument("--profile", action="store_true")
     q.add_argument("--out", required=True)
     q.add_argument("--run", required=True)
     q.add_argument("--timeout", type=int, default=3000)
