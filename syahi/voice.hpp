@@ -240,7 +240,6 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     // Noise: its band, cascaded twice, and the two lowest modes' rings.
     v.cn.set(s.noise_q, s.noise_tone < lg(9000) ? s.noise_tone : lg(9000));
     v.r0.set(q_drum, v.part[0].rest);
-    v.r1.set(q_ring, v.part[1].rest < lg(15000) ? v.part[1].rest : v.part[0].rest);
     v.nd = one - one_pole(s.noise_length);
     v.nd_tail = one - one_pole(s.noise_length + s.tail);
     v.nstep = static_cast<i32>(exp2i(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
@@ -527,56 +526,82 @@ __attribute__((noinline)) static void wash_pass(Core& v, const Scratch& scratch,
     v.xh = high;
     v.wash_low = low;
 }
-// The burst between strikes: samples [begin, end), every value in a local.
+// The burst between strikes, samples [begin, begin + count): one band (its
+// low part's leftover is the air) and, when the model rings it, one ring on
+// the lowest mode. The burst's level is planned at the segment's ends and
+// stepped linearly between; the voice's gain is in it.
 struct NoiseRun {
-    i32 nb, np, ramp, step, nd;
+    i32 level, step;
     u32 seed;
-    Svf f1, f2;
+    Svf f1;
     SvfCoefficients cn;
-    Chamberlin g0, g1;
-    i32 ring, air, gain;
+    Chamberlin g0;
+    i32 ring, air;
 };
-static inline void noise_run(NoiseRun& z, i32* __restrict out, u32 begin, u32 end) {
-    i32 nb = z.nb, np = z.np, ramp = z.ramp, nd = z.nd;
-    const i32 step = z.step, ring = z.ring, air = z.air, gain = z.gain;
+template <bool air, bool ring>
+__attribute__((noinline)) static void noise_run(NoiseRun& z, i32* __restrict out, u32 begin, u32 count) {
+    i32 level = z.level;
+    const i32 step = z.step, rg = z.ring, ag = z.air;
     u32 seed = z.seed;
-    Svf f1 = z.f1, f2 = z.f2;
+    Svf f1 = z.f1;
     const SvfCoefficients cn = z.cn;
-    Chamberlin g0 = z.g0, g1 = z.g1;
-    for (u32 n = begin; n < end; ++n) {
-        const i32 level = nb + multiply(np, ramp);
-        ramp = ramp > one - step ? one : ramp + step;
-        nb = multiply(nb, nd);
-        np = multiply(np, nd);
+    Chamberlin g0 = z.g0;
+    i32* o = out + begin;
+    for (u32 n = 0; n < count; ++n) {
         const i32 x = multiply(noise(seed), level);
-        // The band, twice; what the first stage passes above it is the air
-        // (a stick's crack, a clap's spread), as much as the model asks.
+        level += step;
         i32 band, low;
         svf_step(f1, cn, x, band, low);
         band = multiply(cn.k, band) * 2;
-        const i32 tone = svf_bandpass(f2, cn, band) + multiply(band + ((x - low) >> 2), air);
-        const i32 rung = multiply(g0.bandpass(x), q31(0.6)) + multiply(g1.bandpass(x), q31(0.4));
-        out[n] += multiply(tone + multiply(rung, ring), gain) << 1;
+        i32 y = band;
+        if (air) y += multiply(band + ((x - low) >> 2), ag);
+        if (ring) y += multiply(g0.bandpass(x), rg);
+        o[n] += y << 1;
     }
-    z.nb = nb; z.np = np; z.ramp = ramp; z.seed = seed;
-    z.f1 = f1; z.f2 = f2; z.g0 = g0; z.g1 = g1;
+    z.level = level;
+    z.seed = seed;
+    z.f1 = f1;
+    z.g0 = g0;
 }
 __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes, i32* __restrict out) {
     const Spec& s = v.spec;
+    const i32 gain = multiply(v.velocity, q31(1.732 / 2));
     // The burst: established and pending level, the pending part ramping in.
+    i32 nb = v.nb, np = v.np, ramp = v.nramp, nd = v.nd;
+    const i32 step = v.nstep;
     NoiseRun z;
-    z.nb = v.nb; z.np = v.np; z.ramp = v.nramp; z.step = v.nstep; z.nd = v.nd; z.seed = v.seed;
-    z.f1 = v.n1; z.f2 = v.n2; z.cn = v.cn; z.g0 = v.r0; z.g1 = v.r1;
-    z.ring = s.noise_ring; z.air = s.noise_air; z.gain = multiply(v.velocity, q31(1.732 / 2));
+    z.seed = v.seed;
+    z.f1 = v.n1; z.cn = v.cn; z.g0 = v.r0;
+    z.ring = s.noise_ring;
+    z.air = s.noise_air;
     u32 begin = 0;
     for (u32 i = 0; i <= strikes.count; ++i) {
         const u32 end = i < strikes.count ? strikes.at[i] : 64;
-        noise_run(z, out, begin, end);
+        if (end > begin) {
+            const u32 count = end - begin;
+            const i32 fall = power(nd, count);
+            const i32 ramp_end = ramp > one - static_cast<i32>(count) * step || static_cast<i32>(count) * step < 0 ? one
+                               : ramp + static_cast<i32>(count) * step;
+            const i32 from = multiply(nb + multiply(np, ramp), gain);
+            nb = multiply(nb, fall);
+            np = multiply(np, fall);
+            const i32 to = multiply(nb + multiply(np, ramp_end), gain);
+            ramp = ramp_end;
+            z.level = from;
+            z.step = per_sample(to - from, count);
+            if (z.ring) {
+                if (z.air) noise_run<true, true>(z, out, begin, count);
+                else noise_run<false, true>(z, out, begin, count);
+            } else {
+                if (z.air) noise_run<true, false>(z, out, begin, count);
+                else noise_run<false, false>(z, out, begin, count);
+            }
+        }
         if (i < strikes.count) {
-            z.nb += multiply(z.np, z.ramp);
-            z.np -= multiply(z.np, z.ramp);
-            z.np += multiply(strikes.level[i], s.noise >> 4);
-            z.ramp = 0;
+            nb += multiply(np, ramp);
+            np -= multiply(np, ramp);
+            np += multiply(strikes.level[i], s.noise >> 4);
+            ramp = 0;
             if (s.jitter) {
                 // Each hand claps a little brighter or duller; the last,
                 // ringing on as the room's tail, through a wider band.
@@ -584,13 +609,13 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
                 v.cn.set(strikes.last[i] && s.tail ? q_tone : s.noise_q, tone < lg(9000) ? tone : lg(9000));
                 z.cn = v.cn;
             }
-            if (strikes.last[i] && s.tail) z.nd = v.nd_tail;
+            if (strikes.last[i] && s.tail) nd = v.nd_tail;
         }
         begin = end;
     }
-    v.nb = z.nb; v.np = z.np; v.nramp = z.ramp; v.nd = z.nd; v.seed = z.seed;
-    v.n1 = z.f1; v.n2 = z.f2; v.r0 = z.g0; v.r1 = z.g1;
-    v.noise_quiet = z.nb > silent || z.np > silent ? 0 : v.noise_quiet + 1;
+    v.nb = nb; v.np = np; v.nramp = ramp; v.nd = nd; v.seed = z.seed;
+    v.n1 = z.f1; v.r0 = z.g0;
+    v.noise_quiet = nb > silent || np > silent ? 0 : v.noise_quiet + 1;
 }
 __attribute__((noinline)) static void rattle_pass(Core& v, i32* __restrict out) {
     const Spec& s = v.spec;
