@@ -45,7 +45,7 @@ struct Ice {
     ResK nzk;
     Env hiss, grain;
     i32 hiss_amp, hiss_gain, grain_rate;
-    u32 grain_p;
+    u32 grain_p, hrng;   // the surface draws its own noise
     i32 drive, undrive;
 
     void snap(i32 g, bool echo_hit) {
@@ -72,6 +72,7 @@ struct Ice {
         turn = 0;
         newest = 0;
         zrng = (x.seed * 2654435761u) | 1u;
+        hrng = (x.seed * 2246822519u + 0x9e3779b9u) | 1u;
         zlp = 0;
         za = 0;
         echo = 0;
@@ -169,23 +170,17 @@ struct Ice {
             zlp = zl;
         }
     }
-    // The snap, and the noise for the band and the surface in draw order.
-    template <bool cracking> __attribute__((noinline)) void noise_pass(i32* y, i32* hn, opxy::u8* gt, u32 n) {
-        i32 cv = crack.v, lp = crack_lp, hv = hiss.v;
-        const i32 ck = crack.k, ca = crack_a, hk = hiss.k;
-        const u32 gp = grain_p;
+    // The snap: 4 ms of high-passed, spiky noise.
+    __attribute__((noinline)) void crack_pass(i32* y, u32 n) {
+        i32 cv = crack.v, lp = crack_lp;
+        const i32 ck = crack.k, ca = crack_a;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (cracking && cv > 4096) {
+            if (CURIO_LIKELY(cv > 4096)) {
                 cv = mul(cv, ck);
                 const i32 cr = lev(spiky(r), cv);
                 lp += mul(ca, cr - lp);
                 y[j] += cr - lp;
-            }
-            if (CURIO_LIKELY(hv > 4096)) {
-                hv = mul(hv, hk);
-                gt[j] = r < gp;
-                hn[j] = noise(r);
             }
         }
         crack.v = cv;
@@ -225,19 +220,21 @@ struct Ice {
         blip.v = bv;
     }
     // The surface: noise with a crunch of micro-cracks.
-    __attribute__((noinline)) void hiss_pass(i32* y, const i32* hn, const opxy::u8* gt, u32 n) {
+    __attribute__((noinline)) void hiss_pass(i32* y, u32 n) {
         i32 hv = hiss.v, gv = grain.v;
+        u32 r = hrng;
+        const u32 gp = grain_p;
         const i32 hk = hiss.k, gk = grain.k;
         i32 y1 = nz.y1, y2 = nz.y2, x1 = nz.x1, x2 = nz.x2;
         const i32 c = nzk.c, r2 = nzk.r2, b = nzk.b;
         if (hv <= 4096) return;   // until the next echo
         for (u32 j = 0; j < n; ++j) {
             if (CURIO_LIKELY(hv > 4096)) {
-                if (CURIO_UNLIKELY(gt[j])) gv = one;
+                if (CURIO_UNLIKELY(r < gp)) gv = one;
                 hv = mul(hv, hk);
                 i32 level = hv;
                 if (CURIO_LIKELY(gv)) { gv = mul(gv, gk); level += lev(level, gv); if (CURIO_UNLIKELY(gv < 4096)) gv = 0; }
-                const i32 in = mul(hn[j], b);
+                const i32 in = mul(noise(r), b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
@@ -248,6 +245,7 @@ struct Ice {
         }
         hiss.v = hv;
         grain.v = gv;
+        hrng = r;
         nz.y1 = y1;
         nz.y2 = y2;
         nz.x1 = x1;
@@ -257,8 +255,7 @@ struct Ice {
     // noise riding its pitch), the snap and the noise, the band, the drive,
     // the lake and the surface.
     __attribute__((noinline)) void span(i32* out, u32 n) {
-        i32 x[frames], hn[frames];
-        opxy::u8 gt[frames];
+        i32 x[frames];
         for (u32 j = 0; j < n; ++j) x[j] = 0;
         for (u32 s = 0; s < 2; ++s) {
             Chirp& h = ch[s];
@@ -267,11 +264,10 @@ struct Ice {
             else chirp_pass<false>(h, x, n);
         }
         // The snap, once under its floor, stays there until the next crack.
-        if (crack.v > 4096) noise_pass<true>(x, hn, gt, n);
-        else noise_pass<false>(x, hn, gt, n);
+        if (crack.v > 4096) crack_pass(x, n);
         drive_pass(x, out, n);
         body_pass(out, n);
-        hiss_pass(out, hn, gt, n);
+        hiss_pass(out, n);
     }
     // A shard or an echo at t.
     __attribute__((noinline)) void events() {
