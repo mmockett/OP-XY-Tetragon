@@ -21,9 +21,8 @@ struct Tone {
 };
 // A tone at its own pitch through n samples, added into y: ph += inc and
 // y += level() sine(ph) each sample, its state held in registers.
-__attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n) {
+__attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n, u32 in) {
     u32 ph = o.ph;
-    const u32 in = o.inc;
     i32 v = o.v, a = o.a;
     const i32 vk = o.vk, ak = o.ak;
     for (u32 j = 0; j < n; ++j) {
@@ -36,6 +35,7 @@ __attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n) {
     o.v = v;
     o.a = a;
 }
+inline void tone_at(Tone& o, i32* y, u32 n) { tone_into(o, y, n, o.inc); }
 
 // --------------------------------------------------------------------- BALL
 // A ball dropped on a stretched hide, bouncing to rest: each bounce strikes
@@ -603,7 +603,7 @@ struct Stone {
         // 0.45 of the rate is silent: it rings nothing.
         for (int m = 0; m < 5; ++m)
             if (modek[m].c || modek[m].r2) ring_into(mode[m], modek[m], out, frames);
-        for (int m = 0; m < 2; ++m) tone_into(stack[m], out, frames);
+        for (int m = 0; m < 2; ++m) tone_at(stack[m], out, frames);
         i32 nb[frames];
         chip_pass(out, nb);
         // Once the dust is under its floor it stays there.
