@@ -287,6 +287,7 @@ struct Chalk {
         const i32 sc_ = static_cast<i32>((static_cast<u32>(1) << 30) / (f >> 8));
         ph_ch += 64u * inc_ch;
         const i32 gate = chatter && sine(ph_ch) > F(0.3) ? full - chatter : full;
+        const u32 fade_step = 0x7fffffffu / fade;   // the fade's slope, once a block
         for (u32 i = 0; i < frames; ++i, ++t) {
             i32 y = 0;
             i32 drive = 0;
@@ -304,7 +305,7 @@ struct Chalk {
                 const i32 wave = lp2 + mul(lp2, F(0.57));   // the fundamental at 1, as the prototype's sum
                 att = mul(att, attk);
                 i32 env = full - att;
-                if (t > len) env = mul(env, static_cast<i32>((len + fade - t) * (0x7fffffffu / fade)));
+                if (t > len) env = mul(env, static_cast<i32>((len + fade - t) * fade_step));
                 env = mul(mul(env, gate), fall.step());
                 const i32 s = lev(wave, env >> 3);
                 drive = mul(s, slatek.g);
@@ -384,11 +385,12 @@ struct Roar {
         const i32 p15 = mul(ah, static_cast<i32>(ex2((31 << 12) + (lg2(static_cast<u32>(ah >> 1 > 0 ? ah >> 1 : 1)) - (30 << 12)) / 2)));   // |s| sqrt|s|
         const i32 am = full - mul(throb << 19, full - p15);
         const u32 fl = flut_inc + static_cast<u32>(mul(static_cast<i32>(flut_inc), mul(flut_swing, s)));
+        const u32 fade_step = 0x7fffffffu / fade;   // the fade's slope, once a block
         for (u32 i = 0; i < frames; ++i, ++t) {
             if (t >= len + fade) { out[i] = 0; continue; }
             att = mul(att, attk);
             i32 env = full - att;
-            if (t > len) env = mul(env, static_cast<i32>((len + fade - t) * (0x7fffffffu / fade)));
+            if (t > len) env = mul(env, static_cast<i32>((len + fade - t) * fade_step));
             const i32 n = noise(rng);
             i32 y = mul(gn(bp(roar, roark, n), bp_gain), F(0.39));
             hum_ph += hum_inc;
