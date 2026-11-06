@@ -321,25 +321,52 @@ struct Ratchet {
         return w > static_cast<i32>(t) ? static_cast<u32>(w) : t + 1;
     }
     bool waiting() const { return k < n; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (k < n && t == next) {
-                const i32 a = mul(U(1.0) - static_cast<i32>(static_cast<u32>(U(0.3) >> 8) * k / n << 8),
-                                  full - mul(sc(F(0.9), c[7]), draw(rng) << 19));
-                tooth(a);
-                ++k;
-                gap = (per >> 4) * static_cast<i32>(ex2(static_cast<i32>(k) * slow_step + (16 << 12)) >> 4) >> 8;
-                if (gap > 66150) gap = 66150;
-                due += static_cast<u32>(gap);
-                next = k < n ? jittered(due) : 0;
-            }
-            i32 y = ring(slat[0], slatk[0], 0) + ring(slat[1], slatk[1], 0) + ring(slat[2], slatk[2], 0);
-            y += ring(spring, springk, 0) + ring(box, boxk, 0);
-            const i32 tk = lev(noise(rng), tick.step());
-            tick_lp += mul(tick_a, tk - tick_lp);
-            y += tk - tick_lp;
-            out[i] = y;
+    // The next tooth flicks the slat.
+    __attribute__((noinline)) void next_tooth() {
+        const i32 a = mul(U(1.0) - static_cast<i32>(static_cast<u32>(U(0.3) >> 8) * k / n << 8),
+                          full - mul(sc(F(0.9), c[7]), draw(rng) << 19));
+        tooth(a);
+        ++k;
+        gap = (per >> 4) * static_cast<i32>(ex2(static_cast<i32>(k) * slow_step + (16 << 12)) >> 4) >> 8;
+        if (gap > 66150) gap = 66150;
+        due += static_cast<u32>(gap);
+        next = k < n ? jittered(due) : 0;
+    }
+    // The tick of each tooth.
+    __attribute__((noinline)) void tick_pass(i32* y, u32 n) {
+        i32 v = tick.v, lp = tick_lp;
+        const i32 tk = tick.k, a = tick_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            v = mul(v, tk);
+            const i32 x = lev(noise(r), v);
+            lp += mul(a, x - lp);
+            y[j] += x - lp;
         }
+        tick.v = v;
+        tick_lp = lp;
+        rng = r;
+    }
+    // The block in passes, each with its state in registers, split at the teeth.
+    void run(i32* out) {
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            u32 e = frames;
+            if (k < n) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
+            if (e > i) {
+                const u32 m = e - i;
+                for (int s = 0; s < 3; ++s) ring_into(slat[s], slatk[s], out + i, m);
+                ring_into(spring, springk, out + i, m);
+                ring_into(box, boxk, out + i, m);
+                tick_pass(out + i, m);
+            }
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
+            if (k < n && t == next) next_tooth();
+        }
+        t = t0 + frames;
     }
 };
 
