@@ -1107,6 +1107,62 @@ inline void setup_bow(Voice& v, const i32* c, i32 tune) {
     setup_chain(v, Q16(1.2), Q16(0.5), L(0.06), L(1800), L(6000), c[6]);
     v.waiting = 1;
 }
+// BOW's passes (noinline, each with its state in locals).
+// Stick and slip: a sawtooth at the sung mode, its period jittered with
+// PRESS (noise low-passed at 40 Hz, every 8 samples), and the scratch, under
+// the gesture's level e.
+__attribute__((noinline)) inline void bow_excite(Voice& v, u32 inc, i32 e, i32 es, i32* ex) {
+    u32 seed = v.seed ? v.seed : 1u, phase = v.u[2];
+    i32 jit = v.op[0].s;
+    const i32 saw_k = v.k[6], scr = v.k[7], jk = v.k[11], jamt = v.k[10];
+    for (u32 s8 = 0; s8 < frames / 8; ++s8) {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        jit += multiply((static_cast<i32>(seed) >> 4) - jit, jk << 3);
+        const u32 step = inc + static_cast<u32>(multiply(static_cast<i32>(inc >> 1), multiply(jit, jamt) << 4) << 1);
+        for (u32 n = 0; n < 8; ++n, e += es) {
+            phase += step;
+            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+            *ex++ = multiply(multiply(static_cast<i32>(phase) >> 4, saw_k) + multiply(static_cast<i32>(seed) >> 4, scr), e);
+        }
+    }
+    v.seed = seed;
+    v.u[2] = phase;
+    v.op[0].s = jit;
+}
+// A band on ex, into out: its band normalised, (q bp) << 1, or (raw) its band state as is.
+template <bool raw>
+__attribute__((noinline)) inline void bow_band(Svf& sv, i32 f, i32 q, const i32* ex, i32* out) {
+    i32 l = sv.lp, b = sv.bp;
+    for (u32 n = 0; n < frames; ++n) {
+        l += multiply(f, b);
+        b += multiply(f, *ex++ - l - (multiply(q, b) << 1));
+        *out++ = raw ? b : multiply(q, b) << 1;
+    }
+    sv.lp = l;
+    sv.bp = b;
+}
+// The third band, and the neighbours' sum at 0.3 into out (t: the second's).
+__attribute__((noinline)) inline void bow_neighbour(Svf& sv, i32 f, i32 q, const i32* ex, const i32* t, i32* out) {
+    i32 l = sv.lp, b = sv.bp;
+    for (u32 n = 0; n < frames; ++n) {
+        l += multiply(f, b);
+        b += multiply(f, *ex++ - l - (multiply(q, b) << 1));
+        *out++ += multiply(multiply(q, *t++ + b), Q31(0.3)) << 1;
+    }
+    sv.lp = l;
+    sv.bp = b;
+}
+// The pure tone at the gesture's level.
+__attribute__((noinline)) inline void bow_pure(i32& ol_, i32& ob_, i32 f, i32 e, i32 es, i32 pure, i32* out) {
+    i32 ol = ol_, ob = ob_;
+    for (u32 n = 0; n < frames; ++n, e += es) {
+        ol += multiply(f, ob);
+        ob -= multiply(f, ol);
+        *out++ += multiply(multiply(ob >> 4 << 4, e), pure);
+    }
+    ol_ = ol;
+    ob_ = ob;
+}
 __attribute__((noinline)) inline void block_bow(Voice& v, Work& w, i32* out) {
     const u32 t = v.t;
     // the gesture's level at the block's end
@@ -1130,40 +1186,15 @@ __attribute__((noinline)) inline void block_bow(Voice& v, Work& w, i32* out) {
     const i32 f0 = svf_f(increment(v.k[0] + off)), f1 = svf_f(increment(v.k[1] + off)), f2 = svf_f(increment(v.k[2] + off));
     const u32 inc = increment(v.k[0] + off);
     const i32 es = (e1 - e0) >> 6;
-    i32 e = e0;
-    // the work in locals, so the loop keeps it in registers
-    u32 seed = v.seed ? v.seed : 1u, phase = v.u[2];
-    i32 jit = v.op[0].s;
-    i32 al = v.sv[0].lp, ab = v.sv[0].bp, bl = v.sv[1].lp, bb = v.sv[1].bp, cl = v.sv[2].lp, cb = v.sv[2].bp;
+    // the work in passes, each with its state in locals
     i32 ol = v.s[4], ob = v.s[5];   // the pure tone: a lossless oscillator at the sung mode
     if (!ol && !ob) ob = U;
-    const i32 q0 = v.k[4], q1 = v.k[5], saw_k = v.k[6], scr = v.k[7], pure = v.k[8], jk = v.k[11], jamt = v.k[10];
-    const i32 fo = f0;
-    for (unsigned s8 = 0; s8 < frames; s8 += 8) {
-        // stick and slip: a sawtooth at the sung mode, its period jittered
-        // with PRESS (noise low-passed at 40 Hz, every 8 samples)
-        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-        jit += multiply((static_cast<i32>(seed) >> 4) - jit, jk << 3);
-        const u32 step = inc + static_cast<u32>(multiply(static_cast<i32>(inc >> 1), multiply(jit, jamt) << 4) << 1);
-        for (unsigned i = s8; i < s8 + 8; ++i, e += es) {
-            phase += step;
-            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-            const i32 ex = multiply(multiply(static_cast<i32>(phase) >> 4, saw_k) + multiply(static_cast<i32>(seed) >> 4, scr), e);
-            al += multiply(f0, ab);
-            ab += multiply(f0, ex - al - (multiply(q0, ab) << 1));
-            bl += multiply(f1, bb);
-            bb += multiply(f1, ex - bl - (multiply(q1, bb) << 1));
-            cl += multiply(f2, cb);
-            cb += multiply(f2, ex - cl - (multiply(q1, cb) << 1));
-            ol += multiply(fo, ob);
-            ob -= multiply(fo, ol);
-            out[i] = (multiply(q0, ab) << 1) + (multiply(multiply(q1, bb + cb), Q31(0.3)) << 1) + multiply(multiply(ob >> 4 << 4, e), pure);
-        }
-    }
-    v.seed = seed;
-    v.u[2] = phase;
-    v.op[0].s = jit;
-    v.sv[0].lp = al; v.sv[0].bp = ab; v.sv[1].lp = bl; v.sv[1].bp = bb; v.sv[2].lp = cl; v.sv[2].bp = cb;
+    i32* ex = w.exc;
+    bow_excite(v, inc, e0, es, ex);
+    bow_band<false>(v.sv[0], f0, v.k[4], ex, out);   // the sung band
+    bow_band<true>(v.sv[1], f1, v.k[5], ex, w.aux);   // and its two neighbours
+    bow_neighbour(v.sv[2], f2, v.k[5], ex, w.aux, out);
+    bow_pure(ol, ob, f0, e0, es, v.k[8], out);
     v.s[4] = ol;
     v.s[5] = ob;
     copy(w.body, out);
