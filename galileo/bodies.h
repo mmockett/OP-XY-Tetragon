@@ -113,9 +113,12 @@ inline void tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 width0, u32 width
 // (1 - late) and -late steps of its pitch. From `late` on it rings exactly as
 // if struck then (but for the decay over those few samples); before, it
 // sounds a fraction of a millisecond early.
-inline void ring(Struck& s, i32 v15, i32 amplitude15, u32 late = 0) {
+// g (Q28, 0 for none): the mode's level, put into the strike (a mode is
+// linear) so it needs no scaling as it rings.
+inline void ring(Struck& s, i32 v15, i32 amplitude15, u32 late = 0, i32 g28 = 0) {
     const i32 c = s.soft + dsp::m15(s.hard - s.soft, v15);
-    const i32 v = dsp::m15(amplitude15, c) << 13;
+    i32 v = dsp::m15(amplitude15, c) << 13;
+    if (g28) v = gain(v, g28);
     if (!late) {
         s.m.strike(v);
         return;
@@ -554,9 +557,9 @@ inline i32 touch(const Body& b, i32 v15) {
     const i32 t = dsp::m15(v15, 28835 + static_cast<i32>((h >> 19) & 8191u));   // 0.88 .. 1.13
     return t > 32767 ? 32767 : t;
 }
-inline void strike_modes(Body& b, u32 count, i32 v15, i32 vp, i32 tone15, u32 late) {
+inline void strike_modes(Body& b, u32 count, i32 v15, i32 vp, i32 tone15, u32 late, i32 g28 = 0) {
     const i32 a = dsp::power(v15, vp);
-    for (u32 i = 0; i < count; ++i) ring(b.mode[i], tone15, a, late);
+    for (u32 i = 0; i < count; ++i) ring(b.mode[i], tone15, a, late, g28);
 }
 
 // An impact at sample b.now + late (the struck modes ring from then on, the
@@ -569,7 +572,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     switch (b.model) {
     case kick:
         b.skin[0].strike(v15, vt);
-        strike_modes(b, 2, v15, GQ16(1.3), vt, late);
+        strike_modes(b, 2, v15, GQ16(1.3), vt, late, b.g[0]);
         b.click[0].strike(vt);
         break;
     case snare:
@@ -612,7 +615,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     case ride:
         b.env[0].strike(dsp::power(v15, GQ16(1.2)));
         b.env[1].strike(dsp::power(v15, GQ16(1.2)));
-        strike_modes(b, 2, v15, GQ16(1.1), vt, late);
+        strike_modes(b, 2, v15, GQ16(1.1), vt, late, b.g[1]);
         b.click[0].strike(vt);
         break;
     case bell: {
@@ -663,7 +666,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         ring(b.mode[set], vt, a, late);
         ring(b.mode[set + 1], vt, a, late);
         const i32 c = dsp::power(v15, GQ16(1.1));
-        for (u32 i = 4; i < 7; ++i) ring(b.mode[i], vt, c, late);
+        for (u32 i = 4; i < 7; ++i) ring(b.mode[i], vt, c, late, b.g[0]);
         b.click[0].strike(v15);
         break;
     }
@@ -692,7 +695,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         b.env[0].a += v15 << 13;
         if (b.env[0].a > (3 << 28)) b.env[0].a = 3 << 28;
         b.env[1].strike(dsp::m15(v15, GQ15(0.6)));
-        strike_modes(b, 2, v15 >> 1, GQ16(1.0), vt >> 1, late);
+        strike_modes(b, 2, v15 >> 1, GQ16(1.0), vt >> 1, late, b.g[0]);
         break;
     case ratchet:
         if (!ghost) {
@@ -705,7 +708,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
             b.skin[0].strike(v15, vt);
             v15 = dsp::m15(v15, GQ15(0.55));
         }
-        strike_modes(b, 3, v15, GQ16(1.1), touch(b, v15), late);
+        strike_modes(b, 3, v15, GQ16(1.1), touch(b, v15), late, b.g[0]);
         b.click[0].strike(v15);
         break;
     default: break;
@@ -732,7 +735,7 @@ inline void strike_ghosts(Body& b, u32 n) {
             if (b.model == kit::ratchet) {
                 // A tooth: what strike() does for one, without its dispatch.
                 ++b.count;
-                strike_modes(b, 3, v, GQ16(1.1), touch(b, v), late);
+                strike_modes(b, 3, v, GQ16(1.1), touch(b, v), late, b.g[0]);
                 b.click[0].strike(v);
             } else {
                 strike(b, v, 0, 0, n, true, late);
@@ -924,51 +927,26 @@ inline void click_pair_add(dsp::Click& a, dsp::Click& b, u32& seed, i32* __restr
 inline i32 sat_sub(i32 a, i32 b) { return dsp::sat_add(a, -b); }
 // dsp::resonate.
 inline i32 resonate(i32 a1, i32 y1, i32 a2, i32 y2) { return sat_sub(dsp::twice(multiply(a1, y1)), multiply(a2, y2)); }
-// Two struck modes added into out (n even), each step two samples so the
-// state swaps without moves; at gain g (Q28) when G.
-template <bool G>
-__attribute__((noinline)) void modes_pair(dsp::Mode& m0, dsp::Mode& m1, i32* __restrict out, u32 n, i32 g28) {
-    i32 p1 = m0.y1, p2 = m0.y2, q1 = m1.y1, q2 = m1.y2;
-    const i32 a1 = m0.a1, a2 = m0.a2, b1 = m1.a1, b2 = m1.a2;
-    for (u32 i = 0; i < n; i += 2) {
-        p2 = resonate(a1, p1, a2, p2);
-        q2 = resonate(b1, q1, b2, q2);
-        out[i] = dsp::sat_add(dsp::sat_add(out[i], G ? gain(p2, g28) : p2), G ? gain(q2, g28) : q2);
-        p1 = resonate(a1, p2, a2, p1);
-        q1 = resonate(b1, q2, b2, q1);
-        out[i + 1] = dsp::sat_add(dsp::sat_add(out[i + 1], G ? gain(p1, g28) : p1), G ? gain(q1, g28) : q1);
-    }
-    m0.y1 = p1; m0.y2 = p2; m1.y1 = q1; m1.y2 = q2;
-}
-template <bool G>
-__attribute__((noinline)) void modes_one(dsp::Mode& m0, i32* __restrict out, u32 n, i32 g28) {
+// One struck mode added into out (n even), each step two samples so the
+// state swaps without moves.
+__attribute__((noinline)) void modes_one(dsp::Mode& m0, i32* __restrict out, u32 n) {
     i32 p1 = m0.y1, p2 = m0.y2;
     const i32 a1 = m0.a1, a2 = m0.a2;
     for (u32 i = 0; i < n; i += 2) {
         p2 = resonate(a1, p1, a2, p2);
-        out[i] = dsp::sat_add(out[i], G ? gain(p2, g28) : p2);
+        out[i] = dsp::sat_add(out[i], p2);
         p1 = resonate(a1, p2, a2, p1);
-        out[i + 1] = dsp::sat_add(out[i + 1], G ? gain(p1, g28) : p1);
+        out[i + 1] = dsp::sat_add(out[i + 1], p1);
     }
     m0.y1 = p1; m0.y2 = p2;
 }
-// Struck modes, added (n even). A mode that has died away is cleared, so it is
-// skipped; the rest run in pairs when scaled, each sample's sum in the modes' order.
-inline void modes_add(Struck* m, u32 count, i32* __restrict out, u32 n, i32 g28 = 0) {
-    dsp::Mode* live[7];
-    u32 c = 0;
-    for (u32 k = 0; k < count; ++k)
-        if (m[k].m.y1 || m[k].m.y2) live[c++] = &m[k].m;
-    u32 k = 0;
-    if (g28) {
-        for (; k + 1 < c; k += 2) modes_pair<true>(*live[k], *live[k + 1], out, n, g28);
-        if (k < c) modes_one<true>(*live[k], out, n, g28);
-    } else {
-        // Unscaled, one mode a pass: a pair's eight values crowd the registers.
-        for (; k < c; ++k) modes_one<false>(*live[k], out, n, 0);
-    }
-    for (k = 0; k < c; ++k) {
-        dsp::Mode& o = *live[k];
+// Struck modes, added (n even), each at the level its strikes gave it. A mode
+// that has died away is cleared, so it is skipped.
+inline void modes_add(Struck* m, u32 count, i32* __restrict out, u32 n) {
+    for (u32 k = 0; k < count; ++k) {
+        dsp::Mode& o = m[k].m;
+        if (!o.y1 && !o.y2) continue;
+        modes_one(o, out, n);
         if (o.y1 < 256 && o.y1 > -256 && o.y2 < 256 && o.y2 > -256) o.y1 = o.y2 = 0;
     }
 }
@@ -1085,7 +1063,7 @@ inline void knee_run(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
 
 __attribute__((noinline)) inline void run_kick(Body& b, i32* __restrict out, u32 count) {
     skin_block(b.skin[0], out, count);
-    modes_add(b.mode, 2, out, count, b.g[0]);
+    modes_add(b.mode, 2, out, count);   // at the attack's level, from their strikes
     const i32 drive = b.k[0], makeup = b.k[1];
     for (u32 i = 0; i < count; ++i) out[i] = multiply(dsp::tanh(gain(out[i], drive)), makeup);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
@@ -1120,9 +1098,9 @@ __attribute__((noinline)) inline void run_modes(Body& b, i32* __restrict out, u3
     for (u32 i = 0; i < count; ++i) out[i] = 0;
     if (b.model == kit::clock) {
         modes_add(b.mode, 4, out, count);
-        modes_add(b.mode + 4, 3, out, count, b.g[0]);
+        modes_add(b.mode + 4, 3, out, count);   // the case, at its level from the strikes
     } else if (b.model == kit::ratchet) {
-        modes_add(b.mode, 3, out, count, b.g[0]);
+        modes_add(b.mode, 3, out, count);       // at their level from the strikes
     } else {
         modes_add(b.mode, modes, out, count);
     }
@@ -1237,7 +1215,7 @@ __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32
     } else for (u32 k = 0; k < 8; ++k) b.sq[k] += b.sqi[k] * count;
     if (b.g[0] && (!idle(b.env[1]) || b.band[1].y1 || b.band[1].y2))
         noise_band_add(b.env[1], b.seed, 0, b.band[1], b.pole[3], b.pc[2], out, b.g[0], count);
-    if (b.g[1]) modes_add(b.mode, 2, out, count, b.g[1]);
+    if (b.g[1]) modes_add(b.mode, 2, out, count);   // the bell, at its level from the strikes
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 // One bell of the pair: two partials (1 and 1.48, the second at 0.8), each a
@@ -1352,7 +1330,7 @@ __attribute__((noinline)) inline void run_shaker(Body& b, i32* __restrict out, u
     b.env[0].a = e0; b.env[1].a = e1;
     band_run(b.band[0], out, count);
     add_eighth(out, grain, count);
-    modes_add(b.mode, 2, out, count, b.g[0]);
+    modes_add(b.mode, 2, out, count);   // the shell, at its level from the strikes
     high_run(b.pole[0], b.pc[0], out, count);
     // The loudest grains give up their peak (about 3 dB at the defaults), the
     // pour under them untouched, so the shaker sits level with the kit.
