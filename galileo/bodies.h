@@ -139,8 +139,10 @@ inline void widths(i32 h, u32& w0, u32& w1) {
     w1 = (samples_q8 * 13) >> 4;           // * 0.65 (1.25 - 0.6)
 }
 
-// The grid impacts strike on (samples, a whole number of skin grains).
-const u32 step = 32;
+// The grid impacts strike on (samples, a whole number of skin grains); a
+// tine's on 8 (each strike retunes a set that may still ring, so it keeps
+// the finer grid's moments).
+const u32 step = 32, tine_step = 8;
 // A pending strike the body schedules itself: a clap's reflections, a ratchet's teeth.
 struct Ghost { u32 at; i32 v; };
 const u32 ghosts = 32;
@@ -867,8 +869,13 @@ __attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restri
     c.e = e;
     c.hp.s = h;
 }
+// r^8: a per-sample decay over 8 samples.
+inline i32 per_eight(i32 r) {
+    for (int i = 0; i < 3; ++i) r = multiply(r, r);
+    return r;
+}
 // A click under unity gain (g < 1, Q28): the gain rides on the burst's level,
-// so the sample needs no scaling (n a whole number of grains).
+// so the sample needs no scaling (n a multiple of 8).
 __attribute__((noinline)) void click_soft_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
     i32 s = multiply(c.e, g28 << 3), h = c.hp.s;
     const i32 r = c.r, cc = c.c;
@@ -881,10 +888,10 @@ __attribute__((noinline)) void click_soft_run(dsp::Click& c, u32& seed, i32* __r
         out[i] = dsp::sat_add(out[i], in - h);
     }
     seed = x;
-    // Its own level, decayed the same way a grain at a time.
-    const i32 r16 = per_grain(r);
+    // Its own level, decayed the same way 8 samples at a time.
+    const i32 r8 = per_eight(r);
     i32 e = c.e;
-    for (u32 g = 0; g < n; g += grain) e = multiply(e, r16);
+    for (u32 g = 0; g < n; g += 8) e = multiply(e, r8);
     if (e < 16 && h < 4096 && h > -4096) e = h = 0;
     c.e = e;
     c.hp.s = h;
@@ -896,7 +903,7 @@ inline void click_add(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 
     else click_run(c, seed, out, n, g28);
 }
 // Two clicks on one burst of noise and one high-pass (a's), each at its own
-// width and gain (Q28, under 1), added: n a whole number of grains.
+// width and gain (Q28, under 1), added: n a multiple of 8.
 __attribute__((noinline)) void click_pair_run(dsp::Click& a, dsp::Click& b, u32& seed, i32* __restrict out, u32 n,
                                               i32 ga28, i32 gb28) {
     i32 sa = multiply(a.e, ga28 << 3), sb = multiply(b.e, gb28 << 3), h = a.hp.s;
@@ -911,10 +918,10 @@ __attribute__((noinline)) void click_pair_run(dsp::Click& a, dsp::Click& b, u32&
         out[i] = dsp::sat_add(out[i], in - h);
     }
     seed = x;
-    // Their own levels, decayed the same way a grain at a time.
-    const i32 ra16 = per_grain(ra), rb16 = per_grain(rb);
+    // Their own levels, decayed the same way 8 samples at a time.
+    const i32 ra8 = per_eight(ra), rb8 = per_eight(rb);
     i32 ea = a.e, eb = b.e;
-    for (u32 g = 0; g < n; g += grain) { ea = multiply(ea, ra16); eb = multiply(eb, rb16); }
+    for (u32 g = 0; g < n; g += 8) { ea = multiply(ea, ra8); eb = multiply(eb, rb8); }
     if (ea < 16 && eb < 16 && h < 4096 && h > -4096) ea = eb = h = 0;
     a.e = ea;
     b.e = eb;
