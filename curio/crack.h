@@ -359,27 +359,132 @@ struct Sheet {
         th_a = pole(hz(160));
     }
     bool waiting() const { return lump < lumps; }
-    // N modes rung together over samples [from, end), their states held
-    // close, driven by x when drive: the same as ringing each in turn.
-    template <int N, bool drive> void rings(const u32* which, const i32* x, i32* yb, u32 from, u32 end) {
-        i32 y1[N], y2[N], kc[N], kr[N], g[N];
-        for (int q = 0; q < N; ++q) {
-            y1[q] = mode[which[q]].y1; y2[q] = mode[which[q]].y2;
-            kc[q] = modek[which[q]].c; kr[q] = modek[which[q]].r2;
-            g[q] = gain[which[q]];
-        }
-        for (u32 i = from; i < end; ++i) {
-            i32 acc = 0;
-            for (int q = 0; q < N; ++q) {
-                i32 y = (mul(kc[q], y1[q]) - mul(kr[q], y2[q])) << 1;
-                if (drive) y += lev(x[i], g[q]);
-                y2[q] = y1[q];
-                y1[q] = y;
-                acc += y;
+    // The block in passes, each with its state held in registers, the same
+    // sums sample for sample as ringing every mode each sample.
+    // The blow's noise for n samples (zero once it has died away); whether
+    // any sample sounds.
+    __attribute__((noinline)) bool blow_pass(i32* xb, u32 n) {
+        i32 v = burst.v, lp = burst_lp;
+        const i32 k = burst.k, a = burst_a;
+        u32 r = brng;
+        i32 any = 0;
+        for (u32 j = 0; j < n; ++j) {
+            i32 x = 0;
+            if (v > 4096) {
+                v = mul(v, k);
+                lp += mul(a, lev(noise(r), v) - lp);
+                x = lp * 2;
             }
-            yb[i] += acc;
+            xb[j] = x;
+            any |= x;
         }
-        for (int q = 0; q < N; ++q) { mode[which[q]].y1 = y1[q]; mode[which[q]].y2 = y2[q]; }
+        burst.v = v;
+        burst_lp = lp;
+        brng = r;
+        return any != 0;
+    }
+    // A ringing mode through n samples, driven by x when drive, added into y:
+    // two samples a turn, so the last two outputs trade places, not move.
+    template <bool drive> __attribute__((noinline)) static void ring_live(Res& z, const ResK& k, i32 g, const i32* x, i32* y, u32 n) {
+        i32 a = z.y1, b = z.y2;   // the last output and the one before
+        const i32 c = k.c, r = k.r2;
+        if (n & 1) {
+            i32 v = (mul(c, a) - mul(r, b)) << 1;
+            if (drive) v += lev(*x++, g);
+            b = a;
+            a = v;
+            *y++ += v;
+        }
+        for (u32 j = 0; j < (n >> 1); ++j) {
+            b = (mul(c, a) - mul(r, b)) << 1;
+            if (drive) b += lev(x[0], g);
+            y[0] += b;
+            a = (mul(c, b) - mul(r, a)) << 1;
+            if (drive) a += lev(x[1], g);
+            y[1] += a;
+            x += 2;
+            y += 2;
+        }
+        z.y1 = a;
+        z.y2 = b;
+    }
+    // A resting mode rings only where the blow drives it.
+    __attribute__((noinline)) static void ring_rest(Res& z, const ResK& k, i32 g, const i32* x, i32* y, u32 n) {
+        i32 y1 = z.y1, y2 = z.y2;
+        const i32 c = k.c, r = k.r2;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 xj = x[j];
+            if (xj) {
+                const i32 v = ((mul(c, y1) - mul(r, y2)) << 1) + lev(xj, g);
+                y2 = y1;
+                y1 = v;
+                y[j] += v;
+            }
+        }
+        z.y1 = y1;
+        z.y2 = y2;
+    }
+    // The beater's clank and the block's level; and the noise the rattle
+    // and the thunder share, drawn after the clank's as before.
+    __attribute__((noinline)) void clank_pass(i32* yb, i32* nb, u32 n) {
+        i32 cv = clank.v, lp = clank_lp, s = sum;
+        const i32 k = clank.k, a = clank_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            i32 y = yb[j];
+            if (cv > 4096) {
+                // The beater's own clank on the iron, brighter and louder for a rod.
+                cv = mul(cv, k);
+                const i32 ck = lev(noise(r), cv);
+                lp += mul(a, ck - lp);
+                y += ck - lp;
+            }
+            s += (y < 0 ? -y : y) >> 6;
+            yb[j] = y;
+            nb[j] = noise(r);
+        }
+        clank.v = cv;
+        clank_lp = lp;
+        sum = s;
+        rng = r;
+    }
+    // The frame's rattle and the cascade share one band of noise (two
+    // samples a turn, so the states trade places).
+    __attribute__((noinline)) void rattle_pass(const i32* nb, i32* yb, i32 renv) {
+        i32 y1 = rat.y1, y2 = rat.y2, x1 = rat.x1, x2 = rat.x2;
+        const i32 c = ratk.c, r2 = ratk.r2, b = ratk.b;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            const i32 i0 = mul(nb[0], b);
+            y2 = ((mul(c, y1) - mul(r2, y2)) << 1) + i0 - x2;
+            x2 = i0;
+            yb[0] += lev(y2, renv);
+            const i32 i1 = mul(nb[1], b);
+            y1 = ((mul(c, y2) - mul(r2, y1)) << 1) + i1 - x1;
+            x1 = i1;
+            yb[1] += lev(y1, renv);
+            nb += 2;
+            yb += 2;
+        }
+        rat.y1 = y1;
+        rat.y2 = y2;
+        rat.x1 = x1;
+        rat.x2 = x2;
+    }
+    // The thunder: the shared noise low-passed, throbbing.
+    __attribute__((noinline)) void thunder_pass(const i32* nb, i32* yb, i32 throb) {
+        i32 tv = thunder.v, ta = thatt.v, lp = th_lp;
+        const i32 tk = thunder.k, tak = thatt.k, a = th_a;
+        for (u32 j = 0; j < frames; ++j) {
+            if (tv > 4096) {
+                tv = mul(tv, tk);
+                ta = mul(ta, tak);
+                lp += mul(a, nb[j] - lp);
+                yb[j] += mul(lev(lp, tv - ta), throb);
+            }
+        }
+        thunder.v = tv;
+        thatt.v = ta;
+        th_lp = lp;
     }
     void run(i32* out) {
         ph61 += 64u * 5940910u;   // 61 Hz
@@ -399,61 +504,51 @@ struct Sheet {
             on[m] = e > 8192 || burst.v > 4096;
             if (!on[m]) mode[m].y1 = mode[m].y2 = 0;
         }
-        // The block in three passes, the same sums sample for sample as
-        // ringing every mode each sample, but each mode's state held close
-        // for the block: first the blow and the roll's strokes,
-        i32 xb[frames], yb[frames];
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        // First the blow, split at the shakes and the roll's strokes,
+        i32 xb[frames];
         u32 strike_i[16];
         i32 strike_a[16];
         u32 strikes = 0;
         bool blow = false;
-        for (u32 i = 0; i < frames; ++i) {
+        for (u32 i = 0;;) {
+            u32 e = frames;
+            if (lump < lumps) {
+                const u32 d = lump_at[lump] - t;
+                if (d < frames && d >= i) e = d;
+            }
+            if (e > i && blow_pass(xb + i, e - i)) blow = true;
+            i = e;
+            if (i >= frames) break;
             while (lump < lumps && t + i == lump_at[lump]) {
                 const i32 a = lump_amp[lump];
                 if (a >= 0) burst.v += a;
                 else if (strikes < 16) { strike_i[strikes] = i; strike_a[strikes] = a; ++strikes; }
                 ++lump;
             }
-            i32 x = 0;
-            if (burst.v > 4096) {
-                burst_lp += mul(burst_a, lev(noise(brng), burst.step()) - burst_lp);
-                x = burst_lp * 2;
-            }
-            xb[i] = x;
-            yb[i] = 0;
-            blow |= x != 0;
         }
-        // then the modes, four at a time between the roll's strokes: those
-        // still ringing, driven by the blow if it sounds (lev(0, g) is 0); a
-        // resting mode rings only while the blow drives it,
+        // then the modes between the roll's strokes: those still ringing,
+        // driven by the blow if it sounds (lev(0, g) is 0); a resting mode
+        // rings only while the blow drives it,
         u32 live[16], n = 0;
         for (u32 m = 0; m < modes; ++m) {
             if (on[m]) { live[n++] = m; continue; }
-            Res z = mode[m];
-            const ResK k = modek[m];
-            const i32 g = gain[m];
             u32 i = 0;
             for (u32 s = 0; s <= strikes; ++s) {
                 const u32 end = s < strikes ? strike_i[s] : frames;
-                if (blow) for (; i < end; ++i) if (xb[i]) yb[i] += ring(z, k, lev(xb[i], g));
+                if (blow && end > i) ring_rest(mode[m], modek[m], gain[m], xb + i, out + i, end - i);
                 i = end;
-                if (s < strikes) dsp::strike(z, k, mul(amp[m], -strike_a[s] << 3) << ROLL);
+                if (s < strikes) dsp::strike(mode[m], modek[m], mul(amp[m], -strike_a[s] << 3) << ROLL);
             }
-            mode[m] = z;
         }
-        u32 i = 0;
-        for (u32 s = 0; s <= strikes; ++s) {
+        for (u32 s = 0, i = 0; s <= strikes; ++s) {
             const u32 end = s < strikes ? strike_i[s] : frames;
-            u32 j = 0;
-            if (blow) {
-                for (; j + 4 <= n; j += 4) rings<4, true>(live + j, xb, yb, i, end);
-                if (j + 2 <= n) { rings<2, true>(live + j, xb, yb, i, end); j += 2; }
-                if (j < n) rings<1, true>(live + j, xb, yb, i, end);
-            } else {
-                for (; j + 4 <= n; j += 4) rings<4, false>(live + j, xb, yb, i, end);
-                if (j + 2 <= n) { rings<2, false>(live + j, xb, yb, i, end); j += 2; }
-                if (j < n) rings<1, false>(live + j, xb, yb, i, end);
-            }
+            if (end > i)
+                for (u32 q = 0; q < n; ++q) {
+                    const u32 m = live[q];
+                    if (blow) ring_live<true>(mode[m], modek[m], gain[m], xb + i, out + i, end - i);
+                    else ring_live<false>(mode[m], modek[m], gain[m], xb + i, out + i, end - i);
+                }
             i = end;
             // A roll's stroke strikes the modes outright.
             if (s < strikes)
@@ -463,27 +558,17 @@ struct Sheet {
                 }
         }
         // then the clank, the rattle and the thunder.
-        u32 s = 0;
-        for (u32 i = 0; i < frames; ++i, ++t) {
+        i32 nb[frames];
+        for (u32 s = 0, i = 0;;) {
+            const u32 end = s < strikes ? strike_i[s] : frames;
+            if (end > i) clank_pass(out + i, nb + i, end - i);
+            i = end;
+            if (s >= strikes) break;
             while (s < strikes && strike_i[s] == i) clank.v += mul(-strike_a[s++], F(0.5));
-            i32 y = yb[i];
-            if (clank.v > 4096) {
-                // The beater's own clank on the iron, brighter and louder for a rod.
-                const i32 ck = lev(noise(rng), clank.step());
-                clank_lp += mul(clank_a, ck - clank_lp);
-                y += ck - clank_lp;
-            }
-            sum += (y < 0 ? -y : y) >> 6;
-            const i32 n = noise(rng);
-            // The frame's rattle and the cascade share one band of noise.
-            y += lev(bp(rat, ratk, n), renv);
-            if (thunder.v > 4096) {
-                const i32 tv = thunder.step() - (thatt.v = mul(thatt.v, thatt.k));
-                th_lp += mul(th_a, n - th_lp);
-                y += mul(lev(th_lp, tv), throb);
-            }
-            out[i] = y;
         }
+        t += frames;
+        rattle_pass(nb, out, renv);
+        if (thunder.v > 4096) thunder_pass(nb, out, throb);
     }
 };
 
