@@ -348,9 +348,13 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
     m.dinc = (static_cast<i32>(target) - static_cast<i32>(m.inc)) >> 6;
     // Modulation: the head's gain, the fade under Nyquist, swell and beat.
     i32 mod = v.head_gain;
-    const i32 hz = static_cast<i32>(exp2i(clamp(pitch, 0, 15 * octave)));
-    if (hz >= 18000) mod = 0;
-    else if (hz > 15000) mod = multiply(mod, (18000 - hz) * 715828);
+    // The fade under Nyquist; below 14 kHz (well under its 15 kHz start) the
+    // frequency isn't needed.
+    if (pitch > lg(14000)) {
+        const i32 hz = static_cast<i32>(exp2i(clamp(pitch, 0, 15 * octave)));
+        if (hz >= 18000) mod = 0;
+        else if (hz > 15000) mod = multiply(mod, (18000 - hz) * 715828);
+    }
     if (k < head_modes && m.rank) mod = multiply(mod, q28(1.0) + multiply(m.rank, one - v.swell_left)) << 3;
     if (m.beat_inc) {
         m.beat_phase += m.beat_inc;
@@ -362,63 +366,6 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
     m.dg = (g_end - m.g) >> 6;
 }
 
-// One partial over samples [begin, end) of the block, added into out. The
-// pending strike ramps in along r (Q31 0..1) when it has one.
-static inline void run(Partial& m, i32* out, const i32* r, u32 begin, u32 end, bool ramping) {
-    u32 phase = m.phase, inc = m.inc;
-    const i32 dinc = m.dinc;
-    i32 g = m.g;
-    const i32 dg = m.dg;
-    if (ramping && m.pe) {
-        const i32 pe = m.pe;
-        for (u32 n = begin; n < end; ++n) {
-            phase += inc;
-            inc += static_cast<u32>(dinc);
-            out[n] += multiply(g + multiply(pe, r[n]), sine(phase));
-            g += dg;
-        }
-    } else {
-        for (u32 n = begin; n < end; ++n) {
-            phase += inc;
-            inc += static_cast<u32>(dinc);
-            out[n] += multiply(g, sine(phase));
-            g += dg;
-        }
-    }
-    m.phase = phase;
-    m.inc = inc;
-    m.g = g;
-}
-// The same, writing each sample's unit sine for the wash (METAL).
-static inline void run_metal(Partial& m, i32* out, i32* sines, const i32* r, u32 begin, u32 end, bool ramping) {
-    u32 phase = m.phase, inc = m.inc;
-    const i32 dinc = m.dinc;
-    i32 g = m.g;
-    const i32 dg = m.dg;
-    if (ramping && m.pe) {
-        const i32 pe = m.pe;
-        for (u32 n = begin; n < end; ++n) {
-            phase += inc;
-            inc += static_cast<u32>(dinc);
-            const i32 s = sine(phase);
-            sines[n] = s;
-            out[n] += multiply(g + multiply(pe, r[n]), s);
-            g += dg;
-        }
-    } else {
-        for (u32 n = begin; n < end; ++n) {
-            phase += inc;
-            inc += static_cast<u32>(dinc);
-            const i32 s = sine(phase);
-            sines[n] = s;
-            out[n] += multiply(g, s);
-            g += dg;
-        }
-    }
-    m.phase = phase;
-    m.inc = inc;
-    m.g = g;
-}
 static inline void skip(Partial& m, u32 count) {
     m.phase += m.inc * count + static_cast<u32>(m.dinc) * (count * (count + 1) / 2);
     m.inc += static_cast<u32>(m.dinc) * count;
@@ -801,7 +748,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         b.dinc = (static_cast<i32>(target) - static_cast<i32>(b.inc)) >> 6;
         b.dg = (b.a - v.body_rise - b.g) >> 6;
         if (absolute(b.a) < silent && absolute(b.g) < silent) skip(b, 64);
-        else run(b, out, r, 0, 64, false);
+        else run_mode<false, false>(b, out, nullptr, r, 0, 64);
     }
     Partial& air = v.part[air_mode];
     if (air.weight && v.air_time < v.air_length + 64) {
@@ -812,7 +759,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         air.inc = increment(air.rest);
         air.dinc = 0;
         air.dg = (g_end - air.g) >> 6;
-        run(air, out, r, 0, 64, false);
+        run_mode<false, false>(air, out, nullptr, r, 0, 64);
     }
     v.air_time += 64;
 }

@@ -146,7 +146,7 @@ static inline i32 grit_drive(i32 x, i32 drive, i32 makeup) {
 // instead of clipping and the rest of the hit sounds louder under it.
 struct Knee { i32 knee, scale, range; };
 // Past the knee (rare: a hit's loudest moments), out of the per-sample loop.
-__attribute__((noinline)) inline i32 round_off(i32 y, const Knee& k) {
+inline i32 round_off(i32 y, const Knee& k) {
     const i32 a = absolute(y);
     const u32 position = static_cast<u32>(multiply(a - k.knee, k.scale));   // Q8 steps of tanh(i / 64) over the range
     const u32 index = position >> 8;
