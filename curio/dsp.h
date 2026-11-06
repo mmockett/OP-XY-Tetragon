@@ -40,7 +40,7 @@ inline u32 ex2(i32 x) {
     return (a + (((b - a) * r) >> 4)) >> (30 - o);
 }
 // log2(v) in Q12, for v >= 1 (0 gives -32 octaves).
-inline i32 lg2(u32 v) {
+__attribute__((noinline)) inline i32 lg2(u32 v) {
     if (!v) return -(32 << 12);
     i32 o = 31;
     while (!(v & 0x80000000u)) { v <<= 1; --o; }
@@ -62,7 +62,7 @@ inline i32 hz(u32 whole, u32 per = 1) { return lg2(whole) - (per > 1 ? lg2(per) 
 // The phase increment of a pitch, capped below 20 kHz.
 inline u32 inc(i32 lp) { return lp >= 58520 ? 1948000000u : ex2(lp + 67877); }
 // A per-sample decay, Q31: exp(-1 / (tau * 44100)) for tau in microseconds.
-inline i32 decay(u32 tau_us) {
+__attribute__((noinline)) inline i32 decay(u32 tau_us) {
     if (tau_us < 100) tau_us = 100;
     const u32 d = ex2(145421 - lg2(tau_us));
     return d >= 0x7fffffffu ? 0 : static_cast<i32>(0x7fffffffu - d);
@@ -217,7 +217,7 @@ inline i32 band_gain(i32 lp, i32 q) {
     return static_cast<i32>(ex2(((56431 + lg2(static_cast<u32>(q)) - (12 << 12) - lp) >> 1) + (16 << 12)));
 }
 // A resonator for noise: centre lp, quality q (Q12); peak gain 1.
-inline void band(ResK& k, i32 lp, i32 q) {
+__attribute__((noinline)) inline void band(ResK& k, i32 lp, i32 q) {
     // r = exp(-pi f / (q 44100)): a time constant of q / (pi f).
     const u32 tau_us = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875);   // log2(1e6 / pi) = 18.28
     tune(k, inc(lp), decay(tau_us));
