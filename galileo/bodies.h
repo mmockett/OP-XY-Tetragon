@@ -173,6 +173,11 @@ const i32 ride_ratio[8] = {GQ28(1), GQ28(1.19), GQ28(1.43), GQ28(1.71), GQ28(2.0
 const u16 room_delay[3] = {485, 838, 1367};
 const u16 room_level[3] = {GQ15(0.5), GQ15(0.35), GQ15(0.25)};
 
+// A ratchet's tooth q (from 1) as prepare() lays it out: when (samples after
+// the stroke, high half) and how hard (Q15, low half). Eleven at most, kept in
+// words the ratchet has no other use for.
+inline i32& tooth(Body& b, u32 i) { return i < 8 ? reinterpret_cast<i32&>(b.sqi[i]) : b.g[2 + (i - 8)]; }
+
 // ---------------------------------------------------------------- prepare --
 inline void prepare_click(dsp::Click& c, u32 width_us, u32 hp_hz) {
     c.r = dsp::decay(ms((width_us * 262) >> 10));                   // us -> ms, Q8
@@ -470,6 +475,18 @@ inline void prepare(Body& b, u32 model, const i32* p) {
              dsp::decay(tau + OCT(0.4)), GQ15(0.35), w0, w1);
         b.k[0] = 1 + ((static_cast<i32>(p2 >> 16) * 11 + 16384) >> 15);      // teeth a stroke
         b.g[0] = static_cast<i32>(dsp::udiv(static_cast<u32>(GQ28(1.6)), 256 + ((38 * b.k[0]) >> 0)) << 8);   // 1.6 / (1 + .15 teeth)
+        {
+            // A stroke drags the pawl over the teeth: 4 ms a tooth, closing up;
+            // each tooth a little harder. Laid out once: when and how hard.
+            const u32 teeth = static_cast<u32>(b.k[0]);
+            const u32 span = 176 * teeth;
+            for (u32 q = 1; q < teeth; ++q) {
+                const i32 x = static_cast<i32>((q * table::reciprocal[teeth]) >> 1);       // q / teeth, Q15
+                const u32 at = (span * static_cast<u32>(dsp::power(x, GQ16(1.3)))) >> 15;
+                const i32 rise = GQ15(0.55) + dsp::m15(GQ15(0.45), static_cast<i32>((q * table::reciprocal[teeth - 1]) >> 1));
+                tooth(b, q - 1) = static_cast<i32>(at << 16 | static_cast<u32>(rise));
+            }
+        }
         const i32 ratios[1] = {GQ28(1)};
         const i32 decays[1] = {decay_ms(30 * 256, 180 * 256, p1)};
         const i32 shares[1] = {32767};
@@ -679,14 +696,11 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         break;
     case ratchet:
         if (!ghost) {
-            // A stroke drags the pawl over the teeth: 4 ms a tooth, closing up.
+            // A stroke drags the pawl over the teeth (laid out by prepare()).
             const u32 teeth = static_cast<u32>(b.k[0]);
-            const u32 span = 176 * teeth;
             for (u32 q = 1; q < teeth && b.used != 0xffffffffu; ++q) {
-                const i32 x = static_cast<i32>((q * table::reciprocal[teeth]) >> 1);       // q / teeth, Q15
-                const u32 at = (span * static_cast<u32>(dsp::power(x, GQ16(1.3)))) >> 15;
-                const i32 rise = GQ15(0.55) + dsp::m15(GQ15(0.45), static_cast<i32>((q * table::reciprocal[teeth - 1]) >> 1));
-                add_ghost(b, b.now + late + at, dsp::m15(v15, rise));
+                const u32 t = static_cast<u32>(tooth(b, q - 1));
+                add_ghost(b, b.now + late + (t >> 16), dsp::m15(v15, static_cast<i32>(t & 0xffffu)));
             }
             b.skin[0].strike(v15, vt);
             v15 = dsp::m15(v15, GQ15(0.55));
