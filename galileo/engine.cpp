@@ -47,7 +47,15 @@ inline void start(Voice& voice, Shared& shared, u32 owner) {
     // The clock ran unbroken since the last note if some other voice was alive
     // (this one, retriggered, counts: it was rendering).
     const bool continuous = shared.active > voice.fresh;
-    shared.learner.note(shared.now, continuous);
+    // While the SDK passes the project's tempo the kit plays to it: the learner
+    // only marks the note's time (so a gap counts again if the tempo stops
+    // coming) and learns nothing, which spares a search's divisions.
+    if (shared.bpm_x10 && shared.p16_transport) {
+        shared.learner.last = shared.now;
+        shared.learner.has_last = 1;
+    } else {
+        shared.learner.note(shared.now, continuous);
+    }
     shared.latest = owner;
     ++shared.notes;
     voice.fresh = 0;
