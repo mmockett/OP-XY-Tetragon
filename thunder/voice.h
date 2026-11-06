@@ -288,14 +288,114 @@ inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u
     v.fin = static_cast<i32>(pow2(55 * octave - log2q(static_cast<u32>(v.fk))));   // 1 / k, Q24
     v.fon = 1;
 }
-// One line's writes for samples from..to: (pa + sign pb) g / 2, rounded
-// toward zero, plus xsign x.
-template <int sign, int xsign>
-inline void write_line(i16* o, const i32* pa, const i32* pb, const i32* x, i32 g, unsigned from, unsigned to) {
-    for (unsigned i = from; i < to; ++i) {
-        i32 h = multiply(sign > 0 ? pa[i] + pb[i] : pa[i] - pb[i], g);
-        h = ((h + ((h >> 31) & 0x7fff)) >> 15) + (xsign > 0 ? x[i] : -x[i]);
-        o[i] = static_cast<i16>(clamp(h, -32768, 32767));
+// The network's passes, each over the block's 32 half-rate samples with its
+// state in locals (noinline: inlined into one function they spill). The
+// rings are walked by pointer and split where they wrap, so no loop masks an
+// index or tests for a wrap.
+// The input at half rate: pairs summed, times the input gain.
+__attribute__((noinline)) inline void field_input(const i32* in, i32* x, i32 gin) {
+    for (u32 i = 0; i < half; ++i) {
+        const i32 p = (in[0] >> 1) + (in[1] >> 1);
+        *x++ = multiply(p, gin) << 8;
+        in += 2;
+    }
+}
+// One line read from ring position at (0..511) and low-passed into o.
+__attribute__((noinline)) inline i32 field_read(const i16* ring, u32 at, i32 lp, i32 k, i32* o) {
+    const u32 first = line_samples - at < half ? line_samples - at : half;
+    const i16* p = ring + at;
+    for (u32 n = 0; n < first; ++n) {
+        lp += multiply((static_cast<i32>(*p++) << 14) - lp, k);
+        *o++ = lp;
+    }
+    p = ring;
+    const u32 rest = half - first;
+    for (u32 n = 0; n < rest; ++n) {
+        lp += multiply((static_cast<i32>(*p++) << 14) - lp, k);
+        *o++ = lp;
+    }
+    return lp;
+}
+// The all-pass (g 0.5, 37 samples) in the first line's loop, from position p.
+inline void field_loop_run(i32* ap, i32* o, u32 count) {
+    for (u32 n = 0; n < count; ++n) {
+        const i32 y = *ap - (*o >> 1);
+        const i32 t = *o + (y >> 1);
+        *ap++ = t - (t >> 12);   // a little loss, so it cannot circle for ever
+        *o++ = y;
+    }
+}
+__attribute__((noinline)) inline u32 field_loop(i32* ap, u32 p, i32* o) {
+    u32 left = half;
+    while (left) {
+        const u32 run = 37 - p < left ? 37 - p : left;
+        field_loop_run(ap + p, o, run);
+        o += run;
+        left -= run;
+        p += run;
+        if (p == 37) p = 0;
+    }
+    return p;
+}
+// The mix: the four lines' sum is heard (back at the full rate, each
+// half-rate sample and the step from the last), and the Hadamard pairs go back
+// in: r holds the four lines read, 32 apart, and gets the pairs.
+__attribute__((noinline)) inline i32 field_mix(i32* r, i32* out, i32 level, i32 prev) {
+    for (u32 n = 0; n < half; ++n) {
+        const i32 r0 = r[0], r1 = r[half], r2 = r[2 * half], r3 = r[3 * half];
+        const i32 a0 = r0 + r1, a1 = r0 - r1, a2 = r2 + r3, a3 = r2 - r3;
+        const i32 y = multiply(a0 - a3, level);   // l0 + l1 - l2 + l3: with the inputs' signs, no resonance at DC
+        out[0] += prev + y;
+        out[1] += y << 1;
+        prev = y;
+        r[0] = a0;
+        r[half] = a1;
+        r[2 * half] = a2;
+        r[3 * half] = a3;
+        ++r;
+        out += 2;
+    }
+    return prev;
+}
+// Two lines written from a pair (pa + pb, pa - pb), halved, with the loop's
+// gain, rounded toward zero so the loop can only lose energy, plus the input
+// (sign: the second line's): w the first line's ring at the write position,
+// the second 1024 on.
+inline i16 field_write(i32 s, i32 g, i32 xs) {
+    i32 h = multiply(s, g);
+    h = ((h + ((h >> 31) & 0x7fff)) >> 15) + xs;
+    return static_cast<i16>(clamp(h, -32768, 32767));
+}
+template <int sign>
+inline void field_pair_run(const i32* pa, const i32* x, i16* w, u32 count, i32 g) {
+    for (u32 n = 0; n < count; ++n) {
+        const i32 a = pa[0], b = pa[2 * half];
+        const i32 xs = *x++ >> 14;
+        w[0] = field_write(a + b, g, xs);
+        w[2 * line_samples] = field_write(a - b, g, sign > 0 ? xs : -xs);
+        ++pa;
+        ++w;
+    }
+}
+template <int sign>
+inline void field_pair_quiet(const i32* pa, i16* w, u32 count, i32 g) {
+    for (u32 n = 0; n < count; ++n) {
+        const i32 a = pa[0], b = pa[2 * half];
+        w[0] = field_write(a + b, g, 0);
+        w[2 * line_samples] = field_write(a - b, g, 0);
+        ++pa;
+        ++w;
+    }
+}
+template <int sign>
+__attribute__((noinline)) inline void field_pair(const i32* pa, const i32* x, i16* ring, u32 at, i32 g) {
+    const u32 first = line_samples - at < half ? line_samples - at : half;
+    if (x) {
+        field_pair_run<sign>(pa, x, ring + at, first, g);
+        field_pair_run<sign>(pa + first, x + first, ring, half - first, g);
+    } else {
+        field_pair_quiet<sign>(pa, ring + at, first, g);
+        field_pair_quiet<sign>(pa + first, ring, half - first, g);
     }
 }
 // Runs the network over a block of input, adding level (Q31, x2) of its sound to
@@ -320,13 +420,12 @@ inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
     // the input at half rate (pairs summed), smeared by two Schroeder
     // all-passes (23 and 41 samples, g 0.6)
     i32 x[half];
-    const i32 gin = v.fin;
-    for (unsigned i = 0; i < half; ++i) {
-        const i32 p = (in[2 * i] >> 1) + (in[2 * i + 1] >> 1);
-        x[i] = p ? multiply(p, gin) << 8 : 0;
-    }
+    bool fed = drive != 0;
+    if (fed) field_input(in, x, v.fin);
     if (v.fdiff > 1) --v.fdiff;
     if ((v.fdiff > 1 && drive) || v.dpos) {
+        if (!fed) for (unsigned i = 0; i < half; ++i) x[i] = 0;
+        fed = true;
         i32* a = v.dbuf;
         i32* c = v.dbuf + 23;
         u32 pa = v.dpos & 0xffu, pb = (v.dpos >> 8) & 0xffu;
@@ -347,71 +446,18 @@ inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
         if (!v.dpos) for (u32 i = 0; i < 64; ++i) v.dbuf[i] = 0;
     }
     // each line, read and low-passed
-    i32 r[4][half];
+    i32 r[4 * half];
     const u32 mask = line_samples - 1, w = v.fw;
     const i32 k = v.fk;
-    for (u32 l = 0; l < 4; ++l) {
-        const i16* ring = v.buf + l * line_samples;
-        i32 lp = v.flp[l];
-        u32 at = w - v.fd[l];
-        i32* o = r[l];
-        for (unsigned i = 0; i < half; ++i) {
-            lp += multiply((static_cast<i32>(ring[at & mask]) << 14) - lp, k);
-            o[i] = lp;
-            ++at;
-        }
-        v.flp[l] = lp;
-    }
+    for (u32 l = 0; l < 4; ++l) v.flp[l] = field_read(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
     // the first line passes an all-pass (g 0.5) in its loop, so its echoes
     // never line up: a crisp forest, not a comb
-    if (v.floop) {
-        i32* o = r[0];
-        i32* ap = v.abuf;
-        u32 p = v.apos;
-        for (unsigned i = 0; i < half; ++i) {
-            const i32 y = ap[p] - (o[i] >> 1);
-            const i32 t = o[i] + (y >> 1);
-            ap[p] = t - (t >> 12);   // a little loss, so it cannot circle for ever
-            o[i] = y;
-            if (++p == 37) p = 0;
-        }
-        v.apos = p;
-    }
-    // mixed: the four lines' sum is heard (back at the full rate, each
-    // half-rate sample and the step from the last); the Hadamard pairs go back in
-    i32 prev = v.fprev;
-    i32* r0 = r[0];
-    i32* r1 = r[1];
-    i32* r2 = r[2];
-    i32* r3 = r[3];
-    for (unsigned i = 0; i < half; ++i) {
-        const i32 a0 = r0[i] + r1[i], a1 = r0[i] - r1[i], a2 = r2[i] + r3[i], a3 = r2[i] - r3[i];
-        const i32 y = multiply(a0 - a3, level);   // l0 + l1 - l2 + l3: with the inputs' signs, no resonance at DC
-        out[2 * i] += prev + y;
-        out[2 * i + 1] += y << 1;
-        prev = y;
-        r0[i] = a0;
-        r1[i] = a1;
-        r2[i] = a2;
-        r3[i] = a3;
-        x[i] >>= 14;
-    }
-    v.fprev = prev;
-    // and each line is written: halved, with the loop's gain, rounded toward
-    // zero so the loop can only lose energy, plus the input (+ + + -)
-    const i32 g = v.fg;
-    const u32 at = w & mask, run = line_samples - at < half ? line_samples - at : half;
-    i16* b = v.buf;
-    write_line<1, 1>(b + at, r0, r2, x, g, 0, run);
-    write_line<1, 1>(b + line_samples + at, r1, r3, x, g, 0, run);
-    write_line<-1, 1>(b + 2 * line_samples + at, r0, r2, x, g, 0, run);
-    write_line<-1, -1>(b + 3 * line_samples + at, r1, r3, x, g, 0, run);
-    if (run < half) {
-        write_line<1, 1>(b + at - line_samples, r0, r2, x, g, run, half);
-        write_line<1, 1>(b + at, r1, r3, x, g, run, half);
-        write_line<-1, 1>(b + line_samples + at, r0, r2, x, g, run, half);
-        write_line<-1, -1>(b + 2 * line_samples + at, r1, r3, x, g, run, half);
-    }
+    if (v.floop) v.apos = field_loop(v.abuf, v.apos, r);
+    // mixed and heard; and each line written: (+ + + -) the input
+    v.fprev = field_mix(r, out, level, v.fprev);
+    const u32 at = w & mask;
+    field_pair<1>(r, fed ? x : nullptr, v.buf, at, v.fg);                              // lines 0 and 2: a0 + a2, a0 - a2
+    field_pair<-1>(r + half, fed ? x : nullptr, v.buf + line_samples, at, v.fg);     // lines 1 and 3: a1 + a3, a1 - a3 (- x)
     v.fw = w + half;
 }
 
