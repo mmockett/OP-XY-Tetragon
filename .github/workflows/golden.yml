@@ -142,9 +142,10 @@ jobs:
           name: compare
           path: keep/
 
+  # The pinned Blackfin tools have reviewed downloads for macOS arm64 and Windows only.
   counts:
     needs: plan
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -182,13 +183,13 @@ jobs:
       - name: Build the Blackfin simulator (GDB's bfin-elf-run)
         if: steps.sim.outputs.cache-hit != 'true'
         run: |
-          sudo apt-get update && sudo apt-get install -y texinfo libgmp-dev libmpfr-dev
+          brew install gmp mpfr > /dev/null || true
           curl -sSfL "https://ftp.gnu.org/gnu/gdb/gdb-$GDB_VERSION.tar.xz" | tar xJ
           mkdir build && cd build
           "../gdb-$GDB_VERSION/configure" --target=bfin-elf --disable-gdb --disable-gdbserver --disable-binutils \
             --disable-ld --disable-gas --disable-gprof --disable-nls --disable-werror --disable-readline \
-            --disable-sim-hardware --enable-sim > /dev/null
-          make -j"$(nproc)" all-sim MAKEINFO=true > /dev/null
+            --enable-sim --with-gmp="$(brew --prefix gmp)" --with-mpfr="$(brew --prefix mpfr)" > /dev/null
+          make -j"$(sysctl -n hw.ncpu)" all-sim MAKEINFO=true > /dev/null
           mkdir -p ../sim && cp "$(find . -path '*bfin*' -name run -type f | head -1)" ../sim/bfin-elf-run
           ../sim/bfin-elf-run --version | head -1
       - name: Count base and head
