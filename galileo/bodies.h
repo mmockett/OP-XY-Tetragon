@@ -729,27 +729,65 @@ inline void click_add(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 
     c.e = e;
     c.hp.s = h;
 }
-// Struck modes, added. A mode that has died away is cleared, so it is skipped.
+// Saturating a - b, for b never -2^31 (a product with a factor under 1): one
+// instruction on the Blackfin.
+inline i32 sat_sub(i32 a, i32 b) {
+#if defined(__bfin__)
+    i32 r;
+    __asm__("%0 = %1 - %2 (S);" : "=d"(r) : "d"(a), "d"(b) : "ASTAT");
+    return r;
+#else
+    return dsp::sat_add(a, -b);
+#endif
+}
+// dsp::resonate, its negated term subtracted in one step.
+inline i32 resonate(i32 a1, i32 y1, i32 a2, i32 y2) { return sat_sub(dsp::twice(multiply(a1, y1)), multiply(a2, y2)); }
+// Two struck modes added into out (n even), each step two samples so the
+// state swaps without moves; at gain g (Q28) when G.
+template <bool G>
+__attribute__((noinline)) void modes_pair(dsp::Mode& m0, dsp::Mode& m1, i32* __restrict out, u32 n, i32 g28) {
+    i32 p1 = m0.y1, p2 = m0.y2, q1 = m1.y1, q2 = m1.y2;
+    const i32 a1 = m0.a1, a2 = m0.a2, b1 = m1.a1, b2 = m1.a2;
+    for (u32 i = 0; i < n; i += 2) {
+        p2 = resonate(a1, p1, a2, p2);
+        q2 = resonate(b1, q1, b2, q2);
+        out[i] = dsp::sat_add(dsp::sat_add(out[i], G ? gain(p2, g28) : p2), G ? gain(q2, g28) : q2);
+        p1 = resonate(a1, p2, a2, p1);
+        q1 = resonate(b1, q2, b2, q1);
+        out[i + 1] = dsp::sat_add(dsp::sat_add(out[i + 1], G ? gain(p1, g28) : p1), G ? gain(q1, g28) : q1);
+    }
+    m0.y1 = p1; m0.y2 = p2; m1.y1 = q1; m1.y2 = q2;
+}
+template <bool G>
+__attribute__((noinline)) void modes_one(dsp::Mode& m0, i32* __restrict out, u32 n, i32 g28) {
+    i32 p1 = m0.y1, p2 = m0.y2;
+    const i32 a1 = m0.a1, a2 = m0.a2;
+    for (u32 i = 0; i < n; i += 2) {
+        p2 = resonate(a1, p1, a2, p2);
+        out[i] = dsp::sat_add(out[i], G ? gain(p2, g28) : p2);
+        p1 = resonate(a1, p2, a2, p1);
+        out[i + 1] = dsp::sat_add(out[i + 1], G ? gain(p1, g28) : p1);
+    }
+    m0.y1 = p1; m0.y2 = p2;
+}
+// Struck modes, added (n even). A mode that has died away is cleared, so it is
+// skipped; the rest run in pairs when scaled, each sample's sum in the modes' order.
 inline void modes_add(Struck* m, u32 count, i32* __restrict out, u32 n, i32 g28 = 0) {
-    for (u32 k = 0; k < count; ++k) {
-        i32 y1 = m[k].m.y1, y2 = m[k].m.y2;
-        if (!y1 && !y2) continue;
-        const i32 a1 = m[k].m.a1, a2 = m[k].m.a2;
-        if (g28) {
-            for (u32 i = 0; i < n; ++i) {
-                const i32 y = dsp::resonate(a1, y1, a2, y2);
-                y2 = y1; y1 = y;
-                out[i] = dsp::sat_add(out[i], gain(y, g28));
-            }
-        } else {
-            for (u32 i = 0; i < n; ++i) {
-                const i32 y = dsp::resonate(a1, y1, a2, y2);
-                y2 = y1; y1 = y;
-                out[i] = dsp::sat_add(out[i], y);
-            }
-        }
-        if (y1 < 256 && y1 > -256 && y2 < 256 && y2 > -256) y1 = y2 = 0;
-        m[k].m.y1 = y1; m[k].m.y2 = y2;
+    dsp::Mode* live[7];
+    u32 c = 0;
+    for (u32 k = 0; k < count; ++k)
+        if (m[k].m.y1 || m[k].m.y2) live[c++] = &m[k].m;
+    u32 k = 0;
+    if (g28) {
+        for (; k + 1 < c; k += 2) modes_pair<true>(*live[k], *live[k + 1], out, n, g28);
+        if (k < c) modes_one<true>(*live[k], out, n, g28);
+    } else {
+        // Unscaled, one mode a pass: a pair's eight values crowd the registers.
+        for (; k < c; ++k) modes_one<false>(*live[k], out, n, 0);
+    }
+    for (k = 0; k < c; ++k) {
+        dsp::Mode& o = *live[k];
+        if (o.y1 < 256 && o.y1 > -256 && o.y2 < 256 && o.y2 > -256) o.y1 = o.y2 = 0;
     }
 }
 // Noise under an envelope (noise std about 1.15 units), written.
