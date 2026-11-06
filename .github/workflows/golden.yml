@@ -92,7 +92,10 @@ jobs:
             done
           done
       - name: Compare bit for bit
-        run: python3 head/tools/golden/golden.py identity out/base out/head --kits "$KITS" | tee -a "$GITHUB_STEP_SUMMARY"
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 head/tools/golden/golden.py identity out/base out/head --kits "$KITS" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
