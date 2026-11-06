@@ -409,9 +409,14 @@ def elf_functions(path):
 def profile(out, run, timeout):
     """The simulator's PC samples over the short build, summed per function."""
     work = pathlib.Path(tempfile.mkdtemp())
-    subprocess.run([str(pathlib.Path(run).resolve()), "--profile-pc", "--profile-pc-frequency=1009",
-                    "--profile-pc-granularity=4", str((out / "profile.elf").resolve())],
-                   cwd=work, capture_output=True, text=True, timeout=timeout)
+    # --verbose makes the run print its statistics at exit, which writes gmon.out.
+    r = subprocess.run([str(pathlib.Path(run).resolve()), "--verbose", "--profile-pc", "--profile-pc-frequency=1009",
+                        "--profile-pc-granularity=4", str((out / "profile.elf").resolve())],
+                       cwd=work, capture_output=True, text=True, timeout=timeout)
+    if not (work / "gmon.out").exists():
+        (out / "profile.txt").write_text("no profile: " + (r.stdout + r.stderr)[-2000:])
+        print("no profile written:", (r.stdout + r.stderr)[-2000:])
+        return
     raw = (work / "gmon.out").read_bytes()
     low, high, size = struct.unpack_from("<III", raw, 0)
     counts = struct.unpack_from("<%dH" % ((len(raw) - 12) // 2), raw, 12)
@@ -492,9 +497,14 @@ def cmd_counts(a):
             dm = f"{pct(y['mean']) - pct(x['mean']):+.2f}" if x and y else ""
             lines.append(f"| {label} | {bx} | {hy} | {dm} |")
         lines += ["", f"Heaviest single voice: {pct(heavy_b):.2f}% → {pct(heavy_h):.2f}% (mean).", ""]
-        if a.strict and (sh["hw"] < sb["hw"] or sh["hw_insns"] + sh["sw_insns"] > sb["hw_insns"] + sb["sw_insns"]):
+        # A refactor must not slow any run down. The whole-program census moves
+        # with inlining, so it is reported, not judged.
+        slower = [k for k in keys if cb.get(k) and ch.get(k) and pct(ch[k]["mean"]) - pct(cb[k]["mean"]) > 0.02]
+        if a.strict and slower:
             regress = True
-            lines.append(f"**FAIL {kit}: a refactor lost a hardware loop or grew its loops.**\n")
+            lines.append(f"**FAIL {kit}: a refactor made {', '.join(slower)} slower.**\n")
+        if sh["hw"] < sb["hw"]:
+            lines.append(f"Note: {sb['hw'] - sh['hw']} fewer hardware loops in the whole program than the base.\n")
     pathlib.Path(a.md).write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     sys.exit(1 if regress else 0)
