@@ -132,6 +132,134 @@ struct Ice {
         snap(full, false);
     }
     bool waiting() const { return shards > 0 || (c[7] > 0 && echo < 4); }
+    // The block in passes, each with its state in registers, split at the
+    // shards and echoes; the noise is drawn in the same order as ever.
+    // A chirp into y; the newest also leaves its level where its band of
+    // noise sounds, and zero where it rests (it sounds only well above zero).
+    template <bool band> __attribute__((noinline)) void chirp_pass(Chirp& h, i32* y, i32* lz, u32 n) {
+        u32 ph = h.ph, f = h.f;
+        const u32 df = h.df;
+        i32 v = h.v, a = h.a;
+        const i32 k = chk, ka = chak, gate = zgate;
+        for (u32 j = 0; j < n; ++j) {
+            const bool zon = v - a > gate;   // under -24 dB of its start the band is lost under the tone: it rests
+            ph += f;
+            f += df;
+            v = mul(v, k);
+            if (a) { a = mul(a, ka); if (a < 64) a = 0; }
+            const i32 level = v - a;   // three quarters of the chirp's level (start)
+            y[j] += mul(level, sine(ph));
+            if (band) lz[j] = zon ? level : 0;
+        }
+        h.ph = ph;
+        h.f = f;
+        h.v = v;
+        h.a = a;
+    }
+    // The snap, and the noise for the band and the surface in draw order.
+    __attribute__((noinline)) void noise_pass(i32* y, const i32* lz, i32* zn, i32* hn, opxy::u8* gt, u32 n) {
+        i32 cv = crack.v, lp = crack_lp, hv = hiss.v;
+        const i32 ck = crack.k, ca = crack_a, hk = hiss.k;
+        const u32 gp = grain_p;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (cv > 4096) {
+                cv = mul(cv, ck);
+                const i32 cr = lev(spiky(r), cv);
+                lp += mul(ca, cr - lp);
+                y[j] += cr - lp;
+            }
+            if (lz[j]) zn[j] = noise(r);
+            if (hv > 4096) {
+                hv = mul(hv, hk);
+                gt[j] = r < gp;
+                hn[j] = noise(r);
+            }
+        }
+        crack.v = cv;
+        crack_lp = lp;
+        rng = r;
+    }
+    // The band of noise riding the newest chirp's pitch.
+    __attribute__((noinline)) void band_pass(i32* y, const i32* lz, const i32* zn, u32 n) {
+        i32 y1 = zr.y1, y2 = zr.y2, x1 = zr.x1, x2 = zr.x2;
+        const i32 c = zk.c, r2 = zk.r2, b = zk.b, g = zing;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 l = lz[j];
+            if (l) {
+                const i32 in = mul(zn[j], b);
+                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                y[j] += lev(mul(gn(o, g), F(0.35 / 0.75)), l);
+            }
+        }
+        zr.y1 = y1;
+        zr.y2 = y2;
+        zr.x1 = x1;
+        zr.x2 = x2;
+    }
+    // Load drives the crack and the chirps (quiet samples pass the curve's
+    // straight foot); the lake and the surface stay clean beneath them, so
+    // the crack stands out of the body.
+    __attribute__((noinline)) void drive_pass(const i32* x, i32* out, u32 n) {
+        const i32 dr = drive, ud = undrive << 14;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 d = mul(x[j], dr);
+            const i32 s = d < 400000 && d > -400000 ? d << 7 : d >= (1 << 23) ? U(0.99933) : d <= -(1 << 23) ? -U(0.99933) : tanh(d << 7);
+            out[j] = mul(s, ud) << 1;
+        }
+    }
+    // The lake.
+    __attribute__((noinline)) void body_pass(i32* y, u32 n) {
+        u32 ph = body.ph;
+        const u32 in = body.inc;
+        i32 v = body.v, a = body.a, bv = blip.v;
+        const i32 vk = body.vk, ak = body.ak, bk = blip.k;
+        for (u32 j = 0; j < n; ++j) {
+            if (v > 4096) {
+                ph += in;
+                if (bv > (1 << 24)) { bv = mul(bv, bk); ph += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.6), bv))); }
+                v = mul(v, vk);
+                if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+                y[j] += mul(v - a, sine(ph));
+            }
+        }
+        body.ph = ph;
+        body.v = v;
+        body.a = a;
+        blip.v = bv;
+    }
+    // The surface: noise with a crunch of micro-cracks.
+    __attribute__((noinline)) void hiss_pass(i32* y, const i32* hn, const opxy::u8* gt, u32 n) {
+        i32 hv = hiss.v, gv = grain.v;
+        const i32 hk = hiss.k, gk = grain.k;
+        i32 y1 = nz.y1, y2 = nz.y2, x1 = nz.x1, x2 = nz.x2;
+        const i32 c = nzk.c, r2 = nzk.r2, b = nzk.b;
+        for (u32 j = 0; j < n; ++j) {
+            if (hv > 4096) {
+                if (gt[j]) gv = one;
+                hv = mul(hv, hk);
+                i32 level = hv;
+                if (gv) { gv = mul(gv, gk); level += lev(level, gv); if (gv < 4096) gv = 0; }
+                const i32 in = mul(hn[j], b);
+                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                y[j] += lev(o, level);
+            }
+        }
+        hiss.v = hv;
+        grain.v = gv;
+        nz.y1 = y1;
+        nz.y2 = y2;
+        nz.x1 = x1;
+        nz.x2 = x2;
+    }
     void run(i32* out) {
         static const u32 delay[4] = {70000, 130000, 210000, 300000};
         static const i32 gain[4] = {F(0.8), F(0.6), F(0.4), F(0.25)};
@@ -149,7 +277,37 @@ struct Ice {
             h.df = static_cast<u32>(static_cast<i32>(f1 - f0) >> 6);
             if (s == static_cast<int>(newest)) tune_band(zk, f0);
         }
-        for (u32 i = 0; i < frames; ++i, ++t) {
+        i32 x[frames], lz[frames], zn[frames], hn[frames];
+        opxy::u8 gt[frames];
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            // The next shard or echo in this block.
+            u32 e = frames;
+            if (shards) { const u32 d = next_shard - t0; if (d < e && d >= i) e = d; }
+            if (c[7] > 0 && echo < 4) { const u32 d = next_echo - t0; if (d < e && d >= i) e = d; }
+            if (e > i) {
+                const u32 n = e - i;
+                for (u32 j = i; j < e; ++j) x[j] = 0;
+                // The chirps; the newest carries a band of noise riding its pitch.
+                for (u32 s = 0; s < 2; ++s) {
+                    Chirp& h = ch[s];
+                    const bool live = h.v || h.a;
+                    if (s == newest) {
+                        if (live) chirp_pass<true>(h, x + i, lz + i, n);
+                        else for (u32 j = i; j < e; ++j) lz[j] = 0;
+                    } else if (live) {
+                        chirp_pass<false>(h, x + i, lz + i, n);
+                    }
+                }
+                noise_pass(x + i, lz + i, zn + i, hn + i, gt + i, n);
+                band_pass(x + i, lz + i, zn + i, n);
+                drive_pass(x + i, out + i, n);
+                body_pass(out + i, n);
+                hiss_pass(out + i, hn + i, gt + i, n);
+            }
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
             if (shards && t == next_shard) {
                 --shards;
                 shard_amp = mul(shard_amp, F(0.88));
@@ -161,51 +319,8 @@ struct Ice {
                 ++echo;
                 if (echo < 4) next_echo = samples(static_cast<u32>(mul(static_cast<i32>(delay[echo]), spread_scale) << 1));
             }
-            // The snap.
-            i32 y = 0;
-            if (crack.v > 4096) {
-                const i32 cr = lev(spiky(rng), crack.step());
-                crack_lp += mul(crack_a, cr - crack_lp);
-                y = cr - crack_lp;
-            }
-            // The chirps; the newest carries a band of noise riding its pitch.
-            const Chirp& hn = ch[newest];
-            // Under -24 dB of its start the band is lost under the tone: it rests.
-            const bool zon = hn.v - hn.a > zgate;
-            const i32 zband = zon ? gn(bp(zr, zk, noise(rng)), zing) : 0;
-            for (int s = 0; s < 2; ++s) {
-                Chirp& h = ch[s];
-                if (!h.v && !h.a) continue;
-                h.ph += h.f;
-                h.f += h.df;
-                h.v = mul(h.v, chk);
-                if (h.a) { h.a = mul(h.a, chak); if (h.a < 64) h.a = 0; }
-                const i32 level = h.v - h.a;   // three quarters of the chirp's level (start)
-                y += mul(level, sine(h.ph));
-                if (zon && s == static_cast<int>(newest)) y += lev(mul(zband, F(0.35 / 0.75)), level);
-            }
-            // Load drives the crack and the chirps (quiet samples pass the
-            // curve's straight foot); the lake and the surface stay clean
-            // beneath them, so the crack stands out of the body.
-            const i32 d = mul(y, drive);
-            const i32 s = d < 400000 && d > -400000 ? d << 7 : d >= (1 << 23) ? U(0.99933) : d <= -(1 << 23) ? -U(0.99933) : tanh(d << 7);
-            y = mul(s, undrive << 14) << 1;
-            // The lake.
-            if (body.v > 4096) {
-                body.ph += body.inc;
-                if (blip.v > (1 << 24)) body.ph += static_cast<u32>(mul(static_cast<i32>(body.inc), mul(F(0.6), blip.step())));
-                y += mul(body.level(), sine(body.ph));
-            }
-            // The surface: noise with a crunch of micro-cracks.
-            if (hiss.v > 4096) {
-                if (rng < grain_p) grain.v = one;
-                const i32 src = noise(rng);
-                i32 level = hiss.step();
-                if (grain.v) { level += lev(level, grain.step()); if (grain.v < 4096) grain.v = 0; }
-                y += lev(bp(nz, nzk, src), level);
-            }
-            out[i] = y;
         }
+        t = t0 + frames;
     }
     static void tune_band(ResK& k, u32 f) {
         // A band of quality 8 at the chirp's pitch.
