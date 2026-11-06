@@ -105,6 +105,15 @@ inline i32 svf_f(u32 inc) {
     const i32 s = x - multiply(x3, Q31(1.0 / 6.0)) + multiply(x5, Q31(1.0 / 120.0));
     return s >= Q31(0.5) ? one : s << 1;
 }
+// The same coefficient at half the sample rate, 2 sin(2 pi fc / SR), in Q30
+// (it may pass 1), for the full-rate increment of a frequency under 7 kHz.
+inline i32 svf_f_half(u32 inc) {
+    const u32 top = 680000000u;   // 6.98 kHz: x stays under 1
+    if (inc > top) inc = top;
+    const i32 x = multiply(static_cast<i32>(inc >> 1), Q31(3.14159265358979 / 4.0)) << 3;   // 2 pi inc / 2^32, Q31
+    const i32 x2 = multiply(x, x), x3 = multiply(x2, x), x5 = multiply(x3, x2), x7 = multiply(x5, x2);
+    return x - multiply(x3, Q31(1.0 / 6.0)) + multiply(x5, Q31(1.0 / 120.0)) - multiply(x7, Q31(1.0 / 5040.0));   // sin x in Q31: 2 sin x in Q30
+}
 // Its damping 1 / Q for a mode that rings with time constant tau: 1 / (pi f tau).
 inline i32 svf_q(i32 lhz, i32 ltau) {
     const i32 l = -lhz - ltau - L(3.14159265358979);

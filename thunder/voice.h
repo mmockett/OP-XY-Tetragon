@@ -66,7 +66,8 @@ struct Voice {
     u32 sw_phase, sw_inc, sw_pos;   // (sw_pos unused: the swing keeps its buffer in order)
     // each model's own coefficients and states
     i32 k[24];
-    i32 s[11];                // (11 keeps the voice its declared size)
+    i32 s[10];                // (10 keeps the voice its declared size)
+    i32 c_prev;               // the chain's last half-rate sample heard
     i32 mprev;                // the half-rate modes' last sample heard
     u32 nhalf;                // how many of the modes (the first) run at half rate
     u32 u[16];
@@ -596,44 +597,57 @@ inline void setup_chain(Voice& v, i32 most, i32 links, i32 lrel, i32 lo, i32 hi,
     v.c_rel = block_decay(lrel);            // how the links keep slapping as the lift falls away
     v.c_thr = Q31(0.08) >> 4;               // the links' weight, of U
     v.c_env = 0;
-    // a link's ring: one band across lo..hi, centred between them
+    // a link's ring: one band across lo..hi, centred between them. The chain
+    // runs at half the sample rate (its band and its low-passes sit under
+    // 7 kHz), so its coefficients are for 22.05 kHz.
     const i32 lc = (lo + hi) >> 1;
-    v.c_f1 = svf_f(increment(lc > L(6500.0) ? L(6500.0) : lc));
-    // its damping 1 / Q = sqrt(hi / lo) - sqrt(lo / hi), Q30
-    const i32 q = exp16(lc - lo) - exp16(lo - lc);
-    v.c_q = clamp(q, Q16(0.2), Q16(1.9)) << 14;
-    v.c_hpk = onepole_k(lo - octave);
-    v.c_lpk = onepole_k(hi);
+    v.c_f1 = svf_f_half(increment(lc > L(6500.0) ? L(6500.0) : lc));   // Q30
+    // its damping 1 / Q = sqrt(hi / lo) - sqrt(lo / hi), Q30, held where the
+    // band stays stable at the half rate (f^2 + 2 f q under 3.6)
+    i32 q = clamp(exp16(lc - lo) - exp16(lo - lc), Q16(0.2), Q16(1.9));
+    const i32 f16 = v.c_f1 >> 14, room = Q16(3.6) - mul16(f16, f16);
+    if (mul16(2 * f16, q) > room) q = static_cast<i32>((static_cast<u32>(room) << 16) / static_cast<u32>(2 * f16));   // note-on: one division
+    v.c_q = q << 14;
+    v.c_hpk = onepole_k(lo);        // lo an octave down, at the half rate
+    v.c_lpk = onepole_k(hi + octave);
     v.c_l1 = v.c_l2 = 0;
     v.c_r1.lp = v.c_r1.bp = 0;
     v.c_hp.s = 0;
+    v.c_prev = 0;
 }
-// The chain's passes (noinline, their state in locals: together they spill).
-// The dice: a slap, 0.4..1 of U / 16, either way, when they fall under the
-// chance; thrown every other sample, the odd samples taking what passes certainty.
+// The chain's passes, at half the sample rate (noinline, their state in
+// locals: together they spill).
+// The dice, thrown once a half-rate sample: a slap, 0.4..1 of U / 16 (half
+// that at the half rate, which rings a band twice as hard), either way, when
+// they fall under the chance; past certainty a second slap takes the rest.
+template <bool both>
 __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra, i32* hit) {
-    for (u32 n = 0; n < frames / 2; ++n) {
+    for (u32 n = 0; n < half; ++n) {
         seed ^= seed << 13;
         seed ^= seed >> 17;
         seed ^= seed << 5;
-        const i32 a = (U / 40) + static_cast<i32>((seed >> 8) & 0x3ffffu) * 64;
+        const i32 a = (U / 80) + static_cast<i32>((seed >> 8) & 0x3ffffu) * 32;
         // (without branches: s0, s1 flip a's sign; m0, m1 keep it or not)
-        const i32 s0 = static_cast<i32>(seed & 1u) - 1, s1 = static_cast<i32>((seed >> 1) & 1u) - 1;
+        const i32 s0 = static_cast<i32>(seed & 1u) - 1;
         const i32 m0 = -static_cast<i32>(static_cast<i32>(seed >> 1) < chance2);
-        const i32 m1 = -static_cast<i32>(static_cast<i32>((seed << 7) >> 1) < extra);
-        hit[0] = ((a ^ s0) - s0) & m0;
-        hit[1] = ((a ^ s1) - s1) & m1;
-        hit += 2;
+        i32 h = ((a ^ s0) - s0) & m0;
+        if (both) {
+            const i32 s1 = static_cast<i32>((seed >> 1) & 1u) - 1;
+            const i32 m1 = -static_cast<i32>(static_cast<i32>((seed << 7) >> 1) < extra);
+            h += ((a ^ s1) - s1) & m1;
+        }
+        *hit++ = h;
     }
     return seed;
 }
-// Each slap rings the links' band, high-passed: x in, the band out.
+// Each slap rings the links' band (f in Q30), high-passed: x in, the band out.
 __attribute__((noinline)) inline void chain_ring(i32* x, i32 f, i32 q, i32 hk, i32& lp_, i32& bp_, i32& hs_) {
     i32 lp = lp_, bp = bp_, hs = hs_;
-    for (u32 n = 0; n < frames; ++n) {
-        lp += multiply(f, bp);
-        const i32 hp = *x - lp - (multiply(q, bp) << 1);
-        bp += multiply(f, hp);
+    for (u32 n = 0; n < half; ++n) {
+        const i32 b2 = bp << 1;
+        lp += multiply(f, b2);
+        const i32 hp = *x - lp - multiply(q, b2);
+        bp += multiply(f, hp << 1);
         hs += multiply(bp - hs, hk);
         *x++ = bp - hs;
     }
@@ -641,16 +655,22 @@ __attribute__((noinline)) inline void chain_ring(i32* x, i32 f, i32 q, i32 hk, i
     bp_ = bp;
     hs_ = hs;
 }
-// and low-passed twice at its top, added to out at the chain's gain.
-__attribute__((noinline)) inline void chain_low(const i32* x, i32* out, i32 lk, i32 gain, i32& l1_, i32& l2_) {
+// and low-passed twice at its top, added to out at the chain's gain, back at
+// the full rate (each half-rate sample, and between two their mean).
+__attribute__((noinline)) inline i32 chain_low(const i32* x, i32* out, i32 lk, i32 gain, i32& l1_, i32& l2_, i32 prev) {
     i32 l1 = l1_, l2 = l2_;
-    for (u32 n = 0; n < frames; ++n) {
+    for (u32 n = 0; n < half; ++n) {
         l1 += multiply(*x++ - l1, lk);
         l2 += multiply(l1 - l2, lk);
-        *out++ += multiply(l2, gain) << 7;
+        const i32 y = multiply(l2, gain) << 7;
+        out[0] += (prev + y) >> 1;
+        out[1] += y;
+        prev = y;
+        out += 2;
     }
     l1_ = l1;
     l2_ = l2;
+    return prev;
 }
 // disp: the sheet's motion (near U at its loudest); adds the rattle to out.
 inline void run_chain(Voice& v, const i32* disp, i32* out) {
@@ -679,10 +699,10 @@ inline void run_chain(Voice& v, const i32* disp, i32* out) {
     // the odd samples take the rest
     const i32 chance2 = chance > (one >> 1) ? one : chance << 1;
     const i32 extra = chance > (one >> 1) ? (chance - (one >> 1)) << 1 : 0;
-    i32 hits[frames];
-    seed = chain_dice(seed, chance2, extra, hits);
+    i32 hits[half];
+    seed = extra ? chain_dice<true>(seed, chance2, extra, hits) : chain_dice<false>(seed, chance2, extra, hits);
     chain_ring(hits, f, q, hk, lp, bp, hs);
-    chain_low(hits, out, lk, gain, l1, l2);
+    v.c_prev = chain_low(hits, out, lk, gain, l1, l2, v.c_prev);
     if (!env1 && absolute(lp) + absolute(bp) + absolute(l1) + absolute(l2) < (1 << 10)) lp = bp = hs = l1 = l2 = 0;
     v.c_l1 = l1;
     v.c_l2 = l2;
