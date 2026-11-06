@@ -41,6 +41,7 @@ struct Cicada {
     i32 hi_gain, lo_gain, wing_gain, band_gain_now, last_pos, sizzle_level;
     Env wing, wingatt, tick;
     i32 tick_lp, tick_a;
+    u32 srng, wrng;     // the sizzle's and the wing's own noise
     i32 chirp, len;
 
     void tune_shell(int s, i32 lp) {
@@ -80,6 +81,8 @@ struct Cicada {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
+        srng = (x.seed * 2654435761u) | 1u;
+        wrng = (x.seed * 2246822519u + 0x9e3779b9u) | 1u;
         t = 0;
         n = 1 + static_cast<u32>(sc(31, pw(c[0], C(1.5))));
         const i32 lrate = hz(120) + sc(C(3.0), c[1]);
@@ -179,40 +182,28 @@ struct Cicada {
     // n samples between clicks, each part in its own pass with its state in
     // registers; the noise is drawn in the same order as ever.
     __attribute__((noinline)) void span(i32* out, u32 n) {
-        i32 sb[frames], wb[frames];
         ring_into(shell[0], shellk[0], out, n);
         ring_into(shell[1], shellk[1], out, n);
         if (cicadas > 1) {
             ring_into(shell[2], shellk[2], out, n);
             ring_into(shell[3], shellk[3], out, n);
         }
-        // The wing, once under its floor, stays there.
-        if (wing.v > 4096) {
-            noise_pass<true>(out, sb, wb, n);
-            sizzle_pass(out, sb, n);
-            wing_pass(out, wb, n);
-        } else {
-            noise_pass<false>(out, sb, wb, n);
-            sizzle_pass(out, sb, n);
-        }
+        // Each part, once under its floor, stays there until the next click.
+        if (tick.v > 4096) tick_pass(out, n);
+        sizzle_pass(out, n);
+        if (wing.v > 4096) wing_pass(out, n);
     }
-    // The tick, and the noise for the sizzle and the wing in draw order.
-    template <bool winging> __attribute__((noinline)) void noise_pass(i32* y, i32* sb, i32* wb, u32 n) {
-        i32 ev = env[0].v, tv = tick.v, lp = tick_lp, wv = wing.v;
-        const i32 ek = env[0].k, tk = tick.k, ta = tick_a, wk = wing.k;
+    // Each rib's tick.
+    __attribute__((noinline)) void tick_pass(i32* y, u32 n) {
+        i32 tv = tick.v, lp = tick_lp;
+        const i32 tk = tick.k, ta = tick_a;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            ev = mul(ev, ek);
-            if (CURIO_LIKELY(ev > 4096)) sb[j] = noise(r);
-            if (CURIO_UNLIKELY(tv > 4096)) {
+            if (CURIO_LIKELY(tv > 4096)) {
                 tv = mul(tv, tk);
                 const i32 x = lev(noise(r), tv);
                 lp += mul(ta, x - lp);
                 y[j] += x - lp;
-            }
-            if (winging && CURIO_LIKELY(wv > 4096)) {
-                wv = mul(wv, wk);
-                wb[j] = noise(r);
             }
         }
         tick.v = tv;
@@ -221,8 +212,9 @@ struct Cicada {
     }
     // The sizzle, driven into a soft clip: denser and less peaky, so a hat
     // carries its loudness under the kit's ceiling.
-    __attribute__((noinline)) void sizzle_pass(i32* y, const i32* sb, u32 n) {
+    __attribute__((noinline)) void sizzle_pass(i32* y, u32 n) {
         i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2, x1 = hi.x1, x2 = hi.x2;
+        u32 r = srng;
         const i32 ek = env[0].k, c = hik.c, r2 = hik.r2, b = hik.b, bg = band_gain_now, sl = sizzle_level;
         if (ev <= 4096) {   // under its floor until the next click: only the envelope moves
             for (u32 j = 0; j < n; ++j) ev = mul(ev, ek);
@@ -232,7 +224,7 @@ struct Cicada {
         for (u32 j = 0; j < n; ++j) {
             ev = mul(ev, ek);
             if (CURIO_LIKELY(ev > 4096)) {
-                const i32 in = mul(sb[j], b);
+                const i32 in = mul(noise(r), b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
@@ -245,20 +237,22 @@ struct Cicada {
             }
         }
         env[0].v = ev;
+        srng = r;
         hi.y1 = y1;
         hi.y2 = y2;
         hi.x1 = x1;
         hi.x2 = x2;
     }
     // The wing's flick.
-    __attribute__((noinline)) void wing_pass(i32* y, const i32* wb, u32 n) {
+    __attribute__((noinline)) void wing_pass(i32* y, u32 n) {
         i32 wv = wing.v, av = wingatt.v, y1 = wingr.y1, y2 = wingr.y2, x1 = wingr.x1, x2 = wingr.x2;
+        u32 r = wrng;
         const i32 wk = wing.k, ak = wingatt.k, c = wingk.c, r2 = wingk.r2, b = wingk.b, g = wing_gain;
         for (u32 j = 0; j < n; ++j) {
             if (CURIO_LIKELY(wv > 4096)) {
                 wv = mul(wv, wk);
                 av = mul(av, ak);
-                const i32 in = mul(wb[j], b);
+                const i32 in = mul(noise(r), b);
                 const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
                 x2 = x1;
                 x1 = in;
@@ -269,6 +263,7 @@ struct Cicada {
         }
         wing.v = wv;
         wingatt.v = av;
+        wrng = r;
         wingr.y1 = y1;
         wingr.y2 = y2;
         wingr.x1 = x1;
