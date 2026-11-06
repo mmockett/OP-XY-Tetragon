@@ -1009,6 +1009,7 @@ inline void setup_zap(Voice& v, const i32* c, i32 tune) {
     }
     v.s[0] = v.s[1] = v.s[2] = v.s[3] = v.s[4] = v.s[5] = 0;   // phases
     setup_field(v, v.k[0] - 2 * octave, Q16(0.7), log16(mix(Q16(0.15), Q16(1.2), c[5])), Q16(0.6));
+    field_clip(v);   // the chirp drives it into its rings' ceiling, a part of its ring
     v.flevel = multiply(Q31(0.55), q31(c[5]));
     if (!c[5]) v.fon = 0;   // no METAL: no ring to run
     v.env[0].set(one, block_decay(L(0.02)));

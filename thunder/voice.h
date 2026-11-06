@@ -43,7 +43,7 @@ struct Voice {
     u32 fd[4];                // the four lines' lengths
     i32 flp[4];               // their low-passes
     u32 fdiff, dpos;          // the input smeared by two all-passes for a strike's first blocks (crisper, less comb)
-    u32 floop;                // an all-pass in the first line's loop
+    u32 floop;                // 1: an all-pass in the first line's loop; 2: the rings clip (field_clip)
     i32 dbuf[23 + 41];
     u32 apos;                 // the first line also passes an all-pass in its loop (37 samples)
     i32 abuf[37];
@@ -362,6 +362,8 @@ inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u
     v.fin = static_cast<i32>(pow2(55 * octave - log2q(static_cast<u32>(v.fk))));   // 1 / k, Q24
     v.fon = 1;
 }
+// A field driven hard enough to fill its rings clips them (ZAP's chirp does).
+inline void field_clip(Voice& v) { v.floop |= 2u; }
 // The network's passes, each over the block's 32 half-rate samples with its
 // state in locals (noinline: inlined into one function they spill). The
 // rings are walked by pointer and split where they wrap, so no loop masks an
@@ -417,8 +419,12 @@ __attribute__((noinline)) inline u32 field_loop(i32* ap, u32 p, i32* o) {
 // in, halved, with the loop's gain (g, already halved), plus the input
 // (+ + + -). r: the four lines read, 32 apart; w: the first ring's write
 // position (the others 256, 512 and 768 on). The rings hold 32-bit values,
-// so a write needs no rounding or clamp.
-template <bool fed>
+// so a write needs no rounding or clamp; a field driven hard enough to fill
+// them (ZAP's) clips them where 16-bit rings once did (clip).
+const i32 ring_top = 32767 << 13, ring_bottom = -32768 * (1 << 13);
+template <bool fed, bool clip>
+inline i32 ring_write(i32 h) { return clip ? clamp(h, ring_bottom, ring_top) : h; }
+template <bool fed, bool clip>
 inline i32 field_mix_run(const i32* r, const i32* x, i32* out, i32* w, u32 count, i32 g, i32 level, i32 prev) {
     for (u32 n = 0; n < count; ++n) {
         const i32 r0 = r[0], r1 = r[half], r2 = r[2 * half], r3 = r[3 * half];
@@ -428,21 +434,21 @@ inline i32 field_mix_run(const i32* r, const i32* x, i32* out, i32* w, u32 count
         out[1] += y << 1;
         prev = y;
         const i32 xs = fed ? *x++ : 0;
-        w[0] = multiply(a0 + a2, g) + xs;
-        w[line_samples] = multiply(a1 + a3, g) + xs;
-        w[2 * line_samples] = multiply(a0 - a2, g) + xs;
-        w[3 * line_samples] = multiply(a1 - a3, g) - xs;
+        w[0] = ring_write<fed, clip>(multiply(a0 + a2, g) + xs);
+        w[line_samples] = ring_write<fed, clip>(multiply(a1 + a3, g) + xs);
+        w[2 * line_samples] = ring_write<fed, clip>(multiply(a0 - a2, g) + xs);
+        w[3 * line_samples] = ring_write<fed, clip>(multiply(a1 - a3, g) - xs);
         ++r;
         out += 2;
         ++w;
     }
     return prev;
 }
-template <bool fed>
+template <bool fed, bool clip>
 __attribute__((noinline)) inline i32 field_mix(const i32* r, const i32* x, i32* out, i32* b, u32 at, i32 g, i32 level, i32 prev) {
     const u32 first = line_samples - at < half ? line_samples - at : half;
-    prev = field_mix_run<fed>(r, x, out, b + at, first, g, level, prev);
-    return field_mix_run<fed>(r + first, x + first, out + 2 * first, b, half - first, g, level, prev);
+    prev = field_mix_run<fed, clip>(r, x, out, b + at, first, g, level, prev);
+    return field_mix_run<fed, clip>(r + first, x + first, out + 2 * first, b, half - first, g, level, prev);
 }
 // Runs the network over a block of input, adding level (Q31, x2) of its sound to
 // out. Every line is at least half a block long, so a block's reads only see
@@ -494,10 +500,13 @@ inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
     for (u32 l = 0; l < 4; ++l) v.flp[l] = field_read(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
     // the first line passes an all-pass (g 0.5) in its loop, so its echoes
     // never line up: a crisp forest, not a comb
-    if (v.floop) v.apos = field_loop(v.abuf, v.apos, r);
+    if (v.floop & 1u) v.apos = field_loop(v.abuf, v.apos, r);
     // mixed, heard and written back
-    v.fprev = fed ? field_mix<true>(r, x, out, v.buf, w & mask, v.fg >> 1, level, v.fprev)
-                  : field_mix<false>(r, x, out, v.buf, w & mask, v.fg >> 1, level, v.fprev);
+    const i32 g = v.fg >> 1;
+    if (v.floop & 2u) v.fprev = fed ? field_mix<true, true>(r, x, out, v.buf, w & mask, g, level, v.fprev)
+                                    : field_mix<false, true>(r, x, out, v.buf, w & mask, g, level, v.fprev);
+    else v.fprev = fed ? field_mix<true, false>(r, x, out, v.buf, w & mask, g, level, v.fprev)
+                       : field_mix<false, false>(r, x, out, v.buf, w & mask, g, level, v.fprev);
     v.fw = w + half;
 }
 inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
