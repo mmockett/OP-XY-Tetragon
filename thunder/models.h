@@ -1026,6 +1026,19 @@ inline void setup_zap(Voice& v, const i32* c, i32 tune) {
     setup_chain(v, Q16(0.6), Q16(0.6), L(0.05), L(1800), L(6000), c[6]);
     v.waiting = 1;
 }
+// A chirp over count samples: its phase stepping by an increment that steps
+// by is, at a level stepping by es. The sine is read from the table without
+// interpolating (its 1024 steps leave their error some 60 dB down, under a
+// sweep that never holds a pitch).
+__attribute__((noinline)) inline u32 zap_chirp(i32* out, u32 count, u32 ph, u32 in, i32 is, i32 lev, i32 es) {
+    for (u32 n = 0; n < count; ++n) {
+        ph += in;
+        in += static_cast<u32>(is);
+        *out++ += multiply(static_cast<i32>(tables::sine[ph >> 22]) << 12, lev);
+        lev += es;
+    }
+    return ph;
+}
 __attribute__((noinline)) inline void block_zap(Voice& v, Work& w, i32* out) {
     clear(out);
     const u32 t = v.t;
@@ -1062,13 +1075,7 @@ __attribute__((noinline)) inline void block_zap(Voice& v, Work& w, i32* out) {
         u32 in = inc[0];
         i32 lev = e0;
         const u32 skip = start > t ? start - t : 0;
-        for (unsigned i = skip; i < frames; ++i) {
-            ph += in;
-            in += static_cast<u32>(is);
-            out[i] += multiply(sine(ph) >> 4, lev);
-            lev += es;
-        }
-        v.s[e] = static_cast<i32>(ph);
+        v.s[e] = static_cast<i32>(zap_chirp(out + skip, frames - skip, ph, in, is, lev, es));
     }
     v.waiting = last < v.u[0];
     i32 g;
