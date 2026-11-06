@@ -79,6 +79,11 @@ def main():
     r = [max(-6 * 65536, round(65536 * math.log2(max(reach(i / 16), 1e-9)))) for i in range(33)]
     lines.append("// A raised-cosine contact's reach of a mode, log2 |sinc(u) / (1 - u^2)| in Q16, u = f Tc = i / 16.")
     lines.append("const opxy::i32 reach[33] = {" + ", ".join(map(str, r)) + "};")
+    # log2q's first guess: for each top eight bits of a Q30 mantissa (2^30 +
+    # b 2^22), the last exp2 entry at or under it.
+    start = [max(i for i in range(256) if e[i] <= 2 ** 30 + b * 2 ** 22) for b in range(256)]
+    lines.append("// For a Q30 mantissa's top eight bits b, the last i with exp2[i] <= 2^30 + b 2^22 (log2q's start).")
+    lines.append("const opxy::u8 log2_start[256] = {" + ", ".join(map(str, start)) + "};")
     lines += ["}", "}", ""]
     OUT.write_text("\n".join(lines))
     print("wrote", OUT)

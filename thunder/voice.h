@@ -276,7 +276,11 @@ inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u
         v.flp[i] = 0;
         total += d;
     }
-    for (u32 i = 0; i < field_samples; ++i) v.buf[i] = 0;
+    // the first lap reads only each ring's last d places before it writes them
+    for (u32 l = 0; l < 4; ++l) {
+        i16* b = v.buf + (l + 1) * line_samples - v.fd[l];
+        for (u32 n = 0; n < v.fd[l]; ++n) b[n] = 0;
+    }
     v.fw = 0;
     v.fprev = 0;
     v.fquiet = 0;
