@@ -397,6 +397,7 @@ struct Pod {
     u32 late_p;
     Env late_env;
     u32 late_end, stop;
+    i32 dk64, uk64, bdk64, buk64;   // the envelopes' decays over a block
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
@@ -414,6 +415,16 @@ struct Pod {
         bump_up.v = bump_down.v = 0;
         bump_down.k = decay(20000);
         bump_up.k = mul(bump_down.k, decay(12000));
+        dk64 = down.k;
+        uk64 = up.k;
+        bdk64 = bump_down.k;
+        buk64 = bump_up.k;
+        for (int i = 0; i < 6; ++i) {
+            dk64 = mul(dk64, dk64);
+            uk64 = mul(uk64, uk64);
+            bdk64 = mul(bdk64, bdk64);
+            buk64 = mul(buk64, buk64);
+        }
         // The envelope's own peak, for the seeds' rate: (1 - e^-t/a) e^-t/d
         // at its top, about 1 - a / d for a short attack.
         const i32 pk = full - static_cast<i32>((static_cast<u32>(a_us) << 15) / static_cast<u32>(d_us) << 16 >> 0) ;
@@ -568,9 +579,32 @@ struct Pod {
         late.y1 = y1;
         late.y2 = y2;
     }
+    // The shake's envelope and the tilt's pulse planned at the block's ends
+    // and glided between them (they move slowly).
+    __attribute__((noinline)) void ramp_pass(i32* eb, i32* bb, bool shaking) {
+        const i32 e0 = down.v - up.v, b0 = bump_down.v - bump_up.v;
+        down.v = mul(down.v, dk64);
+        up.v = mul(up.v, uk64);
+        bump_down.v = mul(bump_down.v, bdk64);
+        bump_up.v = mul(bump_up.v, buk64);
+        const i32 e1 = shaking ? down.v - up.v : 0, b1 = bump_down.v - bump_up.v;
+        const i32 de = shaking ? (e1 - e0) >> 6 : 0, db = (b1 - b0) >> 6;
+        i32 e = shaking ? e0 : 0, b = b0;
+        for (u32 j = 0; j < frames; ++j) {
+            e += de;
+            b += db;
+            eb[j] = e;
+            bb[j] = b;
+        }
+    }
     void run(i32* out) {
         i32 eb[frames], bb[frames], ib[frames], sb[frames], lb[frames];
-        env_pass(eb, bb);
+        // Sample by sample only where the tilt's pulse starts or the shake
+        // fades out.
+        const bool bumping = bump_amp && bump_at - t < frames;
+        const bool fading = t + frames - 1 + 882 > stop && t < stop;
+        if (bumping || fading) env_pass(eb, bb);
+        else ramp_pass(eb, bb, t < stop);
         if (late_norm) seed_pass<true>(eb, bb, ib, sb, lb);
         else seed_pass<false>(eb, bb, ib, sb, lb);
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
