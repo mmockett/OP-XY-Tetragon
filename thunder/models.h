@@ -645,9 +645,9 @@ __attribute__((noinline)) inline void crash_mix(Voice& v, const i32* body, const
     v.op[2].s = h2;
     v.op[3].s = h3;
 }
-// the swell's noise into the high modes
+// the swell's noise into the high modes, at half rate
 __attribute__((noinline)) inline u32 crash_swell(i32* x, u32 seed, i32 sw, i32 sws) {
-    for (u32 n = 0; n < frames; ++n, sw += sws) {
+    for (u32 n = 0; n < half; ++n, sw += sws) {
         seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
         *x++ = multiply(static_cast<i32>(seed) >> 4, sw);
     }
@@ -675,15 +675,19 @@ __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     excite(v, w.exc);
     clear(w.body);
     clear(w.aux);
+    // the swell's noise and the strike, made at half rate for the field: one
+    // draw a pair, at the level two halved draws summed would have
+    i32 x2[half];
+    const bool fed = sw || sws || v.s[0];
     if (sw || sws) {
-        v.seed = crash_swell(w.fin, v.seed ? v.seed : 1u, sw, sws);
-    } else {
-        clear(w.fin);
+        v.seed = crash_swell(x2, v.seed ? v.seed : 1u, multiply(sw, Q31(0.70710678)), multiply(sws, Q31(0.70710678)) << 1);
+    } else if (fed) {
+        for (u32 i = 0; i < half; ++i) x2[i] = 0;
     }
-    w.fin[0] += v.s[0];
+    x2[0] += v.s[0] >> 1;
     v.s[0] = 0;
     run_modes(v, w.exc, w.body);
-    run_field(v, w.fin, w.aux, Q31(0.5));
+    run_field_half(v, x2, fed, w.aux, Q31(0.5));
     i32 damp;
     const i32 ds = v.env[0].step(damp);
     crash_mix(v, w.body, w.aux, out, damp, ds);

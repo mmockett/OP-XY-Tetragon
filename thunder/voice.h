@@ -442,10 +442,9 @@ __attribute__((noinline)) inline i32 field_mix(const i32* r, const i32* x, i32* 
 // out. Every line is at least half a block long, so a block's reads only see
 // what earlier blocks wrote: each line is read and low-passed in a pass of its
 // own, then the four are mixed and written back.
-inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
-    if (!v.fon) return;
-    i32 drive = 0;
-    for (unsigned i = 0; i < frames; ++i) drive |= in[i];
+// x: the block's input at half rate, at the lines' scale (field_input's), or
+// none (drive false).
+inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
     if (!drive && !v.dpos) {
         // with nothing driving it, stop once it has rung down for longer than
         // its longest line (fixed point would otherwise keep it circling just
@@ -457,11 +456,8 @@ inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
     } else {
         v.fquiet = 0;
     }
-    // the input at half rate (pairs summed), smeared by two Schroeder
-    // all-passes (23 and 41 samples, g 0.6)
-    i32 x[half];
-    bool fed = drive != 0;
-    if (fed) field_input(in, x, v.fin);
+    // the input smeared by two Schroeder all-passes (23 and 41 samples, g 0.6)
+    bool fed = drive;
     if (v.fdiff > 1) --v.fdiff;
     if ((v.fdiff > 1 && drive) || v.dpos) {
         if (!fed) for (unsigned i = 0; i < half; ++i) x[i] = 0;
@@ -497,6 +493,25 @@ inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
     v.fprev = fed ? field_mix<true>(r, x, out, v.buf, w & mask, v.fg >> 1, level, v.fprev)
                   : field_mix<false>(r, x, out, v.buf, w & mask, v.fg >> 1, level, v.fprev);
     v.fw = w + half;
+}
+inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
+    if (!v.fon) return;
+    i32 drive = 0;
+    for (unsigned i = 0; i < frames; ++i) drive |= in[i];
+    // the input at half rate (pairs summed)
+    i32 x[half];
+    if (drive) field_input(in, x, v.fin);
+    field_run(v, x, drive != 0, out, level);
+}
+// The same for an input made at half rate: x (at the input's scale, as a
+// block's pairs summed would be) is scaled to the lines' in place.
+inline void run_field_half(Voice& v, i32* x, bool drive, i32* out, i32 level) {
+    if (!v.fon) return;
+    if (drive) {
+        const i32 gin = v.fin;
+        for (u32 i = 0; i < half; ++i) x[i] = multiply(x[i], gin) << 7;
+    }
+    field_run(v, x, drive, out, level);
 }
 
 // ------------------------------------------------------------ the mallet
