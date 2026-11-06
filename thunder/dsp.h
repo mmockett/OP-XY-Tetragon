@@ -60,12 +60,13 @@ inline i32 frac2(i32 l) {
 // log2 of a positive integer, Q16 (note-on work: two searches of the exp2 table).
 inline i32 log2q(u32 x) {
     if (!x) return -32 * octave;
-#if defined(__bfin__)
-    // the top bit's place: Blackfin counts the sign bits in one instruction
-    const u32 n = static_cast<i32>(x) < 0 ? 31u : 30u - static_cast<u32>(__builtin_clrsb(static_cast<i32>(x)));
-#else
-    const u32 n = 31u - static_cast<u32>(__builtin_clz(x));
-#endif
+    // the top bit's place, in five halvings
+    u32 n = 0, y = x;
+    if (y >> 16) { y >>= 16; n += 16; }
+    if (y >> 8) { y >>= 8; n += 8; }
+    if (y >> 4) { y >>= 4; n += 4; }
+    if (y >> 2) { y >>= 2; n += 2; }
+    if (y >> 1) n += 1;
     const u32 m = n <= 30 ? x << (30 - n) : x >> (n - 30);   // the mantissa, Q30
     // the last exp2 entry at or under it: from the table's guess for its top
     // eight bits, at most two steps on
