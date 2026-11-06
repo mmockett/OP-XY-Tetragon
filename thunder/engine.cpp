@@ -121,17 +121,6 @@ const i32 limit_top = half_scale - (half_scale / 5);
 const i32 limit_log = L(0.8 * 1073741824.0);
 const i32 limit_back = Q31(0.2516);   // 1 - exp(-64 / (0.005 * 44100)) a block
 // The limiter's passes (noinline: inlined, their loops lose the hardware loop).
-// A block's peak: absolute() without a branch (x ^ sign, plus one if
-// negative, held at 2^31 - 1).
-__attribute__((noinline)) inline i32 block_peak(const i32* y) {
-    i32 peak = 0;
-    for (u32 n = 0; n < frames; ++n) {
-        const i32 x = *y++, m = x >> 31;
-        const i32 a = opxy::q31::add(x ^ m, m & 1);
-        peak = a > peak ? a : peak;
-    }
-    return peak;
-}
 // y times a gain that steps from g by step a sample (the step taken first).
 __attribute__((noinline)) inline void ramp_gain(i32* y, u32 count, i32 g, i32 step) {
     for (u32 n = 0; n < count; ++n) {
@@ -147,8 +136,8 @@ __attribute__((noinline)) inline void hold_gain(i32* y, u32 count, i32 g) {
         ++y;
     }
 }
-inline void limit(Voice& voice, i32* y) {
-    const i32 peak = block_peak(y);
+// peak: the block's largest |y| (the output pass finds it).
+inline void limit(Voice& voice, i32* y, i32 peak) {
     i32 g = voice.lim;
     i32 target = g >= one ? one : g + multiply(one - g, limit_back);
     if (one - target < (one >> 12)) target = one;
@@ -227,12 +216,15 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     const i32 gain = voice.gain, drive = voice.drive;
     i32 most = 0;
     if (!drive) {
+        i32 peak = 0;   // (|y| is exact: y never reaches -2^31)
         for (unsigned i = 0; i < frames; ++i) {
             const i32 y = clamp(multiply(x[i], gain), -(one >> 6), one >> 6) << 6;
             output[i] = y;
-            most |= y < 0 ? -y : y;
+            const i32 a = y < 0 ? -y : y;
+            most |= a;
+            peak = a > peak ? a : peak;
         }
-        if (levels::limit[voice.model]) limit(voice, output);   // level: limiter
+        if (levels::limit[voice.model]) limit(voice, output, peak);   // level: limiter
     } else {
         // DRIVE in the same pass: 0.6 z (1 - z^2 / 3), z the output at a gain of 1.4..7,
         // held at full scale (which the output alone, at a gain of 1.4 or more, reaches first)
