@@ -33,6 +33,37 @@ inline u32 samples(i32 lsec) { return pow2(lsec + lsr); }
 struct Work { i32 exc[frames], fin[frames], body[frames], aux[frames]; };
 
 inline void clear(i32* x) { for (unsigned i = 0; i < frames; ++i) x[i] = 0; }
+// The block passes the models share (noinline: in a model's own function the
+// compiler gives these simple loops no hardware loop).
+__attribute__((noinline)) inline void copy(i32* to, const i32* from) {
+    for (u32 n = 0; n < frames; ++n) *to++ = *from++;
+}
+// x through a one-pole low-pass (state s, coefficient k), shifted up by shift.
+__attribute__((noinline)) inline void low_into(const i32* x, i32* y, i32& s_, i32 k, u32 shift) {
+    i32 s = s_;
+    for (u32 n = 0; n < frames; ++n) {
+        s += multiply(*x++ - s, k);
+        *y++ = s << shift;
+    }
+    s_ = s;
+}
+// |x| through a one-pole low-pass, shifted up by shift: what lifts a chain.
+__attribute__((noinline)) inline void lift_into(const i32* x, i32* y, i32& s_, i32 k, u32 shift) {
+    i32 s = s_;
+    for (u32 n = 0; n < frames; ++n) {
+        s += multiply(absolute(*x++) - s, k);
+        *y++ = s << shift;
+    }
+    s_ = s;
+}
+// y = x e, e stepping by es a sample.
+__attribute__((noinline)) inline void ramped_into(const i32* x, i32* y, i32 e, i32 es) {
+    for (u32 n = 0; n < frames; ++n, e += es) *y++ = multiply(*x++, e);
+}
+// out += (x level) << 1.
+__attribute__((noinline)) inline void add_level(const i32* x, i32* out, i32 level) {
+    for (u32 n = 0; n < frames; ++n) *out++ += multiply(*x++, level) << 1;
+}
 // out += 2 x e, e stepping from e by step a sample.
 __attribute__((noinline)) inline void add_ramped(const i32* x, i32* out, i32 e, i32 step) {
     for (u32 n = 0; n < frames; ++n, e += step) *out++ += multiply(*x++, e) << 1;
@@ -66,7 +97,7 @@ inline void setup_boom(Voice& v, const i32* c, i32 tune) {
     strike(v, beater_time(c[2]), U);
     v.s[0] = U;   // the field's impulse
 }
-inline void block_boom(Voice& v, Work& w, i32* out) {
+__attribute__((noinline)) inline void block_boom(Voice& v, Work& w, i32* out) {
     glide_modes(v);
     excite(v, w.exc);
     clear(w.fin);
@@ -74,7 +105,7 @@ inline void block_boom(Voice& v, Work& w, i32* out) {
     w.fin[0] = v.s[0];
     v.s[0] = 0;
     run_modes(v, w.exc, out);
-    for (unsigned i = 0; i < frames; ++i) w.body[i] = out[i];
+    copy(w.body, out);
     add_click(v, out);
     run_field(v, w.fin, out, v.flevel);
     run_chain(v, w.body, out);
@@ -112,7 +143,7 @@ inline void setup_slap(Voice& v, const i32* c, i32 tune) {
     strike(v, ltc, amp);
     v.s[0] = U;
 }
-inline void block_slap(Voice& v, Work& w, i32* out) {
+__attribute__((noinline)) inline void block_slap(Voice& v, Work& w, i32* out) {
     glide_modes(v);
     excite(v, w.exc);
     clear(w.fin);
@@ -121,7 +152,7 @@ inline void block_slap(Voice& v, Work& w, i32* out) {
     w.fin[0] = v.s[0];
     v.s[0] = 0;
     run_modes(v, w.exc, out);
-    for (unsigned i = 0; i < frames; ++i) w.body[i] = out[i];
+    copy(w.body, out);
     add_click(v, out);
     run_field(v, w.fin, out, v.flevel);
     run_chain(v, w.body, w.aux);
@@ -167,7 +198,49 @@ inline void setup_pop(Voice& v, const i32* c, i32 tune) {
     v.waiting = 1;
     v.cseed = 0x9e3779b9u;   // the snaps' crackle the same every hit, so a clap peaks the same; SCATTER varies it
 }
-inline void block_pop(Voice& v, Work& w, i32* out) {
+// The snaps' crackle over count samples: noise through the burst and the
+// tail, plus each snap's click (x).
+__attribute__((noinline)) inline u32 pop_noise(i32* exc, const i32* x, u32 count, u32 seed, i32& burst_, i32& tail_, i32 kb, i32 kt) {
+    i32 burst = burst_, tail = tail_;
+    for (u32 n = 0; n < count; ++n) {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        *exc++ = (multiply(static_cast<i32>(seed) >> 4, (burst >> 1) + (tail >> 1)) << 1) + *x++;
+        burst = multiply(burst, kb);
+        tail = multiply(tail, kt);
+    }
+    burst_ = burst;
+    tail_ = tail;
+    return seed;
+}
+// dry: the snaps through the dent's band, twice
+__attribute__((noinline)) inline void pop_dry(Voice& v, const i32* x, i32* out) {
+    const i32 f = v.k[2], q = v.k[3];
+    i32 al = v.sv[0].lp, ab = v.sv[0].bp, bl = v.sv[1].lp, bb = v.sv[1].bp;
+    for (u32 n = 0; n < frames; ++n) {
+        al += multiply(f, ab);
+        ab += multiply(f, *x++ - al - (multiply(q, ab) << 1));
+        const i32 y = multiply(q, ab) << 1;
+        bl += multiply(f, bb);
+        bb += multiply(f, y - bl - (multiply(q, bb) << 1));
+        *out++ = multiply(q, bb) << 2;
+    }
+    v.sv[0].lp = al; v.sv[0].bp = ab; v.sv[1].lp = bl; v.sv[1].bp = bb;
+}
+// the ring high-passed twice at 400 Hz and low-passed over the band, at its level
+__attribute__((noinline)) inline void pop_ring(Voice& v, const i32* x, i32* out) {
+    const i32 k8 = v.k[8], k9 = v.k[9], lv = v.flevel;
+    i32 h0 = v.op[0].s, h1 = v.op[4].s, l0 = v.op[1].s;
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 xi = *x++;
+        h0 += multiply(xi - h0, k8);
+        const i32 a = xi - h0;
+        h1 += multiply(a - h1, k8);
+        l0 += multiply(a - h1 - l0, k9);
+        *out++ += multiply(l0, lv) << 1;
+    }
+    v.op[0].s = h0; v.op[4].s = h1; v.op[1].s = l0;
+}
+__attribute__((noinline)) inline void block_pop(Voice& v, Work& w, i32* out) {
     i32 burst = v.s[0], tail = v.s[1];
     clear(w.fin);
     clear(w.aux);
@@ -175,8 +248,14 @@ inline void block_pop(Voice& v, Work& w, i32* out) {
     if (pops || burst > (1 << 14) || tail > (1 << 14)) {
         u32 seed = v.cseed ? v.cseed : 1u;
         const i32 kb = v.k[0], kt = v.k[1];
-        for (unsigned i = 0; i < frames; ++i) {
-            if (pops && v.left && v.t + i == v.at) {
+        // the crackle runs in stretches split at the snaps
+        for (u32 i = 0; i < frames;) {
+            u32 end = frames;
+            if (pops && v.left && v.at >= v.t + i && v.at < v.t + frames) end = v.at - v.t;
+            seed = pop_noise(w.exc + i, w.fin + i, end - i, seed, burst, tail, kb, kt);
+            if (end == frames) break;
+            i = end;
+            {
                 const u32 r = lcg(v.seed);   // SCATTER's dice: the timing, level and crackle of each snap
                 if (static_cast<i32>(r >> 1) < v.k[12]) seed = (r >> 3) | 1u;
                 // Kept as it is, overflow and all: with SCATTER high, a loud roll
@@ -190,10 +269,6 @@ inline void block_pop(Voice& v, Work& w, i32* out) {
                 if (--v.left) pop_schedule(v, v.t + i);
                 else tail = Q31(0.25);
             }
-            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-            w.exc[i] = (multiply(static_cast<i32>(seed) >> 4, (burst >> 1) + (tail >> 1)) << 1) + w.fin[i];
-            burst = multiply(burst, kb);
-            tail = multiply(tail, kt);
         }
         v.cseed = seed;
     } else {
@@ -203,36 +278,12 @@ inline void block_pop(Voice& v, Work& w, i32* out) {
     v.s[0] = burst;
     v.s[1] = tail;
     v.waiting = v.left != 0;
-    // dry: the snaps through the dent's band, twice
-    {
-        const i32 f = v.k[2], q = v.k[3];
-        i32 al = v.sv[0].lp, ab = v.sv[0].bp, bl = v.sv[1].lp, bb = v.sv[1].bp;
-        for (unsigned i = 0; i < frames; ++i) {
-            al += multiply(f, ab);
-            ab += multiply(f, w.exc[i] - al - (multiply(q, ab) << 1));
-            const i32 y = multiply(q, ab) << 1;
-            bl += multiply(f, bb);
-            bb += multiply(f, y - bl - (multiply(q, bb) << 1));
-            out[i] = multiply(q, bb) << 2;
-        }
-        v.sv[0].lp = al; v.sv[0].bp = ab; v.sv[1].lp = bl; v.sv[1].bp = bb;
-    }
+    pop_dry(v, w.exc, out);
     // the sheet's ring under them (METAL), band-limited
     run_field(v, w.exc, w.aux, Q31(0.5));
-    if (v.fon) {
-        const i32 k8 = v.k[8], k9 = v.k[9], lv = v.flevel;
-        i32 h0 = v.op[0].s, h1 = v.op[4].s, l0 = v.op[1].s;
-        for (unsigned i = 0; i < frames; ++i) {
-            h0 += multiply(w.aux[i] - h0, k8);
-            const i32 a = w.aux[i] - h0;
-            h1 += multiply(a - h1, k8);
-            l0 += multiply(a - h1 - l0, k9);
-            out[i] += multiply(l0, lv) << 1;
-        }
-        v.op[0].s = h0; v.op[4].s = h1; v.op[1].s = l0;
-    }
+    if (v.fon) pop_ring(v, w.aux, out);
     if (v.c_amount) {
-        for (unsigned i = 0; i < frames; ++i) w.body[i] = v.op[2].low(absolute(w.exc[i]), v.k[10]) << 2;   // the sheet's lift
+        lift_into(w.exc, w.body, v.op[2].s, v.k[10], 2);   // the sheet's lift
         run_chain(v, w.body, out);
     }
 }
@@ -353,12 +404,52 @@ __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, i32* t, u32 seed) {
 __attribute__((noinline)) inline void add_scaled(const i32* x, i32* out, i32 k, i32 e, i32 es, i32 h, i32 hs) {
     for (u32 n = 0; n < frames; ++n, e += es, h += hs) *out++ += multiply(multiply(*x++, k), multiply(e, h));
 }
+// the ring, high-passed twice, as the hand damps it
+__attribute__((noinline)) inline void flick_ring(Voice& v, const i32* x, i32* out, i32 hand, i32 hs) {
+    const i32 k1 = v.k[1];
+    i32 h0 = v.op[0].s, h1 = v.op[1].s;
+    for (u32 n = 0; n < frames; ++n, hand += hs) {
+        const i32 xi = *x++;
+        h0 += multiply(xi - h0, k1);
+        const i32 a = xi - h0;
+        h1 += multiply(a - h1, k1);
+        *out++ = multiply(a - h1, multiply(hand, Q31(0.6)));
+    }
+    v.op[0].s = h0;
+    v.op[1].s = h1;
+}
+// the nail's tick: the flick itself, high-passed
+__attribute__((noinline)) inline void flick_tick(Voice& v, const i32* x, i32* out, i32 tick, i32 ts) {
+    const i32 k2 = v.k[2];
+    i32 h2 = v.op[2].s;
+    for (u32 n = 0; n < frames; ++n, tick += ts) {
+        const i32 xi = *x++;
+        h2 += multiply(xi - h2, k2);
+        *out++ += multiply(xi - h2, tick);
+    }
+    v.op[2].s = h2;
+}
+// the pickup's own roll-off: a double zero at the top, so little fizzes above 12 kHz
+__attribute__((noinline)) inline void flick_rolloff(Voice& v, i32* out) {
+    i32 last = v.s[2], last2 = v.s[3];
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 x = *out;
+        *out++ = (x >> 2) + (last >> 1) + (last2 >> 2);
+        last2 = last;
+        last = x;
+    }
+    v.s[2] = last;
+    v.s[3] = last2;
+}
+__attribute__((noinline)) inline void shift_up(i32* x, u32 shift) {
+    for (u32 n = 0; n < frames; ++n) *x++ <<= shift;
+}
 // Noise (x >> 4) through a ramp, doubled: the seed after.
 __attribute__((noinline)) inline u32 noise_ramped(i32* x, u32 seed, i32 e, i32 es) {
     for (u32 n = 0; n < frames; ++n, e += es) *x++ = multiply(noise(seed) >> 4, e) << 1;
     return seed;
 }
-inline void block_flick(Voice& v, Work& w, i32* out) {
+__attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     clear(w.aux);
     u32 seed = v.seed ? v.seed : 1u;
     const bool flicking = v.u[0] != 0;
@@ -372,26 +463,8 @@ inline void block_flick(Voice& v, Work& w, i32* out) {
     if (v.k[5] && !--v.k[5]) v.env[0].factor = v.k[6];
     const i32 hs = v.env[0].step(hand), ts = v.env[1].step(tick), zs = v.env[3].step(fizz);
     const i32 hand0 = hand;
-    const i32 k1 = v.k[1], k2 = v.k[2];
-    i32 h0 = v.op[0].s, h1 = v.op[1].s;
-    for (unsigned i = 0; i < frames; ++i, hand += hs) {
-        // the ring, high-passed twice, as the hand damps it
-        h0 += multiply(w.aux[i] - h0, k1);
-        const i32 a = w.aux[i] - h0;
-        h1 += multiply(a - h1, k1);
-        out[i] = multiply(a - h1, multiply(hand, Q31(0.6)));
-    }
-    v.op[0].s = h0;
-    v.op[1].s = h1;
-    if (flicking || tick > (1 << 16)) {
-        // the nail's tick: the flick itself, high-passed
-        i32 h2 = v.op[2].s;
-        for (unsigned i = 0; i < frames; ++i, tick += ts) {
-            h2 += multiply(w.exc[i] - h2, k2);
-            out[i] += multiply(w.exc[i] - h2, tick);
-        }
-        v.op[2].s = h2;
-    }
+    flick_ring(v, w.aux, out, hand, hs);
+    if (flicking || tick > (1 << 16)) flick_tick(v, w.exc, out, tick, ts);
     if (multiply(fizz, hand0) > (1 << 16)) {
         // the densest modes: the sizzle, under the hand, high-passed three times
         i32 t[frames];
@@ -407,16 +480,10 @@ inline void block_flick(Voice& v, Work& w, i32* out) {
         v.seed = noise_ramped(w.body, v.seed, lift, ls);
         run_chain(v, w.body, out);
     }
-    {
-        // the pickup's own roll-off: a double zero at the top, so little fizzes above 12 kHz
-        i32 last = v.s[2], last2 = v.s[3];
-        for (unsigned i = 0; i < frames; ++i) { const i32 x = out[i]; out[i] = (x >> 2) + (last >> 1) + (last2 >> 2); last2 = last; last = x; }
-        v.s[2] = last;
-        v.s[3] = last2;
-    }
+    flick_rolloff(v, out);
     run_swing(v, out);
     // the hat is quiet after its high-passes: brought up to the others' working level
-    for (unsigned i = 0; i < frames; ++i) out[i] <<= 2;
+    shift_up(out, 2);
 }
 
 // ============================================================ TOM: toms
@@ -485,7 +552,15 @@ inline void setup_tom(Voice& v, const i32* c, i32 tune) {
     click(v, v.k[1], v.k[3], v.k[4], v.k[5], v.k[6]);
     v.s[0] = U;
 }
-inline void block_tom(Voice& v, Work& w, i32* out) {
+// the head driven hard: a soft clip, z - 4 z^3 / 27, flat at |z| = 1.5
+__attribute__((noinline)) inline void tom_clip(i32* x, i32 g) {
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 z = clamp(multiply(*x, g), -(3 << 24), 3 << 24) << 5;   // Q30 of U, |z| <= 1.5
+        const i32 z2 = multiply(z, z) << 1, z3 = multiply(z2, z) << 1;
+        *x++ = (z - multiply(z3, Q31(4.0 / 27.0))) >> 3;
+    }
+}
+__attribute__((noinline)) inline void block_tom(Voice& v, Work& w, i32* out) {
     glide_modes(v);
     clear(w.fin);
     w.fin[0] = v.s[0];
@@ -511,16 +586,8 @@ inline void block_tom(Voice& v, Work& w, i32* out) {
     v.waiting = v.left != 0;
     clear(out);
     run_modes(v, w.exc, out);
-    for (unsigned i = 0; i < frames; ++i) w.body[i] = out[i];
-    if (v.k[7]) {
-        // the head driven hard: a soft clip, z - 4 z^3 / 27, flat at |z| = 1.5
-        const i32 g = v.k[7];
-        for (unsigned i = 0; i < frames; ++i) {
-            const i32 z = clamp(multiply(out[i], g), -(3 << 24), 3 << 24) << 5;   // Q30 of U, |z| <= 1.5
-            const i32 z2 = multiply(z, z) << 1, z3 = multiply(z2, z) << 1;
-            out[i] = (z - multiply(z3, Q31(4.0 / 27.0))) >> 3;
-        }
-    }
+    copy(w.body, out);
+    if (v.k[7]) tom_clip(out, v.k[7]);
     add_click(v, out);
     run_field(v, w.fin, out, v.flevel);
     run_chain(v, w.body, out);
@@ -578,7 +645,25 @@ __attribute__((noinline)) inline void crash_mix(Voice& v, const i32* body, const
     v.op[2].s = h2;
     v.op[3].s = h3;
 }
-inline void block_crash(Voice& v, Work& w, i32* out) {
+// the swell's noise into the high modes
+__attribute__((noinline)) inline u32 crash_swell(i32* x, u32 seed, i32 sw, i32 sws) {
+    for (u32 n = 0; n < frames; ++n, sw += sws) {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        *x++ = multiply(static_cast<i32>(seed) >> 4, sw);
+    }
+    return seed;
+}
+// what lifts the chain: the sheet's swing at its fundamental (a square: the
+// lift's sign from the phase's top bit, without a branch), falling away
+__attribute__((noinline)) inline u32 crash_lift(i32* x, u32 ph, u32 inc, i32 lift, i32 ls) {
+    for (u32 n = 0; n < frames; ++n, lift += ls) {
+        const i32 s = static_cast<i32>(ph) >> 31;   // -1 past half a cycle
+        *x++ = (lift ^ s) - s;
+        ph += inc;
+    }
+    return ph;
+}
+__attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     glide_modes(v);
     // the swell: s1 falls, s2 rises toward it, (t / p) e^(-t / p)
     const i32 s1 = v.s[1], s2 = v.s[2];
@@ -591,12 +676,7 @@ inline void block_crash(Voice& v, Work& w, i32* out) {
     clear(w.body);
     clear(w.aux);
     if (sw || sws) {
-        u32 seed = v.seed ? v.seed : 1u;
-        for (unsigned i = 0; i < frames; ++i, sw += sws) {
-            seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-            w.fin[i] = multiply(static_cast<i32>(seed) >> 4, sw);
-        }
-        v.seed = seed;
+        v.seed = crash_swell(w.fin, v.seed ? v.seed : 1u, sw, sws);
     } else {
         clear(w.fin);
     }
@@ -613,13 +693,7 @@ inline void block_crash(Voice& v, Work& w, i32* out) {
         // what lifts the chain: the sheet's swing at its fundamental, falling away
         i32 lift;
         const i32 ls = v.env[1].step(lift);
-        u32 ph = v.u[1];
-        const u32 inc = v.u[0];
-        for (unsigned i = 0; i < frames; ++i, lift += ls) {
-            w.body[i] = (ph & 0x80000000u) ? -lift : lift;
-            ph += inc;
-        }
-        v.u[1] = ph;
+        v.u[1] = crash_lift(w.body, v.u[1], v.u[0], lift, ls);
         run_chain(v, w.body, out);
     }
 }
@@ -676,7 +750,18 @@ inline void setup_clank(Voice& v, const i32* c, i32 tune) {
     v.waiting = v.left != 0;
     strike(v, v.k[1], U);
 }
-inline void block_clank(Voice& v, Work& w, i32* out) {
+// the bar, and the sheet's ring high-passed at 300 Hz, at its level
+__attribute__((noinline)) inline void clank_out(Voice& v, const i32* body, const i32* x, i32* out) {
+    const i32 k = v.k[0], lv = v.flevel;
+    i32 h = v.op[0].s;
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 xi = *x++;
+        h += multiply(xi - h, k);
+        *out++ = *body++ + multiply(xi - h, lv);
+    }
+    v.op[0].s = h;
+}
+__attribute__((noinline)) inline void block_clank(Voice& v, Work& w, i32* out) {
     if (v.left && v.at < v.t + frames) {
         for (unsigned i = 0; i < frames; ++i) {
             if (v.left && v.t + i == v.at) {
@@ -698,13 +783,10 @@ inline void block_clank(Voice& v, Work& w, i32* out) {
     run_modes(v, w.exc, w.body);
     i32 e;
     const i32 es = v.env[0].step(e);
-    for (unsigned i = 0; i < frames; ++i, e += es) w.fin[i] = multiply(w.body[i], e);
+    ramped_into(w.body, w.fin, e, es);
     run_field(v, w.fin, w.aux, Q31(0.5));
-    if (v.fon) {
-        for (unsigned i = 0; i < frames; ++i) out[i] = w.body[i] + multiply(v.op[0].high(w.aux[i], v.k[0]), v.flevel);
-    } else {
-        for (unsigned i = 0; i < frames; ++i) out[i] = w.body[i];
-    }
+    if (v.fon) clank_out(v, w.body, w.aux, out);
+    else copy(out, w.body);
     add_click(v, out);
     run_chain(v, w.body, out);
 }
@@ -755,7 +837,7 @@ inline void grit_grain(Voice& v, u32 which, i32 level) {
     s.bp += (r & 1u) ? a : -a;
     v.s[1] = U;
 }
-inline void block_grit(Voice& v, Work& w, i32* out) {
+__attribute__((noinline)) inline void block_grit(Voice& v, Work& w, i32* out) {
     // The pour's envelope at the block's end: a rise as (t / peak)^1.5, a fall
     // within the pour (fast when SWELL starts it hard), then DAMP's fall.
     const u32 t = v.t + frames;
@@ -822,7 +904,7 @@ inline void setup_bounce(Voice& v, const i32* c, i32 tune) {
     click(v, v.k[1]);
     v.s[0] = U;
 }
-inline void block_bounce(Voice& v, Work& w, i32* out) {
+__attribute__((noinline)) inline void block_bounce(Voice& v, Work& w, i32* out) {
     clear(w.fin);
     w.fin[0] = v.s[0];
     v.s[0] = 0;
@@ -849,7 +931,7 @@ inline void block_bounce(Voice& v, Work& w, i32* out) {
     add_click(v, out);
     run_field(v, w.fin, out, v.flevel);
     if (v.c_amount) {
-        for (unsigned i = 0; i < frames; ++i) w.body[i] = v.op[0].low(absolute(out[i]), v.k[2]) << 1;
+        lift_into(out, w.body, v.op[0].s, v.k[2], 1);
         run_chain(v, w.body, out);
     }
 }
@@ -883,7 +965,7 @@ inline void setup_zap(Voice& v, const i32* c, i32 tune) {
     setup_chain(v, Q16(0.6), Q16(0.6), L(0.05), L(1800), L(6000), c[6]);
     v.waiting = 1;
 }
-inline void block_zap(Voice& v, Work& w, i32* out) {
+__attribute__((noinline)) inline void block_zap(Voice& v, Work& w, i32* out) {
     clear(out);
     const u32 t = v.t;
     u32 last = 0;
@@ -930,13 +1012,11 @@ inline void block_zap(Voice& v, Work& w, i32* out) {
     v.waiting = last < v.u[0];
     i32 g;
     const i32 gs = v.env[0].step(g);
-    for (unsigned i = 0; i < frames; ++i, g += gs) {
-        w.fin[i] = multiply(out[i], g);
-        w.aux[i] = 0;
-        w.body[i] = out[i];
-    }
+    ramped_into(out, w.fin, g, gs);
+    clear(w.aux);
+    copy(w.body, out);
     run_field(v, w.fin, w.aux, Q31(0.5));
-    for (unsigned i = 0; i < frames; ++i) out[i] += multiply(w.aux[i], v.flevel) << 1;
+    add_level(w.aux, out, v.flevel);
     run_chain(v, w.body, out);
 }
 
@@ -976,7 +1056,7 @@ inline void setup_bow(Voice& v, const i32* c, i32 tune) {
     setup_chain(v, Q16(1.2), Q16(0.5), L(0.06), L(1800), L(6000), c[6]);
     v.waiting = 1;
 }
-inline void block_bow(Voice& v, Work& w, i32* out) {
+__attribute__((noinline)) inline void block_bow(Voice& v, Work& w, i32* out) {
     const u32 t = v.t;
     // the gesture's level at the block's end
     i32 e0 = v.s[2], e1;
@@ -1086,7 +1166,20 @@ inline void setup_shake(Voice& v, const i32* c, i32 tune) {
     shake_jolt(v);
     v.waiting = 1;
 }
-inline void block_shake(Voice& v, Work& w, i32* out) {
+// the body and the field low-passed at its share, high-passed at 22 Hz
+__attribute__((noinline)) inline void shake_out(Voice& v, const i32* body, const i32* x, i32* out) {
+    const i32 k3 = v.k[3], k5 = v.k[5], k6 = v.k[6];
+    i32 l = v.op[1].s, h = v.op[2].s;
+    for (u32 n = 0; n < frames; ++n) {
+        l += multiply(*x++ - l, k3);
+        const i32 y = *body++ + multiply(l, k6);
+        h += multiply(y - h, k5);
+        *out++ = y - h;
+    }
+    v.op[1].s = l;
+    v.op[2].s = h;
+}
+__attribute__((noinline)) inline void block_shake(Voice& v, Work& w, i32* out) {
     // the wobble: the modes' pitch swings by up to 4% with the storm
     {
         const i32 wob = multiply(sine(v.u[3]), Q31(0.04));
@@ -1118,12 +1211,9 @@ inline void block_shake(Voice& v, Work& w, i32* out) {
     clear(w.aux);
     v.waiting = v.left != 0;
     run_modes(v, w.exc, w.body);
-    for (unsigned i = 0; i < frames; ++i) w.fin[i] = v.op[0].low(w.fin[i], v.k[4]) << 2;
+    low_into(w.fin, w.fin, v.op[0].s, v.k[4], 2);
     run_field(v, w.fin, w.aux, Q31(0.5));
-    for (unsigned i = 0; i < frames; ++i) {
-        const i32 m = v.op[1].low(w.aux[i], v.k[3]);
-        out[i] = v.op[2].high(w.body[i] + multiply(m, v.k[6]), v.k[5]);
-    }
+    shake_out(v, w.body, w.aux, out);
     run_chain(v, w.body, out);
 }
 
@@ -1145,7 +1235,7 @@ inline void setup_model(Voice& v, u32 model, const i32* c, i32 tune) {
     }
     split_modes(v);
 }
-inline void block_model(Voice& v, Work& w, i32* out) {
+__attribute__((noinline)) inline void block_model(Voice& v, Work& w, i32* out) {
     switch (v.model) {
     case BOOM: block_boom(v, w, out); break;
     case SLAP: block_slap(v, w, out); break;

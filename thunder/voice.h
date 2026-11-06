@@ -227,11 +227,11 @@ template <u32 count, bool add>
 __attribute__((noinline)) inline void run_pair(Mode& a, Mode& b, const i32* x, i32* out, bool drive) {
     i32 al = a.lp, ab = a.bp, bl = b.lp, bb = b.bp;
     const i32 af = a.f, bf = b.f, ag = a.gw, bg = b.gw, ar = a.r, br = b.r;
-    for (u32 s = 0; s < count; s += 8) {
+    for (unsigned s = 0; s < count; s += 8) {
         i32 touch = 0;
-        if (drive) for (u32 i = 0; i < 8; ++i) touch |= x[i];
+        if (drive) for (unsigned i = s; i < s + 8; ++i) touch |= x[i];
         if (touch) {
-            for (u32 i = 0; i < 8; ++i) {
+            for (unsigned i = s; i < s + 8; ++i) {
                 al += multiply(af, ab);
                 ab += multiply(x[i], ag) - multiply(af, al);
                 bl += multiply(bf, bb);
@@ -239,7 +239,7 @@ __attribute__((noinline)) inline void run_pair(Mode& a, Mode& b, const i32* x, i
                 out[i] = add ? out[i] + ab + bb : ab + bb;
             }
         } else {
-            for (u32 i = 0; i < 8; ++i) {
+            for (unsigned i = s; i < s + 8; ++i) {
                 al += multiply(af, ab);
                 ab -= multiply(af, al);
                 bl += multiply(bf, bb);
@@ -251,8 +251,6 @@ __attribute__((noinline)) inline void run_pair(Mode& a, Mode& b, const i32* x, i
         ab = multiply(ab, ar);
         bl = multiply(bl, br);
         bb = multiply(bb, br);
-        x += 8;
-        out += 8;
     }
     if (!drive) {
         if (absolute(al) + absolute(ab) < (1 << 11)) al = ab = 0;
