@@ -599,24 +599,101 @@ struct Roar {
         const i32 am = full - mul(throb << 19, full - p15);
         const u32 fl = flut_inc + static_cast<u32>(mul(static_cast<i32>(flut_inc), mul(flut_swing, s)));
         const u32 fade_step = 0x7fffffffu / fade;   // the fade's slope, once a block
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (t >= len + fade) { out[i] = 0; continue; }
-            att = mul(att, attk);
-            i32 env = full - att;
-            if (t > len) env = mul(env, static_cast<i32>((len + fade - t) * fade_step));
-            const i32 n = noise(rng);
-            i32 y = mul(gn(bp(roar, roark, n), bp_gain), F(0.39));
-            hum_ph += hum_inc;
-            y += lev(sine(hum_ph) >> 3, hum_amp);
-            if (buzz_amp) {
-                flut_ph += fl;
-                const i32 sw = static_cast<i32>(flut_ph) >> 3;   // a sawtooth, Q28
-                buzz_lp += mul(buzz_a, sw - buzz_lp);
-                y += lev(buzz_lp, buzz_amp);
-            }
-            if (wind_amp) y += lev(gn(bp(windr, windk, n), wind_gain), wind_amp);
-            out[i] = mul(mul(y, am), env);
+        // The block in passes, each with its state in registers, for the sq
+        // samples before the roar has faded; then silence.
+        const u32 end = len + fade;
+        const u32 sq = t < end ? (end - t < frames ? end - t : frames) : 0;
+        if (sq) {
+            i32 nb[frames];
+            noise_pass(nb, sq);
+            roar_pass(out, nb, sq);
+            hum_pass(out, sq);
+            if (buzz_amp) buzz_pass(out, sq, fl);
+            if (wind_amp) wind_pass(out, nb, sq);
+            env_pass(out, sq, am, fade_step);
         }
+        for (u32 i = sq; i < frames; ++i) out[i] = 0;
+        t += frames;
+    }
+    __attribute__((noinline)) void noise_pass(i32* nb, u32 n) {
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) nb[j] = noise(r);
+        rng = r;
+    }
+    // The roar: noise through a band swinging about its pitch.
+    __attribute__((noinline)) void roar_pass(i32* y, const i32* nb, u32 n) {
+        i32 y1 = roar.y1, y2 = roar.y2, x1 = roar.x1, x2 = roar.x2;
+        const i32 c = roark.c, r2 = roark.r2, b = roark.b, g = bp_gain;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 in = mul(nb[j], b);
+            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            y[j] = mul(gn(o, g), F(0.39));
+        }
+        roar.y1 = y1;
+        roar.y2 = y2;
+        roar.x1 = x1;
+        roar.x2 = x2;
+    }
+    // The hum at the band's pitch.
+    __attribute__((noinline)) void hum_pass(i32* y, u32 n) {
+        u32 ph = hum_ph;
+        const u32 in = hum_inc;
+        const i32 a = hum_amp;
+        for (u32 j = 0; j < n; ++j) {
+            ph += in;
+            y[j] += lev(sine(ph) >> 3, a);
+        }
+        hum_ph = ph;
+    }
+    // The slat's flutter: a sawtooth, low-passed.
+    __attribute__((noinline)) void buzz_pass(i32* y, u32 n, u32 fl) {
+        u32 ph = flut_ph;
+        i32 lp = buzz_lp;
+        const i32 a = buzz_a, amp = buzz_amp;
+        for (u32 j = 0; j < n; ++j) {
+            ph += fl;
+            const i32 sw = static_cast<i32>(ph) >> 3;   // a sawtooth, Q28
+            lp += mul(a, sw - lp);
+            y[j] += lev(lp, amp);
+        }
+        flut_ph = ph;
+        buzz_lp = lp;
+    }
+    // The wind in the cord, from the roar's noise.
+    __attribute__((noinline)) void wind_pass(i32* y, const i32* nb, u32 n) {
+        i32 y1 = windr.y1, y2 = windr.y2, x1 = windr.x1, x2 = windr.x2;
+        const i32 c = windk.c, r2 = windk.r2, b = windk.b, g = wind_gain, amp = wind_amp;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 in = mul(nb[j], b);
+            const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            y[j] += lev(gn(o, g), amp);
+        }
+        windr.y1 = y1;
+        windr.y2 = y2;
+        windr.x1 = x1;
+        windr.x2 = x2;
+    }
+    // The swell, the fade and the pulse.
+    __attribute__((noinline)) void env_pass(i32* y, u32 n, i32 am, u32 fade_step) {
+        i32 a = att;
+        const i32 k = attk;
+        const u32 l = len, end = len + fade;
+        u32 tt = t;
+        for (u32 j = 0; j < n; ++j, ++tt) {
+            a = mul(a, k);
+            i32 env = full - a;
+            if (tt > l) env = mul(env, static_cast<i32>((end - tt) * fade_step));
+            y[j] = mul(mul(y[j], am), env);
+        }
+        att = a;
     }
 };
 }
