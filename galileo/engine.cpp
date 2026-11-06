@@ -243,8 +243,8 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     // Impacts and ghosts strike on a 32-sample grid (0.73 ms): a block splits into
     // at most two stretches however many balls land in it, and each stretch
     // runs the body's parts once. (Struck modes keep their 8-sample phase; a
-    // tine strikes on the 8-sample grid.)
-    const u32 grid = ~((voice.model == kit::tine ? body::tine_step : body::step) - 1);
+    // tine strikes on the 8-sample grid, a fill on 16.)
+    const u32 grid = ~(body::step_of(voice.model) - 1);
     while (at < opxy::block_frames) {
         u32 until = opxy::block_frames;
         if (next < count && ((hits[next].at - voice.t) & grid) < until) until = (hits[next].at - voice.t) & grid;
