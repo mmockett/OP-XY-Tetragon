@@ -370,6 +370,7 @@ struct Cask {
     ResK woodk[4], hoopk[3];
     i32 wood_amp, hoop_amp, clk_lp, clk_a, thud_lp, thud_a;
     i32 attk;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void strike(i32 g, bool echo) {
         // A delayed copy of the air's ring adds only its share in phase with it.
@@ -431,9 +432,11 @@ struct Cask {
         clk_a = pole(lg2(static_cast<u32>(500 + sc(9000, pw(c[2], C(1.5))))));
         thud.k = decay(40000);
         thud_a = pole(hz(220));
+        hlast = 0;
         strike(full, false);
     }
-    static void tune_res(ResK& k, i32 lp, u32 t60) { dsp::tune(k, inc(lp), decay60(t60)); }
+    // The staves and hoops ring at half the rate: an octave's step, twice the decay.
+    static void tune_res(ResK& k, i32 lp, u32 t60) { dsp::tune(k, inc(lp + (1 << 12)), decay60(t60 >> 1)); }
     bool waiting() const { return c[7] > 0 && tap < 4; }
     // The block in passes, each with its state in registers, split at the
     // cellar's taps.
@@ -441,7 +444,7 @@ struct Cask {
     template <bool blipping, bool bunged, bool sloshing> __attribute__((noinline)) void pitch_pass(u32* fb, u32 n, i32 vib) {
         const u32 in = inca;
         i32 bv = blip.v, ev = bend.v, sv = slosh_on.v;
-        const i32 bk = blip.k, ek = bend.k, sk = slosh_on.k, bg = bung;
+        const i32 bk = mul(blip.k, blip.k), ek = mul(bend.k, bend.k), sk = mul(slosh_on.k, slosh_on.k), bg = bung;
         for (u32 j = 0; j < n; ++j) {
             u32 f = in;
             if (blipping && CURIO_LIKELY(bv > (1 << 20))) { bv = mul(bv, bk); f += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.35), bv))); }
@@ -450,7 +453,7 @@ struct Cask {
                 sv = mul(sv, sk);
                 f += static_cast<u32>(mul(static_cast<i32>(f), vib));
             }
-            fb[j] = f;
+            fb[j] = f << 1;   // two samples a step
         }
         blip.v = bv;
         bend.v = ev;
@@ -472,7 +475,7 @@ struct Cask {
     template <bool am_on> __attribute__((noinline)) void air_pass(i32* y, const u32* fb, u32 n, i32 am) {
         u32 ph = air.ph;
         i32 v = air.v, a = air.a;
-        const i32 vk = air.vk, ak = air.ak;
+        const i32 vk = mul(air.vk, air.vk), ak = mul(air.ak, air.ak);
         for (u32 j = 0; j < n; ++j) {
             ph += fb[j];
             v = mul(v, vk);
@@ -511,14 +514,28 @@ struct Cask {
     }
     // n samples between taps; each part costs nothing once it is still or
     // switched off.
-    __attribute__((noinline)) void span(i32* out, u32 n, i32 vib, i32 am) {
-        u32 fb[frames];
+    // n half-rate samples between taps: the air and the wood are all under
+    // 11 kHz, so they step two samples at a time.
+    __attribute__((noinline)) void half_span(i32* h, u32 n, i32 vib, i32 am) {
+        u32 fb[frames / 2];
         pitch(fb, n, vib);
-        if (slosh_am) air_pass<true>(out, fb, n, am);
-        else air_pass<false>(out, fb, n, am);
-        for (int m = 0; m < 4; ++m) ring_into(wood[m], woodk[m], out, n);
-        if (hoop_amp) for (int m = 0; m < 3; ++m) ring_into(hoop[m], hoopk[m], out, n);
-        knock_pass(out, n);
+        if (slosh_am) air_pass<true>(h, fb, n, am);
+        else air_pass<false>(h, fb, n, am);
+        for (int m = 0; m < 4; ++m) ring_into(wood[m], woodk[m], h, n);
+        if (hoop_amp) for (int m = 0; m < 3; ++m) ring_into(hoop[m], hoopk[m], h, n);
+    }
+    // The half-rate parts back up to the full rate, each new sample halfway
+    // between two.
+    __attribute__((noinline)) void up_pass(const i32* h, i32* y) {
+        i32 last = hlast;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            const i32 x = h[j];
+            y[0] += (last >> 1) + (x >> 1);
+            y[1] += x;
+            last = x;
+            y += 2;
+        }
+        hlast = last;
     }
     void run(i32* out) {
         static const u32 at[4] = {1014, 1632, 2690, 3925};       // 23, 37, 61, 89 ms
@@ -528,18 +545,24 @@ struct Cask {
         const i32 swing = mul(sine(ph55), full - slosh_on.v);
         const i32 vib = mul(slosh_depth, swing);
         const i32 am = mul(slosh_am, sine(ph55 + 683565275u));   // phase +1 rad
+        i32 h[frames / 2];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
         const u32 t0 = t;
-        for (u32 i = 0;;) {
+        for (u32 i = 0, hi = 0;;) {
             // The cellar's next tap in this block.
             u32 e = frames;
             if (c[7] > 0 && tap < 4) { const u32 d = at[tap] - t0; if (d < e && d >= i) e = d; }
-            if (e > i) span(out + i, e - i, vib, am);
+            const u32 he = (e + 1) >> 1;
+            if (he > hi) half_span(h + hi, he - hi, vib, am);
+            if (e > i) knock_pass(out + i, e - i);
             i = e;
+            hi = he;
             if (i >= frames) break;
             t = t0 + i;
             if (c[7] > 0 && tap < 4 && t == at[tap]) { strike(sc(gain[tap], c[7]), true); ++tap; }
         }
+        up_pass(h, out);
         t = t0 + frames;
     }
 };
