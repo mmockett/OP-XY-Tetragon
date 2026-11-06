@@ -653,16 +653,6 @@ __attribute__((noinline)) inline u32 crash_swell(i32* x, u32 seed, i32 sw, i32 s
     }
     return seed;
 }
-// what lifts the chain: the sheet's swing at its fundamental (a square: the
-// lift's sign from the phase's top bit, without a branch), falling away
-__attribute__((noinline)) inline u32 crash_lift(i32* x, u32 ph, u32 inc, i32 lift, i32 ls) {
-    for (u32 n = 0; n < frames; ++n, lift += ls) {
-        const i32 s = static_cast<i32>(ph) >> 31;   // -1 past half a cycle
-        *x++ = (lift ^ s) - s;
-        ph += inc;
-    }
-    return ph;
-}
 __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     glide_modes(v);
     // the swell: s1 falls, s2 rises toward it, (t / p) e^(-t / p)
@@ -697,8 +687,9 @@ __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
         // what lifts the chain: the sheet's swing at its fundamental, falling away
         i32 lift;
         const i32 ls = v.env[1].step(lift);
-        v.u[1] = crash_lift(w.body, v.u[1], v.u[0], lift, ls);
-        run_chain(v, w.body, out);
+        // (its square swings +-lift, so the block's largest is the ramp's larger end)
+        v.u[1] += v.u[0] * frames;
+        chain_most(v, chain_reach(chain_reach(0, lift), lift + static_cast<i32>(frames - 1) * ls), out);
     }
 }
 
@@ -910,7 +901,6 @@ __attribute__((noinline)) inline void block_grit(Voice& v, Work& w, i32* out) {
             }
             seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
             w.fin[i] = hit >> 2;
-            w.body[i] = e >> 4;
         }
         v.seed = seed;
     }
@@ -931,7 +921,8 @@ __attribute__((noinline)) inline void block_grit(Voice& v, Work& w, i32* out) {
     clear(w.aux);
     run_field(v, w.fin, w.aux, Q31(0.5));
     grit_ring(v, w.aux, out);
-    run_chain(v, w.body, out);
+    // the chain feels the pour (body: e >> 4, a ramp: its larger end)
+    if (v.c_amount) chain_most(v, chain_reach(chain_reach(0, e0 >> 4), (e0 + static_cast<i32>(frames - 1) * es) >> 4), out);
 }
 
 // ============================================================ HOP: a dropped bearing

@@ -686,15 +686,23 @@ __attribute__((noinline)) inline i32 chain_low(const i32* x, i32* out, i32 lk, i
     return prev;
 }
 // disp: the sheet's motion (near U at its loudest); adds the rattle to out.
+// How far the sheet moves this block (its largest |disp|), for a model that
+// knows it without a pass over the block (a ramp's: the larger end).
+inline i32 chain_reach(i32 most, i32 d) { d = d < 0 ? -d : d; return d > most ? d : most; }
+inline void chain_most(Voice& v, i32 most, i32* out);
 inline void run_chain(Voice& v, const i32* disp, i32* out) {
     if (!v.c_amount) return;
-    // How far past their weight the sheet lifts the links this block, 0..U,
-    // held by a leaky integrator (x4).
     i32 most = 0;
     for (unsigned i = 0; i < frames; ++i) {
         const i32 d = disp[i] < 0 ? -disp[i] : disp[i];
         most = d > most ? d : most;
     }
+    chain_most(v, most, out);
+}
+// most: how far the sheet moves this block (near U at its loudest).
+inline void chain_most(Voice& v, i32 most, i32* out) {
+    // How far past their weight the sheet lifts the links this block, 0..U,
+    // held by a leaky integrator (x4).
     i32 c = most - v.c_thr;
     c = c < 0 ? 0 : c >= U ? U - 1 : c;
     const i32 env0 = v.c_env;
