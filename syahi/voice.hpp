@@ -196,12 +196,13 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
             v.part[k].weight = weight;
         }
         // A mode the strike leaves 30 dB under the strongest is masked by it
-        // and isn't played (METAL keeps down to 42 dB: its wash is made of them).
-        i32 strongest = 0;
-        for (u32 k = 0; k < head_modes; ++k) strongest = absolute(v.part[k].weight) > strongest ? absolute(v.part[k].weight) : strongest;
-        const i32 floor = strongest >> (v.model == metal ? 7 : 5);
-        for (u32 k = 0; k < head_modes; ++k)
-            if (absolute(v.part[k].weight) < floor) v.part[k].weight = 0;
+        // and isn't played. METAL keeps every mode: its wash is made of them.
+        if (v.model != metal) {
+            i32 strongest = 0;
+            for (u32 k = 0; k < head_modes; ++k) strongest = absolute(v.part[k].weight) > strongest ? absolute(v.part[k].weight) : strongest;
+            for (u32 k = 0; k < head_modes; ++k)
+                if (absolute(v.part[k].weight) < strongest >> 5) v.part[k].weight = 0;
+        }
     }
     // The wash's pairs ring as long as their two modes on average: the
     // geometric mean of the two rings, so the spray lasts as the modes do.
