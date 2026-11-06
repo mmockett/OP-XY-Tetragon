@@ -419,8 +419,8 @@ __attribute__((noinline)) inline void field_input(const i32* in, i32* x, i32 gin
         in += 2;
     }
 }
-// One line read from ring position at (0..511) and low-passed into o.
-__attribute__((noinline)) inline i32 field_read(const i32* ring, u32 at, i32 lp, i32 k, i32* o) {
+// One line read from ring position at (0..255) and low-passed into o.
+inline i32 field_read(const i32* ring, u32 at, i32 lp, i32 k, i32* o) {
     const u32 first = line_samples - at < half ? line_samples - at : half;
     const i32* p = ring + at;
     for (u32 n = 0; n < first; ++n) {
@@ -434,6 +434,10 @@ __attribute__((noinline)) inline i32 field_read(const i32* ring, u32 at, i32 lp,
         *o++ = lp;
     }
     return lp;
+}
+// The four lines, each read and low-passed (one call for the four).
+__attribute__((noinline)) inline void field_reads(Voice& v, i32* r, u32 w, u32 mask, i32 k) {
+    for (u32 l = 0; l < 4; ++l) v.flp[l] = field_read(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
 }
 // The all-pass (g 0.5, 37 samples) in the first line's loop, from position p.
 inline void field_loop_run(i32* ap, i32* o, u32 count) {
@@ -539,7 +543,7 @@ inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
     i32 r[4 * half];
     const u32 mask = line_samples - 1, w = v.fw;
     const i32 k = v.fk;
-    for (u32 l = 0; l < 4; ++l) v.flp[l] = field_read(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
+    field_reads(v, r, w, mask, k);
     // the first line passes an all-pass (g 0.5) in its loop, so its echoes
     // never line up: a crisp forest, not a comb
     if (v.floop & 1u) v.apos = field_loop(v.abuf, v.apos, r);
