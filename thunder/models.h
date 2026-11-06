@@ -51,7 +51,9 @@ __attribute__((noinline)) inline void low_into(const i32* x, i32* y, i32& s_, i3
 __attribute__((noinline)) inline void lift_into(const i32* x, i32* y, i32& s_, i32 k, u32 shift) {
     i32 s = s_;
     for (u32 n = 0; n < frames; ++n) {
-        s += multiply(absolute(*x++) - s, k);
+        // absolute() without a branch: x ^ sign, plus one if negative, held at 2^31 - 1
+        const i32 xi = *x++, m = xi >> 31;
+        s += multiply(opxy::q31::add(xi ^ m, m & 1) - s, k);
         *y++ = s << shift;
     }
     s_ = s;
@@ -429,24 +431,29 @@ __attribute__((noinline)) inline void flick_tick(Voice& v, const i32* x, i32* ou
     }
     v.op[2].s = h2;
 }
-// the pickup's own roll-off: a double zero at the top, so little fizzes above 12 kHz
+// the pickup's own roll-off: a double zero at the top, so little fizzes above 12 kHz;
+// shifted up by up
+template <u32 up>
 __attribute__((noinline)) inline void flick_rolloff(Voice& v, i32* out) {
     i32 last = v.s[2], last2 = v.s[3];
-    for (u32 n = 0; n < frames; ++n) {
-        const i32 x = *out;
-        *out++ = (x >> 2) + (last >> 1) + (last2 >> 2);
-        last2 = last;
-        last = x;
+    for (u32 n = 0; n < frames / 2; ++n) {   // two samples a step
+        const i32 x0 = out[0], x1 = out[1];
+        out[0] = ((x0 >> 2) + (last >> 1) + (last2 >> 2)) << up;
+        out[1] = ((x1 >> 2) + (x0 >> 1) + (last >> 2)) << up;
+        last2 = x0;
+        last = x1;
+        out += 2;
     }
     v.s[2] = last;
     v.s[3] = last2;
 }
-__attribute__((noinline)) inline void shift_up(i32* x, u32 shift) {
-    for (u32 n = 0; n < frames; ++n) *x++ <<= shift;
-}
 // Noise (x >> 4) through a ramp, doubled: the seed after.
 __attribute__((noinline)) inline u32 noise_ramped(i32* x, u32 seed, i32 e, i32 es) {
-    for (u32 n = 0; n < frames; ++n, e += es) *x++ = multiply(noise(seed) >> 4, e) << 1;
+    if (!seed) seed = 0x9e3779b9u;   // (noise's guard, once: xorshift never reaches zero)
+    for (u32 n = 0; n < frames; ++n, e += es) {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        *x++ = multiply(static_cast<i32>(seed) >> 4, e) << 1;
+    }
     return seed;
 }
 __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
@@ -480,10 +487,14 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
         v.seed = noise_ramped(w.body, v.seed, lift, ls);
         run_chain(v, w.body, out);
     }
-    flick_rolloff(v, out);
-    run_swing(v, out);
-    // the hat is quiet after its high-passes: brought up to the others' working level
-    shift_up(out, 2);
+    // the pickup's roll-off and the swing; the hat (quiet after its
+    // high-passes) brought up to the others' working level by the last of them
+    if (v.sw_depth) {
+        flick_rolloff<0>(v, out);
+        run_swing<2>(v, out);
+    } else {
+        flick_rolloff<2>(v, out);
+    }
 }
 
 // ============================================================ TOM: toms
@@ -890,7 +901,7 @@ __attribute__((noinline)) inline void block_grit(Voice& v, Work& w, i32* out) {
             seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
             const u32 r = seed;
             i32 hit = 0;
-            if ((r >> 1) < static_cast<u32>(multiply(k2, e))) {
+            if (__builtin_expect((r >> 1) < static_cast<u32>(multiply(k2, e)), 0)) {
                 seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
                 grain[grains].at = i;
                 grain[grains].which = v.u[2]++;
@@ -1161,7 +1172,7 @@ __attribute__((noinline)) inline void block_bow(Voice& v, Work& w, i32* out) {
     v.sv[0].lp = al; v.sv[0].bp = ab; v.sv[1].lp = bl; v.sv[1].bp = bb; v.sv[2].lp = cl; v.sv[2].bp = cb;
     v.s[4] = ol;
     v.s[5] = ob;
-    for (unsigned i = 0; i < frames; ++i) w.body[i] = out[i];
+    copy(w.body, out);
     run_chain(v, w.body, out);
 }
 

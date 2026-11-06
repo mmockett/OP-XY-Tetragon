@@ -177,6 +177,13 @@ inline void setup_modes(Voice& v, i32 lf0, i32 tension, i32 spot, i32 ltau0, i32
     }
     v.nmodes = kept;
 }
+// Whether anything is in a block (noinline: inlined, the compiler gives this
+// loop no hardware loop).
+__attribute__((noinline)) inline i32 block_or(const i32* x) {
+    i32 any = 0;
+    for (u32 n = 0; n < frames; ++n) any |= *x++;
+    return any;
+}
 // The modes low enough to (under 3.5 kHz at their highest bend or wobble)
 // run at half the sample rate, which halves their cost: they are moved to
 // the front, their pitch and their decay set for the half rate. A model's
@@ -274,8 +281,7 @@ __attribute__((noinline)) inline i32 modes_up(const i32* y, i32* out, i32 prev) 
     return prev;
 }
 inline void run_modes(Voice& v, const i32* x, i32* out) {
-    i32 drive = 0;
-    for (unsigned i = 0; i < frames; ++i) drive |= x[i];
+    const i32 drive = block_or(x);
     // an odd mode out is paired with a silent one
     Mode spare = {0, 0, 0, one, 0, 0};
     const u32 nh = v.nhalf;
@@ -496,8 +502,7 @@ inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
 }
 inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
     if (!v.fon) return;
-    i32 drive = 0;
-    for (unsigned i = 0; i < frames; ++i) drive |= in[i];
+    const i32 drive = block_or(in);
     // the input at half rate (pairs summed)
     i32 x[half];
     if (drive) field_input(in, x, v.fin);
@@ -532,18 +537,25 @@ inline i32 pulse(Voice& v) {
     return multiply(v.pamp, h);
 }
 // The mallet's force over a block: only while it touches the sheet.
+// (Without a branch a sample: live is -1 while it touches, 0 from the sample
+// after its phase wraps, which also stops the phase.)
 __attribute__((noinline)) inline void excite(Voice& v, i32* x) {
     u32 inc = v.pinc, phase = v.pphase;
+    if (!inc) {
+        for (u32 n = 0; n < frames; ++n) *x++ = 0;
+        return;
+    }
     const i32 amp = v.pamp;
-    u32 n = 0;
-    for (; n < frames && inc; ++n) {
+    i32 live = -1;
+    for (u32 n = 0; n < frames; ++n) {
         const i32 h = (one >> 1) - (sine(phase + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
         const u32 next = phase + inc;
-        if (next < phase) inc = 0;
+        *x++ = multiply(amp, h) & live;
+        const i32 still = -static_cast<i32>(next >= phase);
+        live &= still;
+        inc &= static_cast<u32>(still);
         phase = next;
-        x[n] = multiply(amp, h);
     }
-    for (; n < frames; ++n) x[n] = 0;
     v.pinc = inc;
     v.pphase = phase;
 }
@@ -563,9 +575,10 @@ template <bool low>
 __attribute__((noinline)) inline void click_run(Voice& v, i32* out) {
     i32 env = v.cenv, h = v.chp.s, l1 = v.clp.s, l2 = v.clp2.s;
     const i32 ck = v.ck, hk = v.chk, lk = v.clk;
-    u32 seed = v.cseed;
+    u32 seed = v.cseed ? v.cseed : 0x9e3779b9u;   // (noise's guard, once: xorshift never reaches zero)
     for (u32 n = 0; n < frames; ++n) {
-        const i32 x = noise(seed) >> 4;
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        const i32 x = static_cast<i32>(seed) >> 4;
         h += multiply(x - h, hk);
         i32 y = x - h;
         if (low) {
@@ -690,14 +703,19 @@ __attribute__((noinline)) inline i32 chain_low(const i32* x, i32* out, i32 lk, i
 // knows it without a pass over the block (a ramp's: the larger end).
 inline i32 chain_reach(i32 most, i32 d) { d = d < 0 ? -d : d; return d > most ? d : most; }
 inline void chain_most(Voice& v, i32 most, i32* out);
+// a block's largest |x| (a value of -2^31 counts as none, as it always has)
+__attribute__((noinline)) inline i32 block_most(const i32* x) {
+    i32 most = 0;
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 d = *x < 0 ? -*x : *x;
+        most = d > most ? d : most;
+        ++x;
+    }
+    return most;
+}
 inline void run_chain(Voice& v, const i32* disp, i32* out) {
     if (!v.c_amount) return;
-    i32 most = 0;
-    for (unsigned i = 0; i < frames; ++i) {
-        const i32 d = disp[i] < 0 ? -disp[i] : disp[i];
-        most = d > most ? d : most;
-    }
-    chain_most(v, most, out);
+    chain_most(v, block_most(disp), out);
 }
 // most: how far the sheet moves this block (near U at its loudest).
 inline void chain_most(Voice& v, i32 most, i32* out) {
@@ -748,11 +766,14 @@ inline void setup_swing(Voice& v, i32 depth, i32 lrate) {
 // first 76 places of the buffer, in order) and works in a straight line: the
 // 76 kept, then the block's own.
 typedef u32 __attribute__((may_alias)) word;
+// up: the result shifted up.
+template <u32 up>
 __attribute__((noinline)) inline void swing_run(i16* kept, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
     word line_words[(swing_keep + frames) / 2];
     i16* line = reinterpret_cast<i16*>(line_words);
     const word* from = reinterpret_cast<const word*>(kept);
-    for (u32 n = 0; n < swing_keep / 2; ++n) line_words[n] = from[n];
+    word* in = line_words;
+    for (u32 n = 0; n < swing_keep / 2; ++n) *in++ = *from++;
     i16* at = line + swing_keep;
     for (u32 n = 0; n < frames; ++n) {
         const i32 xi = *x;
@@ -765,14 +786,16 @@ __attribute__((noinline)) inline void swing_run(i16* kept, i32* x, i32 d, i32 st
         // too here, so the host renders, the calibration and the OP-XY all
         // agree; computing the unwrapped product would change the calibrated
         // sound (UB audit, 2026-11-06). UBSan reports it; it is known.
-        *x++ = multiply(xi + ((delayed * wet) >> 10), g);       // back to signal: << 14 >> 8 >> 16
+        *x++ = multiply(xi + ((delayed * wet) >> 10), g) << up;       // back to signal: << 14 >> 8 >> 16
         ++at;
         d += step;
         g += gs;
     }
     word* to = reinterpret_cast<word*>(kept);
-    for (u32 n = 0; n < swing_keep / 2; ++n) to[n] = line_words[frames / 2 + n];
+    const word* back = line_words + frames / 2;
+    for (u32 n = 0; n < swing_keep / 2; ++n) *to++ = *back++;
 }
+template <u32 up = 0>
 inline void run_swing(Voice& v, i32* x) {
     if (!v.sw_depth) return;
     // The delay (samples, Q8) at the block's start and end: (0.25 + 1.4 depth swing) ms.
@@ -788,6 +811,6 @@ inline void run_swing(Voice& v, i32* x) {
     const i32 turn = multiply(q31(depth), Q31(0.65));
     const i32 g = one - multiply(turn, a << 15);
     const i32 gs = ((one - multiply(turn, b << 15)) - g) >> 6;
-    swing_run(v.sw_buf, x, d, step, wet, g, gs);
+    swing_run<up>(v.sw_buf, x, d, step, wet, g, gs);
 }
 }
