@@ -257,20 +257,20 @@ __attribute__((noinline)) inline void block_pop(Voice& v, Work& w, i32* out) {
             seed = pop_noise(w.exc + i, w.fin + i, end - i, seed, burst, tail, kb, kt);
             if (end == frames) break;
             i = end;
-            {
-                const u32 r = lcg(v.seed);   // SCATTER's dice: the timing, level and crackle of each snap
-                if (static_cast<i32>(r >> 1) < v.k[12]) seed = (r >> 3) | 1u;
-                // Kept as it is, overflow and all: with SCATTER high, a loud roll
-                // of the dice takes the last pop's burst past 2^31 and it wraps
-                // negative. Apple clang -O2 wraps it too here, so the host
-                // renders, the calibration and the OP-XY all agree; holding it at
-                // full scale would change the calibrated sound (UB audit,
-                // 2026-11-06). UBSan reports it; it is known.
-                burst = Q31(0.75) + multiply(v.k[7], static_cast<i32>(r >> 1) - Q31(0.5)) + (v.left == 1 ? Q31(0.1) : 0);
-                w.fin[i] = (v.left & 1u) ? multiply(U, v.k[11]) : -multiply(U, v.k[11]);
-                if (--v.left) pop_schedule(v, v.t + i);
-                else tail = Q31(0.25);
-            }
+        {
+            const u32 r = lcg(v.seed);   // SCATTER's dice: the timing, level and crackle of each snap
+            if (static_cast<i32>(r >> 1) < v.k[12]) seed = (r >> 3) | 1u;
+            // Kept as it is, overflow and all: with SCATTER high, a loud roll
+            // of the dice takes the last pop's burst past 2^31 and it wraps
+            // negative. Apple clang -O2 wraps it too here, so the host
+            // renders, the calibration and the OP-XY all agree; holding it at
+            // full scale would change the calibrated sound (UB audit,
+            // 2026-11-06). UBSan reports it; it is known.
+            burst = Q31(0.75) + multiply(v.k[7], static_cast<i32>(r >> 1) - Q31(0.5)) + (v.left == 1 ? Q31(0.1) : 0);
+            w.fin[i] = (v.left & 1u) ? multiply(U, v.k[11]) : -multiply(U, v.k[11]);
+            if (--v.left) pop_schedule(v, v.t + i);
+            else tail = Q31(0.25);
+        }
         }
         v.cseed = seed;
     } else {
@@ -569,23 +569,24 @@ __attribute__((noinline)) inline void block_tom(Voice& v, Work& w, i32* out) {
     clear(w.fin);
     w.fin[0] = v.s[0];
     v.s[0] = 0;
-    if (v.left && v.at < v.t + frames) {
-        for (unsigned i = 0; i < frames; ++i) {
-            if (v.left && v.t + i == v.at) {
-                v.samp = multiply(v.samp, v.samp_k);
-                const i32 a = v.left == 1 ? multiply(v.samp, v.k[2]) : v.samp;
-                strike(v, v.k[0], multiply(v.k[8], a));
-                click(v, multiply(v.k[1], a), v.k[3], v.k[4], v.k[5], v.k[6]);
-                w.fin[i] = multiply(U, a);
-                v.bend_env = a > v.bend_env ? a : v.bend_env;
-                v.sgap = multiply(v.sgap, v.sgap_k);
-                v.at += static_cast<u32>(v.sgap);
-                --v.left;
-            }
-            w.exc[i] = pulse(v);
-        }
-    } else {
-        excite(v, w.exc);
+    // the mallet's force, in stretches split at the strikes
+    for (u32 i = 0; i < frames;) {
+        const u32 end = next_strike(v, i);
+        if (i == 0 && end == frames) { excite(v, w.exc); break; }   // (the usual block: no strike in it)
+        pulse_run(v, w.exc + i, end - i);
+        if (end == frames) break;
+        i = end;
+        v.samp = multiply(v.samp, v.samp_k);
+        const i32 a = v.left == 1 ? multiply(v.samp, v.k[2]) : v.samp;
+        strike(v, v.k[0], multiply(v.k[8], a));
+        click(v, multiply(v.k[1], a), v.k[3], v.k[4], v.k[5], v.k[6]);
+        w.fin[i] = multiply(U, a);
+        v.bend_env = a > v.bend_env ? a : v.bend_env;
+        v.sgap = multiply(v.sgap, v.sgap_k);
+        v.at += static_cast<u32>(v.sgap);
+        --v.left;
+        pulse_run(v, w.exc + i, 1);   // the strike's own sample, then on (a strike is taken once a sample)
+        ++i;
     }
     v.waiting = v.left != 0;
     clear(out);
@@ -761,20 +762,21 @@ __attribute__((noinline)) inline void clank_out(Voice& v, const i32* body, const
     v.op[0].s = h;
 }
 __attribute__((noinline)) inline void block_clank(Voice& v, Work& w, i32* out) {
-    if (v.left && v.at < v.t + frames) {
-        for (unsigned i = 0; i < frames; ++i) {
-            if (v.left && v.t + i == v.at) {
-                v.samp = multiply(v.samp, v.samp_k);
-                strike(v, v.k[1], multiply(U, v.samp));
-                click(v, multiply(v.k[2], v.samp));
-                v.sgap = multiply(v.sgap, v.sgap_k);
-                v.at += static_cast<u32>(v.sgap > 64 ? v.sgap : 64);
-                --v.left;
-            }
-            w.exc[i] = pulse(v);
-        }
-    } else {
-        excite(v, w.exc);
+    // the mallet's force, in stretches split at the strikes
+    for (u32 i = 0; i < frames;) {
+        const u32 end = next_strike(v, i);
+        if (i == 0 && end == frames) { excite(v, w.exc); break; }   // (the usual block: no strike in it)
+        pulse_run(v, w.exc + i, end - i);
+        if (end == frames) break;
+        i = end;
+        v.samp = multiply(v.samp, v.samp_k);
+        strike(v, v.k[1], multiply(U, v.samp));
+        click(v, multiply(v.k[2], v.samp));
+        v.sgap = multiply(v.sgap, v.sgap_k);
+        v.at += static_cast<u32>(v.sgap > 64 ? v.sgap : 64);
+        --v.left;
+        pulse_run(v, w.exc + i, 1);   // the strike's own sample, then on (a strike is taken once a sample)
+        ++i;
     }
     clear(w.body);
     clear(w.aux);
@@ -958,22 +960,23 @@ __attribute__((noinline)) inline void block_bounce(Voice& v, Work& w, i32* out) 
     clear(w.fin);
     w.fin[0] = v.s[0];
     v.s[0] = 0;
-    if (v.left && v.at < v.t + frames) {
-        for (unsigned i = 0; i < frames; ++i) {
-            if (v.left && v.t + i == v.at) {
-                v.samp = multiply(v.samp, v.samp_k);
-                const i32 a = v.samp;
-                strike(v, v.k[0], multiply(U, a));
-                click(v, multiply(v.k[1], a));
-                w.fin[i] = multiply(U, a);
-                v.sgap = multiply(v.sgap, v.sgap_k);
-                v.at += static_cast<u32>(v.sgap);
-                if (v.sgap < static_cast<i32>(samples(L(0.004))) || v.samp < Q31(0.01)) v.left = 0;
-            }
-            w.exc[i] = pulse(v);
-        }
-    } else {
-        excite(v, w.exc);
+    // the mallet's force, in stretches split at the strikes
+    for (u32 i = 0; i < frames;) {
+        const u32 end = next_strike(v, i);
+        if (i == 0 && end == frames) { excite(v, w.exc); break; }   // (the usual block: no strike in it)
+        pulse_run(v, w.exc + i, end - i);
+        if (end == frames) break;
+        i = end;
+        v.samp = multiply(v.samp, v.samp_k);
+        const i32 a = v.samp;
+        strike(v, v.k[0], multiply(U, a));
+        click(v, multiply(v.k[1], a));
+        w.fin[i] = multiply(U, a);
+        v.sgap = multiply(v.sgap, v.sgap_k);
+        v.at += static_cast<u32>(v.sgap);
+        if (v.sgap < static_cast<i32>(samples(L(0.004))) || v.samp < Q31(0.01)) v.left = 0;
+        pulse_run(v, w.exc + i, 1);   // the strike's own sample, then on (a strike is taken once a sample)
+        ++i;
     }
     v.waiting = v.left != 0;
     clear(out);
@@ -1275,19 +1278,20 @@ __attribute__((noinline)) inline void block_shake(Voice& v, Work& w, i32* out) {
     clear(w.fin);
     w.fin[0] = v.s[0];
     v.s[0] = 0;
-    if (v.left && v.at < v.t + frames) {
-        for (unsigned i = 0; i < frames; ++i) {
-            if (v.left && v.t + i == v.at) {
-                v.u[4] ^= 1u;
-                const i32 a = v.u[4] ? v.samp : -v.samp;
-                strike(v, v.k[2], multiply(U, a));
-                w.fin[i] = multiply(U, a);
-                shake_jolt(v);
-            }
-            w.exc[i] = pulse(v);
-        }
-    } else {
-        excite(v, w.exc);
+    // the mallet's force, in stretches split at the strikes
+    for (u32 i = 0; i < frames;) {
+        const u32 end = next_strike(v, i);
+        if (i == 0 && end == frames) { excite(v, w.exc); break; }   // (the usual block: no strike in it)
+        pulse_run(v, w.exc + i, end - i);
+        if (end == frames) break;
+        i = end;
+        v.u[4] ^= 1u;
+        const i32 a = v.u[4] ? v.samp : -v.samp;
+        strike(v, v.k[2], multiply(U, a));
+        w.fin[i] = multiply(U, a);
+        shake_jolt(v);
+        pulse_run(v, w.exc + i, 1);   // the strike's own sample, then on (a strike is taken once a sample)
+        ++i;
     }
     clear(w.body);
     clear(w.aux);

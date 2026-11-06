@@ -537,26 +537,18 @@ inline void strike(Voice& v, i32 ltc, i32 amp) {
     // The peak is 2 area / Tc: area * inc / 2^31.
     v.pamp = multiply(amp, static_cast<i32>(v.pinc));
 }
-inline i32 pulse(Voice& v) {
-    if (!v.pinc) return 0;
-    const i32 h = (one >> 1) - (sine(v.pphase + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
-    const u32 next = v.pphase + v.pinc;
-    if (next < v.pphase) v.pinc = 0;
-    v.pphase = next;
-    return multiply(v.pamp, h);
-}
 // The mallet's force over a block: only while it touches the sheet.
 // (Without a branch a sample: live is -1 while it touches, 0 from the sample
-// after its phase wraps, which also stops the phase.)
-__attribute__((noinline)) inline void excite(Voice& v, i32* x) {
+// after its phase wraps, which also stops the phase.) Over count samples.
+__attribute__((noinline)) inline void pulse_run(Voice& v, i32* x, u32 count) {
     u32 inc = v.pinc, phase = v.pphase;
     if (!inc) {
-        for (u32 n = 0; n < frames; ++n) *x++ = 0;
+        for (u32 n = 0; n < count; ++n) *x++ = 0;
         return;
     }
     const i32 amp = v.pamp;
     i32 live = -1;
-    for (u32 n = 0; n < frames; ++n) {
+    for (u32 n = 0; n < count; ++n) {
         const i32 h = (one >> 1) - (sine(phase + 0x40000000u) >> 1);   // (1 - cos) / 2, never past i32
         const u32 next = phase + inc;
         *x++ = multiply(amp, h) & live;
@@ -567,6 +559,18 @@ __attribute__((noinline)) inline void excite(Voice& v, i32* x) {
     }
     v.pinc = inc;
     v.pphase = phase;
+}
+__attribute__((noinline)) inline void silence(i32* x) {
+    for (u32 n = 0; n < frames; ++n) *x++ = 0;
+}
+inline void excite(Voice& v, i32* x) {
+    if (v.pinc) pulse_run(v, x, frames);
+    else silence(x);
+}
+// The sample of the block at which the next strike lands (frames if none in
+// it), from sample i on.
+inline u32 next_strike(const Voice& v, u32 i) {
+    return v.left && v.at >= v.t + i && v.at < v.t + frames ? v.at - v.t : frames;
 }
 // A hard beater's click: 2.5 ms of noise, high-passed at 2.5 kHz, falling with 0.6 ms.
 // lhp moves its high-pass; llp, if given, low-passes it twice too (a felt
