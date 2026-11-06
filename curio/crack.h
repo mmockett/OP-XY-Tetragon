@@ -1028,57 +1028,154 @@ struct Cork {
         fizz.k = decay(static_cast<u32>(120000 + sc(400000, c[2])));
     }
     bool waiting() const { return !popped || glug < glugs; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            i32 y = 0;
-            if (t < pre) {
-                ph_sq += sq_inc0 + sq_step * t;
-                sq_att = mul(sq_att, sq_attk);
-                const i32 s = mul(sq_amp - sq_att, sine(ph_sq));
-                const i32 sq = (s < 0 ? -mul(sq_amp, F(0.3)) : mul(sq_amp, F(0.3))) + s;
-                sq_lp += mul(sq_a, sq - sq_lp);
-                y += sq_lp;
-            } else if (!popped) {
-                popped = true;
-                pop_fall = full;
-                const i32 g = U(0.6) + sc(U(0.6), c[1]);
-                pop.hit(g, pop_k0, decay(600));
-                body.hit(sc(U(0.5), c[3]), decay(static_cast<u32>(mul(18000 + sc(60000, c[3]), F(0.75)) << 1)), decay(600));
-                thock.v = U(0.1) + sc(U(2.4), c[4]);
-            }
-            if (popped) {
-                pop_fall = mul(pop_fall, popk_fall);
-                pop.ph += pop.inc - static_cast<u32>(mul(static_cast<i32>(pop.inc), mul(F(0.3), pop_fall)));
-                y += mul(pop.level(), sine(pop.ph));
-                body.ph += body.inc;
-                y += mul(body.level(), sine(body.ph));
-                if (thock.v > 4096) {
-                    th_lp += mul(th_a, lev(noise(rng), thock.step()) - th_lp);
-                    y += th_lp;
-                }
-            }
-            if (glug < glugs && t == glug_at) {
-                gl.v = gl.a = 0;
-                gl.ph = 0;
-                gl.hit(gl_amp, decay(20000), decay(400));
-                gl_rise = 0;
-                ++glug;
-                glug_at += samples(70000);
-            }
-            if (gl.v > 4096) {
-                gl_rise += 190;   // (1 + 8 t): 8 / 44100 each sample, Q20
-                gl.ph += gl_inc + static_cast<u32>(mul(static_cast<i32>(gl_inc), gl_rise << 11));
-                y += mul(gl.level(), sine(gl.ph));
-            }
-            if (fizz.v > 4096) {
-                noise(rng);
-                const i32 click = rng < fizz_p ? noise(rng) : 0;
-                const i32 r = ring(fz, fzk, mul(click, fzk.g));
-                fz_hp += mul(fz_a, r - fz_hp);
-                y += lev(r - fz_hp, fizz.step());
-            }
-            out[i] = y;
+    // The block in passes, each with its state in registers, split at the
+    // pop and the glugs; the noise is drawn in the same order as ever.
+    // The squeak as the cork turns: 2.2 to 3.7 kHz over the twist.
+    __attribute__((noinline)) void squeak_pass(i32* y, u32 n) {
+        u32 ph = ph_sq, tt = t;
+        i32 att = sq_att, lp = sq_lp;
+        const u32 i0 = sq_inc0, st = sq_step;
+        const i32 ak = sq_attk, amp = sq_amp, a = sq_a, edge = mul(sq_amp, F(0.3));
+        for (u32 j = 0; j < n; ++j, ++tt) {
+            ph += i0 + st * tt;
+            att = mul(att, ak);
+            const i32 s = mul(amp - att, sine(ph));
+            const i32 sq = (s < 0 ? -edge : edge) + s;
+            lp += mul(a, sq - lp);
+            y[j] += lp;
         }
+        ph_sq = ph;
+        sq_att = att;
+        sq_lp = lp;
+    }
+    // The neck's pop, bent up from 0.7 of itself.
+    __attribute__((noinline)) void pop_pass(i32* y, u32 n) {
+        u32 ph = pop.ph;
+        const u32 in = pop.inc;
+        i32 v = pop.v, a = pop.a, fall = pop_fall;
+        const i32 vk = pop.vk, ak = pop.ak, fk = popk_fall;
+        for (u32 j = 0; j < n; ++j) {
+            fall = mul(fall, fk);
+            ph += in - static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.3), fall)));
+            v = mul(v, vk);
+            if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+            y[j] += mul(v - a, sine(ph));
+        }
+        pop.ph = ph;
+        pop.v = v;
+        pop.a = a;
+        pop_fall = fall;
+    }
+    // The thock of the cork, and the fizz's clicks in draw order.
+    template <bool thocking, bool fizzing> __attribute__((noinline)) void noise_pass(i32* y, i32* cb, u32 n) {
+        i32 tv = thock.v, lp = th_lp, fv = fizz.v;
+        const i32 tk = thock.k, a = th_a, fk = fizz.k;
+        const u32 p = fizz_p;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (thocking && tv > 4096) {
+                tv = mul(tv, tk);
+                lp += mul(a, lev(noise(r), tv) - lp);
+                y[j] += lp;
+            }
+            if (fizzing && fv > 4096) {
+                fv = mul(fv, fk);
+                noise(r);
+                cb[j] = r < p ? noise(r) : 0;
+            }
+        }
+        thock.v = tv;
+        th_lp = lp;
+        rng = r;
+    }
+    // A glug, rising (1 + 8 t).
+    __attribute__((noinline)) void glug_pass(i32* y, u32 n) {
+        u32 ph = gl.ph;
+        const u32 in = gl_inc;
+        i32 v = gl.v, a = gl.a, rise = gl_rise;
+        const i32 vk = gl.vk, ak = gl.ak;
+        for (u32 j = 0; j < n; ++j) {
+            if (v > 4096) {
+                rise += 190;   // 8 / 44100 each sample, Q20
+                ph += in + static_cast<u32>(mul(static_cast<i32>(in), rise << 11));
+                v = mul(v, vk);
+                if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+                y[j] += mul(v - a, sine(ph));
+            }
+        }
+        gl.ph = ph;
+        gl.v = v;
+        gl.a = a;
+        gl_rise = rise;
+    }
+    // The fizz: sparse clicks through a bright resonance.
+    __attribute__((noinline)) void fizz_pass(i32* y, const i32* cb, u32 n) {
+        i32 fv = fizz.v, y1 = fz.y1, y2 = fz.y2, hp = fz_hp;
+        const i32 fk = fizz.k, c = fzk.c, r2 = fzk.r2, g = fzk.g, a = fz_a;
+        for (u32 j = 0; j < n; ++j) {
+            if (fv > 4096) {
+                const i32 o = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(cb[j], g);
+                y2 = y1;
+                y1 = o;
+                hp += mul(a, o - hp);
+                fv = mul(fv, fk);
+                y[j] += lev(o - hp, fv);
+            }
+        }
+        fizz.v = fv;
+        fz.y1 = y1;
+        fz.y2 = y2;
+        fz_hp = hp;
+    }
+    // n samples between events.
+    __attribute__((noinline)) void span(i32* y, u32 n) {
+        i32 cb[frames];
+        for (u32 j = 0; j < n; ++j) y[j] = 0;
+        if (t < pre) squeak_pass(y, n);
+        if (popped) {
+            pop_pass(y, n);
+            tone_at(body, y, n);
+        }
+        const bool th = popped && thock.v > 4096, fz_on = fizz.v > 4096;
+        if (th && fz_on) noise_pass<true, true>(y, cb, n);
+        else if (th) noise_pass<true, false>(y, cb, n);
+        else if (fz_on) noise_pass<false, true>(y, cb, n);
+        if (gl.v > 4096) glug_pass(y, n);
+        if (fz_on) fizz_pass(y, cb, n);
+    }
+    // The pop, or a glug, at t.
+    __attribute__((noinline)) void events() {
+        if (t >= pre && !popped) {
+            popped = true;
+            pop_fall = full;
+            const i32 g = U(0.6) + sc(U(0.6), c[1]);
+            pop.hit(g, pop_k0, decay(600));
+            body.hit(sc(U(0.5), c[3]), decay(static_cast<u32>(mul(18000 + sc(60000, c[3]), F(0.75)) << 1)), decay(600));
+            thock.v = U(0.1) + sc(U(2.4), c[4]);
+        }
+        if (glug < glugs && t == glug_at) {
+            gl.v = gl.a = 0;
+            gl.ph = 0;
+            gl.hit(gl_amp, decay(20000), decay(400));
+            gl_rise = 0;
+            ++glug;
+            glug_at += samples(70000);
+        }
+    }
+    void run(i32* out) {
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            t = t0 + i;
+            events();
+            // The next event in this block: the pop, or a glug.
+            u32 e = frames;
+            if (!popped) { const u32 d = pre - t0; if (d < e) e = d; }
+            if (glug < glugs) { const u32 d = glug_at - t0; if (d < e && d > i) e = d; }
+            span(out + i, e - i);
+            i = e;
+            if (i >= frames) break;
+        }
+        t = t0 + frames;
     }
 };
 }
