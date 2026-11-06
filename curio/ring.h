@@ -342,11 +342,14 @@ struct Chalk {
     i32 chatter;
     Env dust, fall;
     i32 drift;
+    u32 grng, drng;   // the grit's and the dust's own noise
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
+        grng = (x.seed * 2654435761u) | 1u;
+        drng = (x.seed * 2246822519u + 0x9e3779b9u) | 1u;
         t = 0;
         ph = 0;
         const i32 lp0 = hz(500) + sc(C(2.5), c[0]) + tune;
@@ -430,34 +433,33 @@ struct Chalk {
         fall.v = fv;
         glide = g;
     }
-    // The grit's and the dust's noise in draw order.
-    __attribute__((noinline)) void noise_pass(i32* gb, i32* db, u32 sq) {
-        u32 r = rng, tt = t;
-        i32 dv = dust.v;
-        const i32 dk = dust.k;
-        const u32 l = len, l7 = len * 7;
-        const bool grit = grit_amp != 0;
-        for (u32 j = 0; j < frames; ++j, ++tt) {
-            if (grit && j < sq) gb[j] = noise(r);
-            if (dv > 4096 && tt * 10 > l7) {
-                db[j] = noise(r);
-                if (tt > l) dv = mul(dv, dk);
-            }
-        }
-        rng = r;
-    }
-    __attribute__((noinline)) void grit_pass(i32* y, const i32* gb, const i32* eb, u32 sq) {
+    // The grit: its own noise through a 4 kHz band, following the stroke.
+    __attribute__((noinline)) void grit_pass(i32* y, const i32* eb, u32 sq) {
         i32 y1 = gritr.y1, y2 = gritr.y2, x1 = gritr.x1, x2 = gritr.x2;
+        u32 r = grng;
         const i32 c = gritk.c, r2 = gritk.r2, b = gritk.b, g = grit_gain, amp = grit_amp;
-        for (u32 j = 0; j < sq; ++j) {
-            const i32 in = mul(gb[j], b);
+        if (sq & 1) {
+            const i32 in = mul(noise(r), b);
             const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
             x2 = x1;
             x1 = in;
             y2 = y1;
             y1 = o;
-            y[j] += lev(lev(gn(o, g), eb[j]), amp);
+            *y++ += lev(lev(gn(o, g), *eb++), amp);
         }
+        for (u32 j = 0; j < (sq >> 1); ++j) {   // two samples a turn: the states trade places
+            const i32 i0 = mul(noise(r), b);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+            x2 = i0;
+            y[0] += lev(lev(gn(y2, g), eb[0]), amp);
+            const i32 i1 = mul(noise(r), b);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+            x1 = i1;
+            y[1] += lev(lev(gn(y1, g), eb[1]), amp);
+            y += 2;
+            eb += 2;
+        }
+        grng = r;
         gritr.y1 = y1;
         gritr.y2 = y2;
         gritr.x1 = x1;
@@ -467,45 +469,85 @@ struct Chalk {
     __attribute__((noinline)) void slate_pass(i32* y, const i32* wb, const i32* eb, u32 sq) {
         i32 y1 = slate.y1, y2 = slate.y2;
         const i32 c = slatek.c, r2 = slatek.r2, g = slatek.g;
-        for (u32 j = 0; j < sq; ++j) {
-            const i32 s = lev(wb[j], eb[j]);
+        if (sq & 1) {
+            const i32 s = lev(*wb++, *eb++);
             const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(s, g);
             y2 = y1;
             y1 = o;
-            y[j] += (s >> 1) + mul(o, F(0.9)) * 2;
+            *y++ += (s >> 1) + mul(o, F(0.9)) * 2;
         }
-        for (u32 j = sq; j < frames; ++j) {
-            const i32 o = (mul(c, y1) - mul(r2, y2)) << 1;
+        for (u32 j = 0; j < (sq >> 1); ++j) {   // two samples a turn: the states trade places
+            const i32 s0 = lev(wb[0], eb[0]);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + mul(s0, g);
+            y[0] += (s0 >> 1) + mul(y2, F(0.9)) * 2;
+            const i32 s1 = lev(wb[1], eb[1]);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + mul(s1, g);
+            y[1] += (s1 >> 1) + mul(y1, F(0.9)) * 2;
+            y += 2;
+            wb += 2;
+            eb += 2;
+        }
+        const u32 rest = frames - sq;
+        if (rest & 1) {
+            const i32 o = twice(mul(c, y1) - mul(r2, y2));
             y2 = y1;
             y1 = o;
-            y[j] += mul(o, F(0.9)) * 2;
+            *y++ += mul(o, F(0.9)) * 2;
+        }
+        for (u32 j = 0; j < (rest >> 1); ++j) {
+            y2 = twice(mul(c, y1) - mul(r2, y2));
+            y[0] += mul(y2, F(0.9)) * 2;
+            y1 = twice(mul(c, y2) - mul(r2, y1));
+            y[1] += mul(y1, F(0.9)) * 2;
+            y += 2;
         }
         slate.y1 = y1;
         slate.y2 = y2;
     }
-    // Chalk dust falling from the slate, late in the stroke.
-    __attribute__((noinline)) void dust_pass(i32* y, const i32* db) {
+    // Chalk dust falling from the slate, from 0.7 of the stroke: its own
+    // noise through a 7 kHz band, fading after the stroke ends.
+    template <bool fading> __attribute__((always_inline)) void dust_run(i32* y, u32 n) {
         i32 dv = dust.v, y1 = dustr.y1, y2 = dustr.y2, x1 = dustr.x1, x2 = dustr.x2;
         const i32 dk = dust.k, c = dustk.c, r2 = dustk.r2, b = dustk.b, g = dust_gain;
-        const u32 l = len, l7 = len * 7;
-        u32 tt = t;
-        for (u32 j = 0; j < frames; ++j, ++tt) {
-            if (dv > 4096 && tt * 10 > l7) {
-                const i32 in = mul(db[j], b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                if (tt > l) dv = mul(dv, dk);
-                y[j] += lev(gn(o, g), dv);
-            }
+        u32 r = drng;
+        if (dv <= 4096) return;   // and so it stays (checked once a run: past it the band is far under hearing)
+        if (n & 1) {
+            const i32 in = mul(noise(r), b);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            if (fading) dv = mul(dv, dk);
+            *y++ += lev(gn(o, g), dv);
         }
+        for (u32 j = 0; j < (n >> 1); ++j) {   // two samples a turn: the states trade places
+            const i32 i0 = mul(noise(r), b);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+            x2 = i0;
+            if (fading) dv = mul(dv, dk);
+            y[0] += lev(gn(y2, g), dv);
+            const i32 i1 = mul(noise(r), b);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+            x1 = i1;
+            if (fading) dv = mul(dv, dk);
+            y[1] += lev(gn(y1, g), dv);
+            y += 2;
+        }
+        drng = r;
         dust.v = dv;
         dustr.y1 = y1;
         dustr.y2 = y2;
         dustr.x1 = x1;
         dustr.x2 = x2;
+    }
+    __attribute__((noinline)) void dust_pass(i32* y) {
+        const u32 d0 = len * 7 / 10 + 1, l1 = len + 1;   // the first samples past 0.7 of the stroke and past its end
+        const u32 j0 = d0 > t ? (d0 - t < frames ? d0 - t : frames) : 0;
+        u32 j1 = l1 > t ? (l1 - t < frames ? l1 - t : frames) : 0;
+        if (j1 < j0) j1 = j0;
+        if (j1 > j0) dust_run<false>(y + j0, j1 - j0);
+        if (frames > j1) dust_run<true>(y + j1, frames - j1);
     }
     __attribute__((noinline)) void out_pass(i32* y) {
         i32 lp = out_lp;
@@ -528,16 +570,15 @@ struct Chalk {
         const u32 fade_step = 0x7fffffffu / fade;   // the fade's slope, once a block
         const u32 end = len + fade;
         const u32 sq = t < end ? (end - t < frames ? end - t : frames) : 0;
-        i32 wb[frames], eb[frames], gb[frames], db[frames];
+        i32 wb[frames], eb[frames];
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
         if (sq) {
             wave_pass(wb, sq, f, sc_);
             env_pass(eb, sq, gate, fade_step);
         }
-        noise_pass(gb, db, sq);
-        if (grit_amp && sq) grit_pass(out, gb, eb, sq);
+        if (grit_amp && sq) grit_pass(out, eb, sq);
         slate_pass(out, wb, eb, sq);
-        if (dust.v > 4096) dust_pass(out, db);
+        if (dust.v > 4096) dust_pass(out);
         out_pass(out);
         t += frames;
     }
