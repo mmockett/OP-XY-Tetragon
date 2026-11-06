@@ -414,6 +414,18 @@ inline void field_clip(Voice& v) { v.floop |= 2u; }
 // A field whose sound is written at half rate, as it is (32 values a block,
 // replacing what was there), for its model to filter and bring up itself.
 inline void field_raw(Voice& v) { v.floop |= 8u; }
+// A half-rate signal added to a block at the full rate: each sample, and
+// between two their mean (prev: the last of the block before).
+__attribute__((noinline)) inline i32 up_add(const i32* r, i32* out, i32 prev) {
+    for (u32 n = 0; n < half; ++n) {
+        const i32 x = *r++;
+        out[0] += (prev + x) >> 1;
+        out[1] += x;
+        prev = x;
+        out += 2;
+    }
+    return prev;
+}
 // A small field: two of the four lines (the second and the fourth, so the
 // spread stays), for a sheet whose high modes are a faint shimmer over its
 // body (a kick's, a tom's, a bearing's, the thunder's): half the work. Its
@@ -612,8 +624,13 @@ __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i3
     if (small) v.fprev = fed ? field_mix2<true>(r, x, out, v.buf, w & mask, v.fg, level, v.fprev)
                              : field_mix2<false>(r, x, out, v.buf, w & mask, v.fg, level, v.fprev);
     else if (v.floop & 8u) {
-        if (fed) field_mix<true, false, true>(r, x, out, v.buf, w & mask, g, level, 0);
-        else field_mix<false, false, true>(r, x, out, v.buf, w & mask, g, level, 0);
+        if (v.floop & 2u) {
+            if (fed) field_mix<true, true, true>(r, x, out, v.buf, w & mask, g, level, 0);
+            else field_mix<false, true, true>(r, x, out, v.buf, w & mask, g, level, 0);
+        } else {
+            if (fed) field_mix<true, false, true>(r, x, out, v.buf, w & mask, g, level, 0);
+            else field_mix<false, false, true>(r, x, out, v.buf, w & mask, g, level, 0);
+        }
     } else if (v.floop & 2u) v.fprev = fed ? field_mix<true, true>(r, x, out, v.buf, w & mask, g, level, v.fprev)
                                     : field_mix<false, true>(r, x, out, v.buf, w & mask, g, level, v.fprev);
     else v.fprev = fed ? field_mix<true, false>(r, x, out, v.buf, w & mask, g, level, v.fprev)

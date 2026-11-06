@@ -62,9 +62,9 @@ __attribute__((noinline)) inline void lift_into(const i32* x, i32* y, i32& s_, i
 __attribute__((noinline)) inline void ramped_into(const i32* x, i32* y, i32 e, i32 es) {
     for (u32 n = 0; n < frames; ++n, e += es) *y++ = multiply(*x++, e);
 }
-// out += (x level) << 1.
-__attribute__((noinline)) inline void add_level(const i32* x, i32* out, i32 level) {
-    for (u32 n = 0; n < frames; ++n) *out++ += multiply(*x++, level) << 1;
+// x (half rate) times level, x4.
+__attribute__((noinline)) inline void scale_half(i32* x, i32 level) {
+    for (u32 n = 0; n < half; ++n) { *x = multiply(*x, level) << 2; ++x; }
 }
 // out += 2 x e, e stepping from e by step a sample.
 __attribute__((noinline)) inline void add_ramped(const i32* x, i32* out, i32 e, i32 step) {
@@ -189,10 +189,13 @@ inline void setup_pop(Voice& v, const i32* c, i32 tune) {
     // the sheet's ring under the snaps (METAL)
     const i32 lt = ltail + octave > L(0.1) ? ltail + octave : L(0.1);
     setup_field(v, lband - octave, Q16(0.8), lt + log16(mix(Q16(1.0), Q16(4.0) - 1, c[5]) >> 2) + 2 * octave, Q16(0.6), 2);
+    field_raw(v);
+    v.s[2] = 0;   // the ring's last half-rate sample
     v.flevel = q31(power16(c[5], Q16(1.5)));   // METAL^1.5: a hint of ring low down, a long metal tail at the top
     if (!c[5]) v.fon = 0;   // no METAL: no ring to run
-    v.k[8] = onepole_k(L(400));
-    v.k[9] = onepole_k(lband + L(3) < L(14000) ? lband + L(3) : L(14000));
+    // the ring's filters, at half rate (its field hands it its sound there)
+    v.k[8] = onepole_k(L(400) + octave);
+    v.k[9] = onepole_k((lband + L(3) < L(14000) ? lband + L(3) : L(14000)) + octave);
     v.k[10] = onepole_k(L(150));
     v.k[11] = multiply(q31(sq16(hard)), Q31(0.7));   // a hard snap's click
     setup_chain(v, Q16(0.9), Q16(0.6), L(0.06), L(2500), L(6000), c[6]);
@@ -229,24 +232,25 @@ __attribute__((noinline)) inline void pop_dry(Voice& v, const i32* x, i32* out) 
     }
     v.sv[0].lp = al; v.sv[0].bp = ab; v.sv[1].lp = bl; v.sv[1].bp = bb;
 }
-// the ring high-passed twice at 400 Hz and low-passed over the band, at its level
-__attribute__((noinline)) inline void pop_ring(Voice& v, const i32* x, i32* out) {
+// the ring (the field's sound at half rate, as it is) high-passed twice at
+// 400 Hz and low-passed over the band (corners set for the half rate), at its
+// level, at the level the full rate's held samples gave it
+__attribute__((noinline)) inline void pop_ring(Voice& v, i32* y) {
     const i32 k8 = v.k[8], k9 = v.k[9], lv = v.flevel;
     i32 h0 = v.op[0].s, h1 = v.op[4].s, l0 = v.op[1].s;
-    for (u32 n = 0; n < frames; ++n) {
-        const i32 xi = *x++;
+    for (u32 n = 0; n < half; ++n) {
+        const i32 xi = *y;
         h0 += multiply(xi - h0, k8);
         const i32 a = xi - h0;
         h1 += multiply(a - h1, k8);
         l0 += multiply(a - h1 - l0, k9);
-        *out++ += multiply(l0, lv) << 1;
+        *y++ = multiply(l0, lv) << 2;
     }
     v.op[0].s = h0; v.op[4].s = h1; v.op[1].s = l0;
 }
 __attribute__((noinline)) inline void block_pop(Voice& v, Work& w, i32* out) {
     i32 burst = v.s[0], tail = v.s[1];
     clear(w.fin);
-    clear(w.aux);
     const bool pops = v.left && v.at < v.t + frames;
     if (pops || burst > (1 << 14) || tail > (1 << 14)) {
         u32 seed = v.cseed ? v.cseed : 1u;
@@ -283,8 +287,11 @@ __attribute__((noinline)) inline void block_pop(Voice& v, Work& w, i32* out) {
     v.waiting = v.left != 0;
     pop_dry(v, w.exc, out);
     // the sheet's ring under them (METAL), band-limited
-    run_field(v, w.exc, w.aux, Q31(0.5));
-    if (v.fon) pop_ring(v, w.aux, out);
+    run_field(v, w.exc, w.aux, Q31(0.5));   // (at half rate: 32 values)
+    if (v.fon) {
+        pop_ring(v, w.aux);
+        v.s[2] = up_add(w.aux, out, v.s[2]);
+    }
     if (v.c_amount) {
         lift_into(w.exc, w.body, v.op[2].s, v.k[10], 2);   // the sheet's lift
         run_chain(v, w.body, out);
@@ -773,9 +780,11 @@ inline void setup_clank(Voice& v, const i32* c, i32 tune) {
         m.lp = m.bp = 0;
     }
     setup_field(v, lf + L(0.35), Q16(0.9), mix(L(0.2), L(1.5), c[5]), Q16(0.6));
+    field_raw(v);
+    v.s[0] = 0;   // the ring's last half-rate sample
     v.flevel = multiply(Q31(0.6), q31(c[5]));
     if (!c[5]) v.fon = 0;   // no METAL: no ring to run
-    v.k[0] = onepole_k(L(300));
+    v.k[0] = onepole_k(L(300) + octave);   // the ring's high-pass, at half rate
     v.env[0].set(one, block_decay(L(0.01)));
     v.k[1] = beater_contact(c[2], lf);   // a felt bounces off the bar within a cycle of its note
     v.k[2] = (Q16(0.2) + mul16(beater_click(c[2]), Q16(0.5))) << 15;
@@ -791,16 +800,25 @@ inline void setup_clank(Voice& v, const i32* c, i32 tune) {
     v.waiting = v.left != 0;
     strike(v, v.k[1], U);
 }
-// the bar, and the sheet's ring high-passed at 300 Hz, at its level
-__attribute__((noinline)) inline void clank_out(Voice& v, const i32* body, const i32* x, i32* out) {
+// the bar, and the sheet's ring (its field's sound at half rate, as it is)
+// high-passed at 300 Hz (set for the half rate) at its level, brought back
+// to the full rate (each sample, and between two their mean), at the level
+// the full rate's held samples gave it
+__attribute__((noinline)) inline void clank_out(Voice& v, const i32* body, const i32* y, i32* out) {
     const i32 k = v.k[0], lv = v.flevel;
-    i32 h = v.op[0].s;
-    for (u32 n = 0; n < frames; ++n) {
-        const i32 xi = *x++;
+    i32 h = v.op[0].s, prev = v.s[0];
+    for (u32 n = 0; n < half; ++n) {
+        const i32 xi = *y++;
         h += multiply(xi - h, k);
-        *out++ = *body++ + multiply(xi - h, lv);
+        const i32 r = multiply(xi - h, lv) << 1;
+        out[0] = body[0] + ((prev + r) >> 1);
+        out[1] = body[1] + r;
+        prev = r;
+        out += 2;
+        body += 2;
     }
     v.op[0].s = h;
+    v.s[0] = prev;
 }
 __attribute__((noinline)) inline void block_clank(Voice& v, Work& w, i32* out) {
     // the mallet's force, in stretches split at the strikes
@@ -820,13 +838,12 @@ __attribute__((noinline)) inline void block_clank(Voice& v, Work& w, i32* out) {
         ++i;
     }
     clear(w.body);
-    clear(w.aux);
     v.waiting = v.left != 0;
     run_modes(v, w.exc, w.body);
     i32 e;
     const i32 es = v.env[0].step(e);
     ramped_into(w.body, w.fin, e, es);
-    run_field(v, w.fin, w.aux, Q31(0.5));
+    run_field(v, w.fin, w.aux, Q31(0.5));   // (at half rate: 32 values)
     if (v.fon) clank_out(v, w.body, w.aux, out);
     else copy(out, w.body);
     add_click(v, out);
@@ -860,9 +877,11 @@ inline void setup_grit(Voice& v, const i32* c, i32 tune) {
     v.u[2] = v.u[3] = 0;
     // METAL: the sheet's ring under the grains, ringing longer as it rises
     setup_field(v, lband + L(0.3), Q16(0.6), mix(L(0.7), L(0.04), c[1]) + mul16(c[5], Q16(1.6)), Q16(0.8));
+    field_raw(v);
+    v.s[2] = 0;   // the ring's last half-rate sample
     v.flevel = multiply(Q31(0.85), q31(c[5]));
     if (!c[5]) v.fon = 0;   // no METAL: no ring to run
-    v.k[8] = onepole_k(L(1500));
+    v.k[8] = onepole_k(L(1500) + octave);   // the ring's high-pass, at half rate
     setup_chain(v, Q16(0.9), Q16(0.8), L(0.05), L(1800), L(6000), c[6]);
     v.waiting = 1;
 }
@@ -893,14 +912,16 @@ __attribute__((noinline)) inline void grit_band(Svf& sv, i32 f, i32 q, i32* out,
     sv.lp = lp;
     sv.bp = bp;
 }
-// out += (the ring high-passed at 1.5 kHz) at its level.
-__attribute__((noinline)) inline void grit_ring(Voice& v, const i32* x, i32* out) {
+// The ring (the field's sound at half rate, as it is) high-passed at
+// 1.5 kHz (set for the half rate), at its level, at the level the full
+// rate's held samples gave it.
+__attribute__((noinline)) inline void grit_ring(Voice& v, i32* y) {
     const i32 k = v.k[8], lv = v.flevel;
     i32 h = v.op[1].s;
-    for (u32 n = 0; n < frames; ++n) {
-        const i32 xi = *x++;
+    for (u32 n = 0; n < half; ++n) {
+        const i32 xi = *y;
         h += multiply(xi - h, k);
-        *out++ += multiply(xi - h, lv) << 1;
+        *y++ = multiply(xi - h, lv) << 2;
     }
     v.op[1].s = h;
 }
@@ -965,9 +986,11 @@ __attribute__((noinline)) inline void block_grit(Voice& v, Work& w, i32* out) {
             if (g < grains) grit_grain(v, grain[g].which, grain[g].r, grain[g].level);
         }
     }
-    clear(w.aux);
-    run_field(v, w.fin, w.aux, Q31(0.5));
-    grit_ring(v, w.aux, out);
+    run_field(v, w.fin, w.aux, Q31(0.5));   // (at half rate: 32 values)
+    if (v.fon) {
+        grit_ring(v, w.aux);
+        v.s[2] = up_add(w.aux, out, v.s[2]);
+    }
     // the chain feels the pour (body: e >> 4, a ramp: its larger end)
     if (v.c_amount) chain_most(v, chain_reach(chain_reach(0, e0 >> 4), (e0 + static_cast<i32>(frames - 1) * es) >> 4), out);
 }
@@ -1055,6 +1078,8 @@ inline void setup_zap(Voice& v, const i32* c, i32 tune) {
     v.s[0] = v.s[1] = v.s[2] = v.s[3] = v.s[4] = v.s[5] = 0;   // phases
     setup_field(v, v.k[0] - 2 * octave, Q16(0.7), log16(mix(Q16(0.15), Q16(1.2), c[5])), Q16(0.6));
     field_clip(v);   // the chirp drives it into its rings' ceiling, a part of its ring
+    field_raw(v);
+    v.s[6] = 0;      // the ring's last half-rate sample
     v.flevel = multiply(Q31(0.55), q31(c[5]));
     if (!c[5]) v.fon = 0;   // no METAL: no ring to run
     v.env[0].set(one, block_decay(L(0.02)));
@@ -1116,10 +1141,13 @@ __attribute__((noinline)) inline void block_zap(Voice& v, Work& w, i32* out) {
     i32 g;
     const i32 gs = v.env[0].step(g);
     ramped_into(out, w.fin, g, gs);
-    clear(w.aux);
     copy(w.body, out);
-    run_field(v, w.fin, w.aux, Q31(0.5));
-    add_level(w.aux, out, v.flevel);
+    run_field(v, w.fin, w.aux, Q31(0.5));   // (at half rate: 32 values)
+    if (v.fon) {
+        // at its level, at the level the full rate's held samples gave it
+        scale_half(w.aux, v.flevel);
+        v.s[6] = up_add(w.aux, out, v.s[6]);
+    }
     run_chain(v, w.body, out);
 }
 
