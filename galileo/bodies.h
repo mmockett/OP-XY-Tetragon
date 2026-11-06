@@ -332,9 +332,11 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         u32 w0, w1;
         widths(GQ31(0.8), w0, w1);
         const i32 lbell = lb + OCT(2.1);
+        // The bell's ping and its overtone two octaves up. (A third, 2.76 octaves
+        // up at 10-20 kHz, reached the ear 35 dB under the ping through the
+        // stick's contact: left out.)
         tune(b.mode[0], lbell, dsp::decay(tau + OCT(0.7)), 32767, w0, w1);
         tune(b.mode[1], lbell + OCT(2.0), dsp::decay(tau + OCT(0.45)), GQ15(0.4), w0, w1);
-        tune(b.mode[2], lbell + OCT(2.76), dsp::decay(tau + OCT(0.3)), GQ15(0.2), w0, w1);
         b.g[0] = multiply(GQ28(0.6), p3);
         b.g[1] = multiply(GQ28(0.55), p2);
         prepare_click(b.click[0], 300, 5000);
@@ -572,7 +574,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     case ride:
         b.env[0].strike(dsp::power(v15, GQ16(1.2)));
         b.env[1].strike(dsp::power(v15, GQ16(1.2)));
-        strike_modes(b, 3, v15, GQ16(1.1), vt);
+        strike_modes(b, 2, v15, GQ16(1.1), vt);
         b.click[0].strike(vt);
         break;
     case bell: {
@@ -601,7 +603,16 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
             tune(b.mode[set], lf, dsp::decay(b.k[2]), 32767, w0, w1);
             tune(b.mode[set + 1], lf + OCT(2.756), dsp::decay(b.k[2] + OCT(0.3)),
                  dsp::m15(GQ15(0.32), GQ15(0.3) + (h >> 16)), w0, w1);
-            tune(b.mode[set + 2], lf + OCT(5.404), dsp::decay(b.k[2] + OCT(0.12)), dsp::m15(GQ15(0.15), h >> 16), w0, w1);
+            // The tine's glint, 5.4 octaves up: over 0.45 of the rate it would only
+            // sit at the cap (and its contact leaves it 30 dB under): left out there.
+            const i32 glint = lf + OCT(5.404);
+            if (glint < dsp::log2_cap_hz) {
+                tune(b.mode[set + 2], glint, dsp::decay(b.k[2] + OCT(0.12)), dsp::m15(GQ15(0.15), h >> 16), w0, w1);
+            } else {
+                Struck& off = b.mode[set + 2];
+                off.m.y1 = off.m.y2 = 0;
+                off.soft = off.hard = 0;
+            }
         }
         const i32 a = dsp::power(v15, GQ16(1.1));
         for (u32 i = 0; i < 3; ++i) ring(b.mode[set + i], vt, a);
@@ -1165,7 +1176,7 @@ __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32
     } else for (u32 k = 0; k < 8; ++k) b.sq[k] += b.sqi[k] * count;
     if (b.g[0] && (!idle(b.env[1]) || b.band[1].y1 || b.band[1].y2))
         noise_band_add(b.env[1], b.seed, 0, b.band[1], b.pole[3], b.pc[2], out, b.g[0], count);
-    if (b.g[1]) modes_add(b.mode, 3, out, count, b.g[1]);
+    if (b.g[1]) modes_add(b.mode, 2, out, count, b.g[1]);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 // One bell of the pair: two partials (1 and 1.48), each pure or clanging

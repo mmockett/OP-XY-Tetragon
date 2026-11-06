@@ -84,6 +84,8 @@ inline i32 fraction(i32 x) {
     const u32 v = exp2(x + 31 * octave);
     return v > 0x7fffffffu ? one : static_cast<i32>(v);
 }
+// log2 Hz of 0.45 of the rate (19,845 Hz), where increment() caps.
+const i32 log2_cap_hz = 935597;
 // The phase increment for 2^(log2_hz / 65536) Hz, capped below 0.45 of the rate.
 inline u32 increment(i32 log2_hz) {
     const u32 v = exp2(log2_hz + log2_hz_increment);
