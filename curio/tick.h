@@ -441,38 +441,134 @@ struct Pod {
         late_norm = sc(U(1.4), c[7]);
     }
     bool waiting() const { return false; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (t == bump_at && bump_amp) {
-                // The pulse (two decays apart) peaks at 0.43 of its size.
-                bump_down.v = bump_up.v = bump_amp;
-            }
-            i32 e = down.step() - (up.v = mul(up.v, up.k));
-            // The tilt: a second rush of seeds as the pod is tipped, on top.
-            const i32 b = bump_down.step() - (bump_up.v = mul(bump_up.v, bump_up.k));
-            if (t + 882 > stop) e = t >= stop ? 0 : mul(e, static_cast<i32>((stop - t) * 2434995u));   // / 882
-            // Seeds: a strike when the draw falls under the envelope's share of the rate.
-            noise(rng);
-            const u32 p = (static_cast<u32>(mul(static_cast<i32>(rate_p >> 1), mul(e, peak_inv << 16) << 1)) << 1) +
-                          (static_cast<u32>(mul(static_cast<i32>(rate_p >> 1), b)) << 3);   // up to 1.7 times the shake's rate
-            i32 imp = 0;
-            if (rng < p) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(rng));   // 0.5 .. 1.5
-            i32 y = ring(r[0], rk[0], mul(imp, rk[0].g)) + mul(ring(r[1], rk[1], mul(imp, rk[1].g)), F(0.7)) +
-                    mul(ring(r[2], rk[2], mul(imp, rk[2].g)), F(0.5));
-            y = gn(y, norm);
-            if (c[4] > 0) {
-                dry_lp += mul(dry_a, y - dry_lp);
-                y = mul(y, F(1.0) - sc(F(0.6), c[4])) + mul((y - dry_lp), sc(F(0.75), c[4])) * 4;
-            }
-            y += lev(gn(bp(sw, swk, noise(rng)), sw_gain), lev(sw_amp, (e >> 3) + (b >> 1)));
-            if (late_norm && t > 2205 && t < late_end) {
-                noise(rng);
-                const i32 le = late_env.step();
-                const i32 li = rng < late_p ? le >> 3 : 0;
-                y += lev(gn(ring(late, latek, mul(li, latek.g)), norm), late_norm);
-            }
-            out[i] = y;
+    // The block in passes, each with its state in registers; the noise is
+    // drawn in the same order as ever.
+    // The shake's envelope and the tilt's pulse.
+    __attribute__((noinline)) void env_pass(i32* eb, i32* bb) {
+        i32 dv = down.v, uv = up.v, bd = bump_down.v, bu = bump_up.v;
+        const i32 dk = down.k, uk = up.k, bdk = bump_down.k, buk = bump_up.k;
+        for (u32 j = 0; j < frames; ++j) {
+            const u32 tt = t + j;
+            // The pulse (two decays apart) peaks at 0.43 of its size.
+            if (tt == bump_at && bump_amp) bd = bu = bump_amp;
+            dv = mul(dv, dk);
+            uv = mul(uv, uk);
+            i32 e = dv - uv;
+            bd = mul(bd, bdk);
+            bu = mul(bu, buk);
+            bb[j] = bd - bu;
+            if (tt + 882 > stop) e = tt >= stop ? 0 : mul(e, static_cast<i32>((stop - tt) * 2434995u));   // / 882
+            eb[j] = e;
         }
+        down.v = dv;
+        up.v = uv;
+        bump_down.v = bd;
+        bump_up.v = bu;
+    }
+    // Seeds: a strike when the draw falls under the envelope's share of the
+    // rate; the swish's noise; the stragglers.
+    __attribute__((noinline)) void seed_pass(const i32* eb, const i32* bb, i32* ib, i32* sb, i32* lb) {
+        u32 r = rng;
+        const i32 rp = static_cast<i32>(rate_p >> 1), pi = peak_inv << 16;
+        i32 lv = late_env.v;
+        const i32 lk = late_env.k;
+        const u32 lp = late_p;
+        for (u32 j = 0; j < frames; ++j) {
+            const u32 tt = t + j;
+            noise(r);
+            const u32 p = (static_cast<u32>(mul(rp, mul(eb[j], pi) << 1)) << 1) +
+                          (static_cast<u32>(mul(rp, bb[j])) << 3);   // up to 1.7 times the shake's rate
+            i32 imp = 0;
+            if (r < p) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r));   // 0.5 .. 1.5
+            ib[j] = imp;
+            sb[j] = noise(r);
+            if (late_norm && tt > 2205 && tt < late_end) {
+                noise(r);
+                lv = mul(lv, lk);
+                lb[j] = r < lp ? lv >> 3 : 0;
+            }
+        }
+        rng = r;
+        late_env.v = lv;
+    }
+    // A shell resonance rung by the seeds, weighted into y.
+    template <bool weighted> __attribute__((noinline)) static void shell_pass(Res& z, const ResK& k, const i32* ib, i32* y, i32 w) {
+        i32 y1 = z.y1, y2 = z.y2;
+        const i32 c = k.c, r2 = k.r2, g = k.g;
+        for (u32 j = 0; j < frames / 2; ++j) {   // two samples a turn: the states trade places
+            y2 = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(ib[0], g);
+            y[0] += weighted ? mul(y2, w) : y2;
+            y1 = ((mul(c, y2) - mul(r2, y1)) << 1) + mul(ib[1], g);
+            y[1] += weighted ? mul(y1, w) : y1;
+            ib += 2;
+            y += 2;
+        }
+        z.y1 = y1;
+        z.y2 = y2;
+    }
+    // The seeds' level, and the dry pod's crackle.
+    __attribute__((noinline)) void dry_pass(i32* y) {
+        const i32 nm = norm;
+        if (c[4] > 0) {
+            i32 lp = dry_lp;
+            const i32 a = dry_a, wet = F(1.0) - sc(F(0.6), c[4]), crisp = sc(F(0.75), c[4]);
+            for (u32 j = 0; j < frames; ++j) {
+                const i32 v = gn(y[j], nm);
+                lp += mul(a, v - lp);
+                y[j] = mul(v, wet) + mul((v - lp), crisp) * 4;
+            }
+            dry_lp = lp;
+        } else {
+            for (u32 j = 0; j < frames; ++j) y[j] = gn(y[j], nm);
+        }
+    }
+    // The swish of the shake.
+    __attribute__((noinline)) void swish_pass(i32* y, const i32* eb, const i32* bb, const i32* sb) {
+        i32 y1 = sw.y1, y2 = sw.y2, x1 = sw.x1, x2 = sw.x2;
+        const i32 c = swk.c, r2 = swk.r2, b = swk.b, g = sw_gain, amp = sw_amp;
+        for (u32 j = 0; j < frames; j += 2) {   // two samples a turn: the states trade places
+            const i32 i0 = mul(sb[j], b);
+            y2 = ((mul(c, y1) - mul(r2, y2)) << 1) + i0 - x2;
+            x2 = i0;
+            y[j] += lev(gn(y2, g), lev(amp, (eb[j] >> 3) + (bb[j] >> 1)));
+            const i32 i1 = mul(sb[j + 1], b);
+            y1 = ((mul(c, y2) - mul(r2, y1)) << 1) + i1 - x1;
+            x1 = i1;
+            y[j + 1] += lev(gn(y1, g), lev(amp, (eb[j + 1] >> 3) + (bb[j + 1] >> 1)));
+        }
+        sw.y1 = y1;
+        sw.y2 = y2;
+        sw.x1 = x1;
+        sw.x2 = x2;
+    }
+    // Scatter: stragglers after 50 ms.
+    __attribute__((noinline)) void late_pass(i32* y, const i32* lb) {
+        i32 y1 = late.y1, y2 = late.y2;
+        const i32 c = latek.c, r2 = latek.r2, g = latek.g, nm = norm, ln = late_norm;
+        for (u32 j = 0; j < frames; ++j) {
+            const u32 tt = t + j;
+            if (tt > 2205 && tt < late_end) {
+                const i32 v = ((mul(c, y1) - mul(r2, y2)) << 1) + mul(lb[j], g);
+                y2 = y1;
+                y1 = v;
+                y[j] += lev(gn(v, nm), ln);
+            }
+        }
+        late.y1 = y1;
+        late.y2 = y2;
+    }
+    void run(i32* out) {
+        i32 eb[frames], bb[frames], ib[frames], sb[frames], lb[frames];
+        env_pass(eb, bb);
+        seed_pass(eb, bb, ib, sb, lb);
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        shell_pass<false>(r[0], rk[0], ib, out, 0);
+        shell_pass<true>(r[1], rk[1], ib, out, F(0.7));
+        shell_pass<true>(r[2], rk[2], ib, out, F(0.5));
+        dry_pass(out);
+        swish_pass(out, eb, bb, sb);
+        if (late_norm) late_pass(out, lb);
+        t += frames;
     }
 };
 
