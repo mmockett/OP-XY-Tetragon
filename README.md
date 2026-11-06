@@ -44,17 +44,12 @@ to.
 
 ## Building
 
-The kits need the Open-XY SDK's per-key mixer channels
-([etcetc000/open-xy#399](https://github.com/etcetc000/open-xy/pull/399)),
-which is in review. Until it is merged and reaches the
-[builder](https://open-xy.com), build them yourself against that pull
-request's branch, `drum/pad-channel` on
-[mmockett/open-xy](https://github.com/mmockett/open-xy/tree/drum/pad-channel).
-
-Check the SDK out beside this repository and fetch its toolchain:
+The kits build with the [Open-XY SDK](https://github.com/etcetc000/open-xy)'s
+`staging` branch (SDK 1.10, with per-key mixer channels). Check it out beside
+this repository and fetch its toolchain:
 
 ```sh
-git clone -b drum/pad-channel https://github.com/mmockett/open-xy ../open-xy
+git clone -b staging https://github.com/etcetc000/open-xy ../open-xy
 (cd ../open-xy && python sdk.py toolchain fetch)
 ```
 
