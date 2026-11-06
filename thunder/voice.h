@@ -194,17 +194,22 @@ const u32 half_top = 690000000u / 2;   // svf_f's top, as a full-rate increment 
 const u32 quarter_top = 97391000u;     // 1 kHz (its images then stay 40 dB down)
 inline u32 half_inc(u32 inc) { return inc > half_top ? 2 * half_top : inc << 1; }
 inline u32 quarter_inc(u32 inc) { return inc > half_top / 2 ? 2 * half_top : inc << 2; }
+inline u32 mode_tier(const Voice& v, u32 k, i32 m28, bool quarter) {
+    u32 peak = static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4;
+    if (!v.bend) peak += peak >> 4;   // a sheet that doesn't glide may wobble (SHAKE, by 4%)
+    return quarter && peak <= quarter_top ? 0 : peak <= half_top ? 1 : 2;
+}
 inline void split_modes(Voice& v) {
     const i32 m28 = (1 << 28) + (v.bend > 0 ? v.bend : 0);
+    // a quarter-rate tier of one mode would cost more than it saves: then none
+    u32 low = 0;
+    for (u32 k = 0; k < v.nmodes; ++k) low += mode_tier(v, k, m28, true) == 0;
+    const bool quarter = low >= 2;
     Mode m[8];
     u32 n = 0;
     for (u32 pass = 0; pass < 3; ++pass) {
-        for (u32 k = 0; k < v.nmodes; ++k) {
-            u32 peak = static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4;
-            peak += peak >> 4;   // and a wobble
-            const u32 tier = peak <= quarter_top ? 0 : peak <= half_top ? 1 : 2;
-            if (tier == pass) m[n++] = v.mode[k];
-        }
+        for (u32 k = 0; k < v.nmodes; ++k)
+            if (mode_tier(v, k, m28, quarter) == pass) m[n++] = v.mode[k];
         if (pass == 0) v.nquarter = n;
         if (pass == 1) v.nhalf = n;
     }
