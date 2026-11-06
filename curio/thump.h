@@ -289,28 +289,29 @@ struct Ball {
         buzz.x1 = x1;
         buzz.x2 = x2;
     }
+    // n samples between bounces.
+    __attribute__((noinline)) void span(i32* out, u32 n) {
+        i32 rise[frames], nb[frames];
+        drop_pass(out, rise, n);
+        bounce_pass(out, n);
+        edge_pass(out, rise, n);
+        floor_pass(out, n);
+        ping_pass(out, n);
+        if (c[7] > 0) {
+            click_pass<true>(out, nb, n);
+            grit_pass(out, nb, n);
+        } else {
+            click_pass<false>(out, nb, n);
+        }
+    }
     void run(i32* out) {
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
-        i32 rise[frames], nb[frames];
         const u32 t0 = t;
         for (u32 i = 0;;) {
             // The next bounce in this block.
             u32 e = frames;
             if (next) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
-            if (e > i) {
-                const u32 n = e - i;
-                drop_pass(out + i, rise + i, n);
-                bounce_pass(out + i, n);
-                edge_pass(out + i, rise + i, n);
-                floor_pass(out + i, n);
-                ping_pass(out + i, n);
-                if (c[7] > 0) {
-                    click_pass<true>(out + i, nb + i, n);
-                    grit_pass(out + i, nb + i, n);
-                } else {
-                    click_pass<false>(out + i, nb + i, n);
-                }
-            }
+            if (e > i) span(out + i, e - i);
             i = e;
             if (i >= frames) break;
             t = t0 + i;
@@ -467,6 +468,17 @@ struct Cask {
         thud_lp = tl;
         rng = r;
     }
+    // n samples between taps; each part costs nothing once it is still or
+    // switched off.
+    __attribute__((noinline)) void span(i32* out, u32 n, i32 vib, i32 am) {
+        u32 fb[frames];
+        pitch_pass(fb, n, vib);
+        if (slosh_am) air_pass<true>(out, fb, n, am);
+        else air_pass<false>(out, fb, n, am);
+        for (int m = 0; m < 4; ++m) ring_into(wood[m], woodk[m], out, n);
+        if (hoop_amp) for (int m = 0; m < 3; ++m) ring_into(hoop[m], hoopk[m], out, n);
+        knock_pass(out, n);
+    }
     void run(i32* out) {
         static const u32 at[4] = {1014, 1632, 2690, 3925};       // 23, 37, 61, 89 ms
         static const i32 gain[4] = {F(0.64), F(0.48), F(0.35), F(0.2)};   // 1.6 times the prototype's: it read faintly
@@ -476,22 +488,12 @@ struct Cask {
         const i32 vib = mul(slosh_depth, swing);
         const i32 am = mul(slosh_am, sine(ph55 + 683565275u));   // phase +1 rad
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
-        u32 fb[frames];
         const u32 t0 = t;
         for (u32 i = 0;;) {
             // The cellar's next tap in this block.
             u32 e = frames;
             if (c[7] > 0 && tap < 4) { const u32 d = at[tap] - t0; if (d < e && d >= i) e = d; }
-            if (e > i) {
-                const u32 n = e - i;
-                // Each part costs nothing once it is still or switched off.
-                pitch_pass(fb + i, n, vib);
-                if (slosh_am) air_pass<true>(out + i, fb + i, n, am);
-                else air_pass<false>(out + i, fb + i, n, am);
-                for (int m = 0; m < 4; ++m) ring_into(wood[m], woodk[m], out + i, n);
-                if (hoop_amp) for (int m = 0; m < 3; ++m) ring_into(hoop[m], hoopk[m], out + i, n);
-                knock_pass(out + i, n);
-            }
+            if (e > i) span(out + i, e - i, vib, am);
             i = e;
             if (i >= frames) break;
             t = t0 + i;
@@ -738,9 +740,37 @@ struct Drip {
         splash_lp = lp;
         rng = r;
     }
-    void run(i32* out) {
+    // n samples between drops and echoes.
+    __attribute__((noinline)) void span(i32* out, u32 n, i32 vib) {
+        for (int s = 0; s < 3; ++s) {
+            Bubble& b = bub[s];
+            if (!b.v && !b.a) continue;
+            if (wob) bubble_pass<true>(b, out, n, vib);
+            else bubble_pass<false>(b, out, n, vib);
+        }
+        for (int m = 0; m < 4; ++m) ring_into(basin[m], basink[m], out, n);
+        splash_pass(out, n);
+    }
+    // A drop from the tap or an echo from the room at t.
+    __attribute__((noinline)) void events() {
         static const u32 at[6] = {1367, 2073, 3219, 4851, 7056, 10143};   // 31 .. 230 ms
         static const i32 eg[6] = {F(0.7), F(0.55), F(0.45), F(0.3), F(0.2), F(0.12)};
+        if (drops && t == next_drop) {
+            --drops;
+            last_amp = F(0.5) + mul(F(0.4), draw(rng) << 19);   // 0.5 .. 0.9
+            last_ratio = (jitter(rng) * 1229) >> 12;             // +-0.3 octave
+            drop(last_amp, last_ratio, false);
+            next_drop = drops ? t + samples(static_cast<u32>(drip_gap + (drip_gap * jitter(rng) >> 16))) : 0;
+            base_t = t;
+            echo = 0;
+        }
+        if (c[7] > 0 && echo < 6 && t - base_t == at[echo]) {
+            drop(mul(mul(last_amp, eg[echo]), c[7] << 19), last_ratio, true);
+            ++echo;
+        }
+    }
+    void run(i32* out) {
+        static const u32 at[6] = {1367, 2073, 3219, 4851, 7056, 10143};   // 31 .. 230 ms
         ph23 += 64u * 2239006u;   // 23 Hz wobble
         const i32 vib = mul(wob, sine(ph23));
         // Each bubble's pitch for the block: its rise and wobble at the block's
@@ -764,33 +794,11 @@ struct Drip {
             u32 e = frames;
             if (drops) { const u32 d = next_drop - t0; if (d < e && d >= i) e = d; }
             if (c[7] > 0 && echo < 6) { const u32 d = base_t + at[echo] - t0; if (d < e && d >= i) e = d; }
-            if (e > i) {
-                const u32 n = e - i;
-                for (int s = 0; s < 3; ++s) {
-                    Bubble& b = bub[s];
-                    if (!b.v && !b.a) continue;
-                    if (wob) bubble_pass<true>(b, out + i, n, vib);
-                    else bubble_pass<false>(b, out + i, n, vib);
-                }
-                for (int m = 0; m < 4; ++m) ring_into(basin[m], basink[m], out + i, n);
-                splash_pass(out + i, n);
-            }
+            if (e > i) span(out + i, e - i, vib);
             i = e;
             if (i >= frames) break;
             t = t0 + i;
-            if (drops && t == next_drop) {
-                --drops;
-                last_amp = F(0.5) + mul(F(0.4), draw(rng) << 19);   // 0.5 .. 0.9
-                last_ratio = (jitter(rng) * 1229) >> 12;             // +-0.3 octave
-                drop(last_amp, last_ratio, false);
-                next_drop = drops ? t + samples(static_cast<u32>(drip_gap + (drip_gap * jitter(rng) >> 16))) : 0;
-                base_t = t;
-                echo = 0;
-            }
-            if (c[7] > 0 && echo < 6 && t - base_t == at[echo]) {
-                drop(mul(mul(last_amp, eg[echo]), c[7] << 19), last_ratio, true);
-                ++echo;
-            }
+            events();
         }
         t = t0 + frames;
     }

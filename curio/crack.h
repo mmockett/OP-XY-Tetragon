@@ -260,9 +260,46 @@ struct Ice {
         nz.x1 = x1;
         nz.x2 = x2;
     }
-    void run(i32* out) {
+    // n samples between events: the chirps (the newest carries a band of
+    // noise riding its pitch), the snap and the noise, the band, the drive,
+    // the lake and the surface.
+    __attribute__((noinline)) void span(i32* out, u32 n) {
+        i32 x[frames], lz[frames], zn[frames], hn[frames];
+        opxy::u8 gt[frames];
+        for (u32 j = 0; j < n; ++j) x[j] = 0;
+        for (u32 s = 0; s < 2; ++s) {
+            Chirp& h = ch[s];
+            const bool live = h.v || h.a;
+            if (s == newest) {
+                if (live) chirp_pass<true>(h, x, lz, n);
+                else for (u32 j = 0; j < n; ++j) lz[j] = 0;
+            } else if (live) {
+                chirp_pass<false>(h, x, lz, n);
+            }
+        }
+        noise_pass(x, lz, zn, hn, gt, n);
+        band_pass(x, lz, zn, n);
+        drive_pass(x, out, n);
+        body_pass(out, n);
+        hiss_pass(out, hn, gt, n);
+    }
+    // A shard or an echo at t.
+    __attribute__((noinline)) void events() {
         static const u32 delay[4] = {70000, 130000, 210000, 300000};
         static const i32 gain[4] = {F(0.8), F(0.6), F(0.4), F(0.25)};
+        if (shards && t == next_shard) {
+            --shards;
+            shard_amp = mul(shard_amp, F(0.88));
+            snap(shard_amp, false);
+            next_shard = shards ? t + samples(static_cast<u32>(mul(8000 + (draw(rng) * 30000 >> 12), F(1.0) - sc(F(0.5), c[2])) << 0)) : 0;
+        }
+        if (c[7] > 0 && echo < 4 && t == next_echo) {
+            snap(sc(gain[echo], c[7]), true);
+            ++echo;
+            if (echo < 4) next_echo = samples(static_cast<u32>(mul(static_cast<i32>(delay[echo]), spread_scale) << 1));
+        }
+    }
+    void run(i32* out) {
         // Each chirp's pitch for the block: u = 1 / (1 + t / tc) steps on in
         // four quarters, the pitch glides between the ends (a ramp a sample),
         // and its noise band follows. A chirp gone quiet stops.
@@ -277,48 +314,17 @@ struct Ice {
             h.df = static_cast<u32>(static_cast<i32>(f1 - f0) >> 6);
             if (s == static_cast<int>(newest)) tune_band(zk, f0);
         }
-        i32 x[frames], lz[frames], zn[frames], hn[frames];
-        opxy::u8 gt[frames];
         const u32 t0 = t;
         for (u32 i = 0;;) {
             // The next shard or echo in this block.
             u32 e = frames;
             if (shards) { const u32 d = next_shard - t0; if (d < e && d >= i) e = d; }
             if (c[7] > 0 && echo < 4) { const u32 d = next_echo - t0; if (d < e && d >= i) e = d; }
-            if (e > i) {
-                const u32 n = e - i;
-                for (u32 j = i; j < e; ++j) x[j] = 0;
-                // The chirps; the newest carries a band of noise riding its pitch.
-                for (u32 s = 0; s < 2; ++s) {
-                    Chirp& h = ch[s];
-                    const bool live = h.v || h.a;
-                    if (s == newest) {
-                        if (live) chirp_pass<true>(h, x + i, lz + i, n);
-                        else for (u32 j = i; j < e; ++j) lz[j] = 0;
-                    } else if (live) {
-                        chirp_pass<false>(h, x + i, lz + i, n);
-                    }
-                }
-                noise_pass(x + i, lz + i, zn + i, hn + i, gt + i, n);
-                band_pass(x + i, lz + i, zn + i, n);
-                drive_pass(x + i, out + i, n);
-                body_pass(out + i, n);
-                hiss_pass(out + i, hn + i, gt + i, n);
-            }
+            if (e > i) span(out + i, e - i);
             i = e;
             if (i >= frames) break;
             t = t0 + i;
-            if (shards && t == next_shard) {
-                --shards;
-                shard_amp = mul(shard_amp, F(0.88));
-                snap(shard_amp, false);
-                next_shard = shards ? t + samples(static_cast<u32>(mul(8000 + (draw(rng) * 30000 >> 12), F(1.0) - sc(F(0.5), c[2])) << 0)) : 0;
-            }
-            if (c[7] > 0 && echo < 4 && t == next_echo) {
-                snap(sc(gain[echo], c[7]), true);
-                ++echo;
-                if (echo < 4) next_echo = samples(static_cast<u32>(mul(static_cast<i32>(delay[echo]), spread_scale) << 1));
-            }
+            events();
         }
         t = t0 + frames;
     }
