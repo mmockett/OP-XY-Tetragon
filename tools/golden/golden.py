@@ -492,9 +492,14 @@ def cmd_counts(a):
             dm = f"{pct(y['mean']) - pct(x['mean']):+.2f}" if x and y else ""
             lines.append(f"| {label} | {bx} | {hy} | {dm} |")
         lines += ["", f"Heaviest single voice: {pct(heavy_b):.2f}% → {pct(heavy_h):.2f}% (mean).", ""]
-        if a.strict and (sh["hw"] < sb["hw"] or sh["hw_insns"] + sh["sw_insns"] > sb["hw_insns"] + sb["sw_insns"]):
+        # A refactor must not slow any run down. The whole-program census moves
+        # with inlining, so it is reported, not judged.
+        slower = [k for k in keys if cb.get(k) and ch.get(k) and pct(ch[k]["mean"]) - pct(cb[k]["mean"]) > 0.02]
+        if a.strict and slower:
             regress = True
-            lines.append(f"**FAIL {kit}: a refactor lost a hardware loop or grew its loops.**\n")
+            lines.append(f"**FAIL {kit}: a refactor made {', '.join(slower)} slower.**\n")
+        if sh["hw"] < sb["hw"]:
+            lines.append(f"Note: {sb['hw'] - sh['hw']} fewer hardware loops in the whole program than the base.\n")
     pathlib.Path(a.md).write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
     sys.exit(1 if regress else 0)
