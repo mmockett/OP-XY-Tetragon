@@ -200,15 +200,15 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     i32 sum[opxy::block_frames];
     u32 at = 0, next = 0;
     const u32 n = voice.run.n;
-    // Impacts and ghosts strike on an 8-sample grid (0.18 ms): a block splits into
-    // at most eight stretches however many balls land in it, and each stretch
+    // Impacts and ghosts strike on a 16-sample grid (0.36 ms): a block splits into
+    // at most four stretches however many balls land in it, and each stretch
     // runs the body's parts once.
     while (at < opxy::block_frames) {
         u32 until = opxy::block_frames;
-        if (next < count && ((hits[next].at - voice.t) & ~7u) < until) until = (hits[next].at - voice.t) & ~7u;
+        if (next < count && ((hits[next].at - voice.t) & ~15u) < until) until = (hits[next].at - voice.t) & ~15u;
         const u32 ghost = body::ghost_due(b);
         if (ghost != 0xffffffffu) {
-            const u32 g = ghost > b.now ? ((ghost - b.now + at) & ~7u) : at;
+            const u32 g = ghost > b.now ? ((ghost - b.now + at) & ~15u) : at;
             if (g < until) until = g < at ? at : g;
         }
         if (until > at) {
@@ -216,13 +216,13 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             at = until;
         }
         if (at >= opxy::block_frames) break;
-        while (next < count && ((hits[next].at - voice.t) & ~7u) <= at) {
+        while (next < count && ((hits[next].at - voice.t) & ~15u) <= at) {
             body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n);
             ++next;
         }
         // Ghosts due within this stretch of the grid strike now.
         const u32 now = b.now;
-        b.now = now + 7;
+        b.now = now + 15;
         body::strike_ghosts(b, n);
         b.now = now;
     }
