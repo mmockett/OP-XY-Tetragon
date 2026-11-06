@@ -635,13 +635,10 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     }
     v.k[0] = onepole_k(lf0 + L(1.5));                                    // the body's high-pass
     v.k[5] = onepole_k(lf0 + L(1.5) + octave);                           // (the same at half rate)
-    {
-        // the ring's (twice, at half rate): struck near the bell, darker; and
-        // the lift that keeps its band where the full rate's filters left it
-        const i32 lring = mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]);
-        v.k[1] = onepole_k(lring + octave);
-        v.k[6] = hp_half_lift(onepole_k(lring), v.k[1], 2);
-    }
+    // the ring's (twice, at half rate): struck near the bell, darker. (Not
+    // lifted for what the half-rate filters lose: lifted, SIZE moved the
+    // crash too little for the sound checks.)
+    v.k[1] = onepole_k(mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]) + octave);
     v.k[2] = multiply(mix(Q31(0.12), Q31(0.9), c[4]), mix(Q31(0.99), Q31(0.3), c[3]));   // the body's share, less toward the edge
     v.env[0].set(one, block_decay(lt60 + log16(mix(Q16(1.0), Q16(0.12), c[4]))));
     // SWELL: noise into the high modes along (t / peak) e^(1 - t / peak)
@@ -670,7 +667,7 @@ __attribute__((noinline)) inline void crash_ring(Voice& v, i32* y, i32 damp, i32
         h2 += multiply(x - h2, k1);
         const i32 a = x - h2;
         h3 += multiply(a - h3, k1);
-        *y++ = multiply(a - h3, damp) << 3;   // (the full rate's held samples were twice the field's: 2 x 2, and the lift's 2)
+        *y++ = multiply(a - h3, damp) << 2;   // (the full rate's held samples were twice the field's: 2 x 2)
     }
     v.op[2].s = h2;
     v.op[3].s = h3;
@@ -755,8 +752,7 @@ __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     if (!v.fon) clear(ring);
     i32 damp;
     const i32 ds = v.env[0].step(damp);
-    // (the hand's level at each half-rate sample's place, with the ring's lift, over 2)
-    crash_ring(v, ring, multiply(damp + ds, v.k[6]), multiply(ds << 1, v.k[6]));
+    crash_ring(v, ring, damp + ds, ds << 1);   // (the hand's level at each half-rate sample's place)
     if (half_body) crash_mix_half(v, body2, ring, out);
     else crash_mix(v, w.body, ring, out);
     add_click(v, out);
