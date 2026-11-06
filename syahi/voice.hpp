@@ -73,7 +73,7 @@ struct Core {
     i32 follow, peak, drive, follow_c, drive_c, wire_gain;
     Svf wb;
     SvfCoefficients cwb;
-    i32 wire_high, wire_high_c, wire_low1, wire_low2, wire_top_c;
+    i32 wash_prev, wire_high_c, wire_low1, wire_low2, wire_top_c;   // (wash_prev: the half-rate wash's last step)
     // wash
     Chamberlin xh;
     i32 wash_low, wash_c;
@@ -264,8 +264,9 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     // Its band follows the cymbal's size: a big, low one keeps its body (from
     // twice the note, at least 900 Hz) and a darker top (ten times it); a small
     // hat sprays from 3 kHz to the top octave.
-    v.xh.set(q_butter, clamp(pitch + lg(2), lg(900), lg(3000)));
-    v.wash_c = one_pole(-(clamp(pitch + lg(10), lg(5000), lg(12000)) + lg(2 * 3.14159265)));
+    // (Both run at half rate: each is set an octave higher, as the full rate sees it.)
+    v.xh.set(q_butter, clamp(pitch + lg(2), lg(900), lg(3000)) + octave);
+    v.wash_c = one_pole(-(clamp(pitch + lg(10), lg(5000), lg(12000)) + lg(2 * 3.14159265)) - octave);
 }
 
 // ---- strikes
@@ -490,13 +491,13 @@ static inline void wash_envelopes(Core& v, const Strikes& strikes) {
 // words: two unit sines' product is a * b * 2 exactly.
 __attribute__((noinline)) static void wash_products(const i16* __restrict q, i32* __restrict w, i32 e0, i32 e1, i32 e2,
                                                     i32 e3, i32 e4, i32 e5) {
-    for (u32 n = 0; n < 64; ++n) {
+    for (u32 n = 0; n < 32; ++n) {
         i32 x = multiply((q[0] * q[3]) << 1, e0) + multiply((q[1] * q[5]) << 1, e1);
         x += multiply((q[2] * q[6]) << 1, e2) + multiply((q[4] * q[7]) << 1, e3);
         x += (q[0] ^ q[2]) < 0 ? -e4 : e4;
         x += (q[3] ^ q[6]) < 0 ? -e5 : e5;
         w[n] = x;
-        q += head_modes;
+        q += 2 * head_modes;   // every other sample: the wash runs at half rate
     }
 }
 __attribute__((noinline)) static void wash_pass(Core& v, const Scratch& scratch, i32* __restrict out) {
@@ -519,17 +520,23 @@ __attribute__((noinline)) static void wash_pass(Core& v, const Scratch& scratch,
     // The pairs' envelopes held through the block, at its middle: they move slowly.
     const i32 e0 = e[0] + (de[0] << 5), e1 = e[1] + (de[1] << 5), e2 = e[2] + (de[2] << 5), e3 = e[3] + (de[3] << 5);
     const i32 e4 = (e[4] + (de[4] << 5)) >> 1, e5 = (e[5] + (de[5] << 5)) >> 1;
-    i32 w[64];
+    // The wash at half the rate, each sample's step heard between: its spray
+    // lives over a few kHz, and the images above 11 kHz are more spray.
+    i32 w[32];
     wash_products(&scratch.sines[0][0], w, e0, e1, e2, e3, e4, e5);
     u32 seed = v.seed;
     Chamberlin high = v.xh;
-    i32 low = v.wash_low;
+    i32 low = v.wash_low, prev = v.wash_prev;
     const i32 c = v.wash_c;
-    for (u32 n = 0; n < 64; ++n) {
-        const i32 x = w[n] + (multiply(noise(seed), hiss) << 1);
+    for (u32 i = 0; i < 32; ++i) {
+        const i32 x = w[i] + (multiply(noise(seed), hiss) << 1);
         low += multiply(high.highpass(x) - low, c);
-        out[n] += multiply(low, wash_gain) << 3;
+        const i32 y = multiply(low, wash_gain) << 2;   // half the step
+        out[2 * i] += prev + y;
+        out[2 * i + 1] += y << 1;
+        prev = y;
     }
+    v.wash_prev = prev;
     v.seed = seed;
     v.xh = high;
     v.wash_low = low;
