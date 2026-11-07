@@ -73,7 +73,7 @@ struct Core {
     i32 follow, peak, drive, follow_c, drive_c, wire_gain;
     Svf wb;
     SvfCoefficients cwb;
-    i32 wire_high, wire_high_c, wire_low1, wire_low2, wire_top_c;
+    i32 wire_high, wire_high_c, wire_low1, head_last, wire_top_c;   // head_last: the half-rate head's last half-sample
     // wash
     Chamberlin xh;
     i32 wash_low, wash_c;
@@ -341,19 +341,19 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
     m.u = multiply(m.u, m.decay);
     // Pitch at the block's end; the increment glides there sample by sample.
     const i32 pitch = lifted(m, energy_end, glide_now);
-    const u32 cap = increment(lg(19500));
+    const u32 cap = increment(lg(10800));   // the half rate's Nyquist, 11 kHz
     u32 target = increment(pitch);
     if (target > cap) target = cap;
     if (m.inc > cap) m.inc = cap;
     m.dinc = (static_cast<i32>(target) - static_cast<i32>(m.inc)) >> 6;
     // Modulation: the head's gain, the fade under Nyquist, swell and beat.
     i32 mod = v.head_gain;
-    // The fade under Nyquist; below 14 kHz (well under its 15 kHz start) the
-    // frequency isn't needed.
-    if (pitch > lg(14000)) {
+    // The fade under the half rate's Nyquist, 9 to 10.5 kHz; below 8.5 kHz
+    // the frequency isn't needed.
+    if (pitch > lg(8500)) {
         const i32 hz = static_cast<i32>(exp2i(clamp(pitch, 0, 15 * octave)));
-        if (hz >= 18000) mod = 0;
-        else if (hz > 15000) mod = multiply(mod, (18000 - hz) * 715828);
+        if (hz >= 10500) mod = 0;
+        else if (hz > 9000) mod = multiply(mod, (10500 - hz) * 1431655);
     }
     if (k < head_modes && m.rank) mod = multiply(mod, q28(1.0) + multiply(m.rank, one - v.swell_left)) << 3;
     if (m.beat_inc) {
@@ -383,29 +383,43 @@ static inline void advance(Partial& m, u32 count) {
 // waits on it. The phase and increment at the end are advance()'s sums, exact
 // in u32. With `ramp` the pending strike ramps in along r; with `metal` the
 // unit sine is kept for the wash.
-template <bool ramp, bool metal>
-__attribute__((noinline)) static void run_mode(Partial& a, i32* __restrict out, i16* __restrict sa, const i32* __restrict r,
-                                              u32 begin, u32 count) {
+// One partial at half the rate over half-samples [begin, begin + count) of
+// the block's 32: half-sample i is full sample 2i + 1, its phase, increment
+// and level stepped two samples at a time (phase 2 inc + 5 dinc and on by
+// 4 dinc, level 2 dg), into h. With `ramp` the pending strike ramps in along
+// r (taken at the same samples).
+template <bool ramp>
+__attribute__((noinline)) static void run_half(Partial& a, i32* __restrict h, const i32* __restrict r, u32 begin, u32 count) {
     const i16* const table = tables::sine;
-    u32 pa = a.phase + a.inc, ia = a.inc + static_cast<u32>(a.dinc);
-    const u32 da = static_cast<u32>(a.dinc);
-    i32 ga = a.g;
-    const i32 dga = a.dg, ea = ramp ? a.pe : 0;
+    const u32 d = static_cast<u32>(a.dinc);
+    u32 pa = a.phase + 2 * a.inc + d, ia = 2 * a.inc + 5 * d;
+    const u32 da = 4 * d;
+    i32 ga = a.g + a.dg;
+    const i32 dga = 2 * a.dg, ea = ramp ? a.pe : 0;
     const i16* ta = table + (pa >> 18);
-    i32* o = out + begin;
-    const i32* rr = r + begin;
-    i16* qa = metal ? sa + begin * head_modes : nullptr;
+    i32* o = h + begin;
+    const i32* rr = r + 2 * begin + 1;
     for (u32 n = 0; n < count; ++n) {
-        const i16 t = *ta;
-        const i32 xa = static_cast<i32>(t) << 16;
+        const i32 xa = static_cast<i32>(*ta) << 16;
         pa += ia;
         ia += da;
         ta = table + (pa >> 18);
-        if (metal) { *qa = t; qa += head_modes; }
-        o[n] += ramp ? multiply(ga + multiply(ea, rr[n]), xa) : multiply(ga, xa);
+        o[n] += ramp ? multiply(ga + multiply(ea, rr[2 * n]), xa) : multiply(ga, xa);
         ga += dga;
     }
-    advance(a, count);
+    advance(a, 2 * count);
+}
+// The half-rate head back at the full rate, each half-sample's step heard
+// between (the last block's last half-sample is `last`), added into out.
+__attribute__((noinline)) static void head_up(const i32* __restrict h, i32* __restrict out, i32& last) {
+    i32 prev = last;
+    for (u32 i = 0; i < 32; ++i) {
+        const i32 y = h[i];
+        out[2 * i] += (prev >> 1) + (y >> 1);
+        out[2 * i + 1] += y;
+        prev = y;
+    }
+    last = prev;
 }
 static inline bool quiet(const Partial& m) {
     return absolute(m.a) < silent && absolute(m.p) < silent && absolute(m.g) < silent && absolute(m.dg) < 2;
@@ -731,35 +745,27 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     // strikes, landing each strike as it comes.
     u32 live[head_modes];
     const u32 lives = plan_head(v, strikes, energy_end, glide_now, live);
+    // The head, the body and the air at half the rate.
+    i32 h[32];
+    for (u32 i = 0; i < 32; ++i) h[i] = 0;
     {
         u32 begin = 0;
         for (u32 i = 0; i <= strikes.count; ++i) {
             const u32 end = i < strikes.count ? strikes.at[i] : 64;
-            if (end > begin)
+            // Half-samples: a strike lands on the half-sample it falls in.
+            const u32 hb = begin >> 1, he = end >> 1;
+            if (he > hb)
                 for (u32 j = 0; j < lives; ++j) {
                     Partial& a = v.part[live[j]];
-                    if (ramping && a.pe) run_mode<true, false>(a, out, nullptr, r, begin, end - begin);
-                    else run_mode<false, false>(a, out, nullptr, r, begin, end - begin);
+                    if (ramping && a.pe) run_half<true>(a, h, r, hb, he - hb);
+                    else run_half<false>(a, h, r, hb, he - hb);
                 }
             if (i < strikes.count)
                 for (u32 j = 0; j < lives; ++j) land(v.part[live[j]], strikes.level[i], ramp_at[i]);
-            begin = end;
+            begin = end & ~1u;
         }
     }
-    // The wash, the noise and the rattle, a sample at a time.
-    const Spec& s = v.spec;
-    // The burst runs on 4 blocks after it falls quiet for its band to settle,
-    // 40 when it also rings a mode (a narrow resonance takes that long).
-    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < (s.noise_ring ? 40u : 4u));
-    const bool rattling = s.wires > 0 || v.tilt;   // METAL always passes through: its tilt is there
-    // The wash and the noise add to the head; the wires then follow all of it.
-    if (metal_wash) {
-        wash_envelopes(v, strikes);
-        wash_pass(v, wash, out);
-    }
-    if (noisy) noise_pass(v, strikes, out);
-    if (rattling) rattle_pass(v, out);
-    // The body and the air.
+    // The body and the air (at half rate with the head; no model with wires has them).
     Partial& b = v.part[body_mode];
     if (b.weight) {
         b.a = multiply(b.a, b.decay);
@@ -773,7 +779,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         b.dinc = (static_cast<i32>(target) - static_cast<i32>(b.inc)) >> 6;
         b.dg = (b.a - v.body_rise - b.g) >> 6;
         if (absolute(b.a) < silent && absolute(b.g) < silent) skip(b, 64);
-        else run_mode<false, false>(b, out, nullptr, r, 0, 64);
+        else run_half<false>(b, h, r, 0, 32);
     }
     Partial& air = v.part[air_mode];
     if (air.weight && v.air_time < v.air_length + 64) {
@@ -784,9 +790,23 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         air.inc = increment(air.rest);
         air.dinc = 0;
         air.dg = (g_end - air.g) >> 6;
-        run_mode<false, false>(air, out, nullptr, r, 0, 64);
+        run_half<false>(air, h, r, 0, 32);
     }
     v.air_time += 64;
+    head_up(h, out, v.head_last);
+    // The wash, the noise and the rattle, a sample at a time.
+    const Spec& s = v.spec;
+    // The burst runs on 4 blocks after it falls quiet for its band to settle,
+    // 40 when it also rings a mode (a narrow resonance takes that long).
+    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < (s.noise_ring ? 40u : 4u));
+    const bool rattling = s.wires > 0 || v.tilt;   // METAL always passes through: its tilt is there
+    // The wash and the noise add to the head; the wires then follow all of it.
+    if (metal_wash) {
+        wash_envelopes(v, strikes);
+        wash_pass(v, wash, out);
+    }
+    if (noisy) noise_pass(v, strikes, out);
+    if (rattling) rattle_pass(v, out);
 }
 }
 
