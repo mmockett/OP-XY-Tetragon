@@ -531,6 +531,19 @@ struct NoiseRun {
     Chamberlin g0;
     i32 ring, air;
 };
+// The ring on the lowest mode, added: a Chamberlin band-pass of the burst.
+__attribute__((noinline)) static void ring_run(Chamberlin& g, const i32* __restrict x, i32* __restrict o, u32 count, i32 rg) {
+    i32 lo = g.low, bd = g.band;
+    const i32 f = g.f, dm = g.damping;
+    for (u32 n = 0; n < count; ++n) {
+        lo += multiply(f, bd) * 2;
+        const i32 hi = x[n] - lo - multiply(dm, bd) * 2;
+        bd += multiply(f, hi) * 2;
+        o[n] += multiply(multiply(dm, bd) * 2, rg) << 1;
+    }
+    g.low = lo;
+    g.band = bd;
+}
 template <bool air, bool ring>
 __attribute__((noinline)) static void noise_run(NoiseRun& z, i32* __restrict out, u32 begin, u32 count) {
     i32 level = z.level;
@@ -538,23 +551,24 @@ __attribute__((noinline)) static void noise_run(NoiseRun& z, i32* __restrict out
     u32 seed = z.seed;
     Svf f1 = z.f1;
     const SvfCoefficients cn = z.cn;
-    Chamberlin g0 = z.g0;
     i32* o = out + begin;
+    i32 xs[16];
     for (u32 n = 0; n < count; ++n) {
         const i32 x = multiply(noise(seed), level);
         level += step;
+        if (ring) xs[n] = x;
         i32 band, low;
         svf_step(f1, cn, x, band, low);
         band = multiply(cn.k, band) * 2;
         i32 y = band;
         if (air) y += multiply(band + ((x - low) >> 2), ag);
-        if (ring) y += multiply(g0.bandpass(x), rg);
         o[n] += y << 1;
     }
+    // The ring on the lowest mode, in a loop of its own (fewer live values).
+    if (ring) ring_run(z.g0, xs, o, count, rg);
     z.level = level;
     z.seed = seed;
     z.f1 = f1;
-    z.g0 = g0;
 }
 __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes, i32* __restrict out) {
     const Spec& s = v.spec;
