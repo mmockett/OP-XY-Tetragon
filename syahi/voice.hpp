@@ -73,7 +73,7 @@ struct Core {
     i32 follow, peak, drive, follow_c, drive_c, wire_gain;
     Svf wb;
     SvfCoefficients cwb;
-    i32 wire_high, wire_high_c, wire_low1, head_last, wire_top_c;   // head_last: the half-rate head's last half-sample
+    i32 buzz_last, wire_high_c, wire_low1, head_last, wire_top_c;   // the half-rate buzz's and head's last half-samples
     // wash
     Chamberlin xh;
     i32 wash_low, wash_c;
@@ -252,15 +252,15 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     v.nd_tail = one - one_pole(s.noise_length + s.tail);
     v.nstep = static_cast<i32>(exp2i(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
     // The rattle.
-    v.cwb.set(q_wires, s.wire_tone);
+    v.cwb.set(q_wires, s.wire_tone + octave);   // (the buzz runs at half rate)
     // The follower (0.6 ms), the buzz's rise (0.3 ms) and its fall over WIRE's
     // time, each as its share of the way a block moves (1 - (1 - c)^64).
-    v.wire_top_c = one_pole(-(s.wire_top + lg(2 * 3.14159265)));
+    v.wire_top_c = one_pole(-(s.wire_top + lg(2 * 3.14159265)) - octave);
     v.follow_c = one - power(one - one_pole(lg(0.0006)), 64);
     v.wire_high_c = one - power(one - q31(0.073), 64);
     v.drive_c = one - power(one - one_pole(s.wire_time - lg(4.5)), 64);
     // 40 x the threshold-passed motion, through noise of a third of its swing.
-    v.wire_gain = multiply(s.wires, q31(0.4 * wire_drive * 1.732 / 32));   // Q28 * 2^-5 -> Q23
+    v.wire_gain = multiply(s.wires, q31(0.4 * wire_drive * 1.732 / 32 * 0.7071));   // Q28 * 2^-5 -> Q23; -3 dB at half rate
     // The wash.
     // Its band follows the cymbal's size: a big, low one keeps its body (from
     // twice the note, at least 900 Hz) and a darker top (ten times it); a small
@@ -641,18 +641,25 @@ struct Buzz {
     Svf band;
     SvfCoefficients cwb;
 };
-__attribute__((noinline)) static void buzz_pass(Buzz& z, i32* __restrict out) {
-    i32 drive = z.drive, low = z.low;
-    const i32 step = z.step, top = z.top, gain = z.gain;
+// At half the rate (the band and the low-pass set an octave up, the gain
+// 3 dB down for the noise's doubled density), each step heard between; `last`
+// is the last half-sample.
+__attribute__((noinline)) static void buzz_pass(Buzz& z, i32* __restrict out, i32& last) {
+    i32 drive = z.drive, low = z.low, prev = last;
+    const i32 step = 2 * z.step, top = z.top, gain = z.gain;
     u32 seed = z.seed;
     Svf band = z.band;
     const SvfCoefficients cwb = z.cwb;
-    for (u32 n = 0; n < 64; ++n) {
+    for (u32 i = 0; i < 32; ++i) {
         const i32 b = svf_bandpass(band, cwb, multiply(noise(seed), drive));
         drive += step;
         low += multiply(b - low, top);
-        out[n] += shl_clamp(multiply(low, gain), 8);
+        const i32 y = shl_clamp(multiply(low, gain), 8);
+        out[2 * i] += (prev >> 1) + (y >> 1);
+        out[2 * i + 1] += y;
+        prev = y;
     }
+    last = prev;
     z.low = low;
     z.seed = seed;
     z.band = band;
@@ -671,6 +678,7 @@ static inline void rattle_pass(Core& v, i32* out) {
     // Nothing to buzz and nothing ringing: the wires are still.
     if (drive < 64 && v.drive < 64 && absolute(v.wire_low1) < 64) {
         v.drive = drive;
+        v.buzz_last = 0;
         return;
     }
     Buzz z;
@@ -682,7 +690,7 @@ static inline void rattle_pass(Core& v, i32* out) {
     z.seed = v.seed;
     z.band = v.wb;
     z.cwb = v.cwb;
-    buzz_pass(z, out);
+    buzz_pass(z, out, v.buzz_last);
     v.drive = drive;
     v.wire_low1 = z.low;
     v.seed = z.seed;
