@@ -434,27 +434,43 @@ static inline void wash_envelopes(Core& v, const Strikes& strikes) {
     v.pair_in -= flowing;
     for (u32 j = 0; j < wash_pairs; ++j) v.pair[j] = multiply(v.pair[j], v.pair_decay[j]) + flowing;
 }
-// The wash pairs' products and square-wave products, from the modes' table
-// words: two unit sines' product is a * b * 2 exactly.
-__attribute__((noinline)) static void wash_products(const i16* __restrict q, i32* __restrict w, i32 e0, i32 e1, i32 e2,
-                                                    i32 e3, i32 e4, i32 e5) {
+// The root of the sum of squares of n values, without overflow.
+static inline i32 root_sum_squares(const i32* x, u32 n) {
+    u32 most = 0;
+    for (u32 i = 0; i < n; ++i) most |= static_cast<u32>(absolute(x[i]));
+    u32 shift = 0;
+    while ((most >> shift) >= (1u << 14)) ++shift;
+    u32 sum = 0;
+    for (u32 i = 0; i < n; ++i) {
+        const u32 v = static_cast<u32>(absolute(x[i])) >> shift;
+        sum += v * v;
+    }
+    return static_cast<i32>(isqrt(sum) << shift);
+}
+// The wash: two square-wave products of the modes (the signs of modes 0 and
+// 2, 3 and 6, from their phases), the spray of the four sine-pair products as
+// noise of their power, and the hiss, through its band. Phases and
+// increments of modes 0, 2, 3 and 6 at the block's start come in ph[], inc[].
+struct Wash {
+    u32 ph[4], inc[4];
+};
+// The two square-wave products, +e or -e by the two phases' top bits.
+__attribute__((noinline)) static void wash_squares(const Wash& w, i32* __restrict x, i32 e4, i32 e5) {
+    u32 p0 = w.ph[0], p2 = w.ph[1], p3 = w.ph[2], p6 = w.ph[3];
+    const u32 i0 = w.inc[0], i2 = w.inc[1], i3 = w.inc[2], i6 = w.inc[3];
     for (u32 n = 0; n < 64; ++n) {
-        i32 x = multiply((q[0] * q[3]) << 1, e0) + multiply((q[1] * q[5]) << 1, e1);
-        x += multiply((q[2] * q[6]) << 1, e2) + multiply((q[4] * q[7]) << 1, e3);
-        x += (q[0] ^ q[2]) < 0 ? -e4 : e4;
-        x += (q[3] ^ q[6]) < 0 ? -e5 : e5;
-        w[n] = x;
-        q += head_modes;
+        p0 += i0; p2 += i2; p3 += i3; p6 += i6;
+        const i32 m4 = static_cast<i32>(p0 ^ p2) >> 31, m5 = static_cast<i32>(p3 ^ p6) >> 31;
+        x[n] = ((e4 ^ m4) - m4) + ((e5 ^ m5) - m5);
     }
 }
-__attribute__((noinline)) static void wash_pass(Core& v, const Scratch& scratch, i32* __restrict out) {
+__attribute__((noinline)) static void wash_pass(Core& v, const Wash& w, i32* __restrict out) {
     const i32* end = v.pair;
     const Spec& s = v.spec;
-    // The wash pairs' envelopes, interpolated through the block.
-    i32 e[wash_pairs], de[wash_pairs];
+    // The wash pairs' envelopes at the block's middle: they move slowly.
+    i32 e[wash_pairs];
     for (u32 j = 0; j < wash_pairs; ++j) {
-        e[j] = v.e_start[j];
-        de[j] = (end[j] - e[j]) >> 6;
+        e[j] = (v.e_start[j] + end[j]) >> 1;
         v.e_start[j] = end[j];
     }
     const i32 dense = multiply(s.dense, v.velocity);
@@ -464,18 +480,19 @@ __attribute__((noinline)) static void wash_pass(Core& v, const Scratch& scratch,
     wash_gain += multiply(wash_gain, v.wash_lift);
     // Noise in the wash, as loud as modes 1 and 4 together and as dense: 0.7 x a unit normal.
     const i32 hiss = multiply(multiply((v.part[1].u + v.part[4].u) >> 1, q31(0.7 * 1.732 / 2)), dense << 2) << 1;
-    // The pairs' envelopes held through the block, at its middle: they move slowly.
-    const i32 e0 = e[0] + (de[0] << 5), e1 = e[1] + (de[1] << 5), e2 = e[2] + (de[2] << 5), e3 = e[3] + (de[3] << 5);
-    const i32 e4 = (e[4] + (de[4] << 5)) >> 1, e5 = (e[5] + (de[5] << 5)) >> 1;
-    i32 w[64];
-    wash_products(&scratch.sines[0][0], w, e0, e1, e2, e3, e4, e5);
+    // One noise for the hiss and the sine pairs' spray, at their summed power
+    // (a pair of unit sines' product has RMS 1/2; the noise, RMS 1.155 of its gain).
+    const i32 parts[5] = {e[0] >> 1, e[1] >> 1, e[2] >> 1, e[3] >> 1, multiply(hiss, q31(1.155 / 2)) << 1};
+    const i32 spray = multiply(root_sum_squares(parts, 5), q31(1 / 1.155));
+    const i32 e4 = e[4] >> 1, e5 = e[5] >> 1;
+    i32 x[64];
+    wash_squares(w, x, e4, e5);
     u32 seed = v.seed;
     Chamberlin high = v.xh;
     i32 low = v.wash_low;
     const i32 c = v.wash_c;
     for (u32 n = 0; n < 64; ++n) {
-        const i32 x = w[n] + (multiply(noise(seed), hiss) << 1);
-        low += multiply(high.highpass(x) - low, c);
+        low += multiply(high.highpass(x[n] + (multiply(noise(seed), spray) << 1)) - low, c);
         out[n] += multiply(low, wash_gain) << 3;
     }
     v.seed = seed;
@@ -685,6 +702,15 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     }
     const bool ramping = r[0] < one || strikes.count;
     const bool metal_wash = v.spec.dense > 0;
+    // The wash's square waves follow modes 0, 2, 3 and 6 from the block's start.
+    Wash wash;
+    {
+        static const u8 squares[4] = {0, 2, 3, 6};
+        for (u32 i = 0; i < 4; ++i) {
+            wash.ph[i] = v.part[squares[i]].phase;
+            wash.inc[i] = v.part[squares[i]].inc;
+        }
+    }
     // The head's modes: plan each, skip the quiet, run the rest between the
     // strikes, landing each strike as it comes.
     u32 live[head_modes], lives = 0;
@@ -694,7 +720,6 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
         if (!strikes.count && quiet(m)) {
             skip(m, 64);
-            if (metal_wash) for (u32 n = 0; n < 64; ++n) scratch.sines[n][k] = 0;
             continue;
         }
         live[lives++] = k;
@@ -706,15 +731,8 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
             if (end > begin)
                 for (u32 j = 0; j < lives; ++j) {
                     Partial& a = v.part[live[j]];
-                    i16* sa = &scratch.sines[0][live[j]];
-                    const bool rp = ramping && a.pe;
-                    if (metal_wash) {
-                        if (rp) run_mode<true, true>(a, out, sa, r, begin, end - begin);
-                        else run_mode<false, true>(a, out, sa, r, begin, end - begin);
-                    } else {
-                        if (rp) run_mode<true, false>(a, out, sa, r, begin, end - begin);
-                        else run_mode<false, false>(a, out, sa, r, begin, end - begin);
-                    }
+                    if (ramping && a.pe) run_mode<true, false>(a, out, nullptr, r, begin, end - begin);
+                    else run_mode<false, false>(a, out, nullptr, r, begin, end - begin);
                 }
             if (i < strikes.count)
                 for (u32 j = 0; j < lives; ++j) land(v.part[live[j]], strikes.level[i], ramp_at[i]);
@@ -730,7 +748,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     // The wash and the noise add to the head; the wires then follow all of it.
     if (metal_wash) {
         wash_envelopes(v, strikes);
-        wash_pass(v, scratch, out);
+        wash_pass(v, wash, out);
     }
     if (noisy) noise_pass(v, strikes, out);
     if (rattling) rattle_pass(v, out);
