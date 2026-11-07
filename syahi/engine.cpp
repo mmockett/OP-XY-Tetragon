@@ -167,18 +167,16 @@ struct Finish {
     i32 gain, level, hp;
     Knee knee;
     // GRIT: the soft low-pass and its coefficient; the drive's table words; the
-    // crush's held sample, samples left of it, its hold, its step and its output.
-    i32 low, soft, drive, makeup, held, step, held_y;
+    // crush's held output, samples left of it, its hold and its step.
+    i32 low, soft, drive, makeup, held, step;
     u32 hold_left, hold;
 };
-enum GritKind { grit_none, grit_soft, grit_drive_only, grit_crush };
+enum GritKind { grit_none, grit_soft, grit_drive_only };
 template <int kind>
 __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restrict out, i32* __restrict output) {
     const i32 gain = f.gain, level = f.level, knee_at = f.knee.knee;
-    i32 hp = f.hp, low = f.low, held = f.held, held_y = f.held_y;
-    const i32 soft = f.soft, drive = f.drive, makeup = f.makeup, step = f.step;
-    u32 hold_left = f.hold_left;
-    const u32 hold = f.hold;
+    i32 hp = f.hp, low = f.low;
+    const i32 soft = f.soft, drive = f.drive, makeup = f.makeup;
     u32 under = 0;
     i32 most = 0;
     for (u32 n = 0; n < 64; ++n) {
@@ -188,15 +186,6 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
             y = low;
         } else if (kind == grit_drive_only) {
             y = grit_drive(y, drive, makeup);
-        } else if (kind == grit_crush) {
-            // The held sample's output holds with it: computed once a hold.
-            if (!hold_left) {
-                held = y;
-                hold_left = hold;
-                held_y = (grit_drive(held, drive, makeup) + (step >> 1)) & ~(step - 1);
-            }
-            --hold_left;
-            y = held_y;
         }
         hp += multiply(y - hp, 7323000);   // 1 - e^(-2 pi 24 / 44100), Q31
         y = shl_clamp(multiply(y - hp, level), 3);   // level is Q28
@@ -212,8 +201,39 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
             if (output[n] > knee_at || output[n] < -knee_at) output[n] = round_off(output[n], f.knee);
     f.hp = hp;
     f.low = low;
+    return under;
+}
+// GRIT past +9: the whole output chain runs once a hold (the rate it
+// crushes to) and its result holds, so a hold of 3 to 13 samples costs one
+// sample's work. The 24 Hz high-pass steps by the hold (hp_hold); `held` is
+// the held output.
+__attribute__((noinline)) static u32 finish_crush(Finish& f, const i32* __restrict out, i32* __restrict output,
+                                                  i32 hp_hold) {
+    const i32 gain = f.gain, level = f.level, knee_at = f.knee.knee;
+    const i32 drive = f.drive, makeup = f.makeup, step = f.step;
+    i32 hp = f.hp, held = f.held;
+    u32 hold_left = f.hold_left, under = 0, n = 0;
+    const u32 hold = f.hold;
+    const bool quiet_held = static_cast<u32>(held + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);
+    bool quiet_now = quiet_held;
+    while (n < 64) {
+        if (!hold_left) {
+            const i32 x = shl_clamp(multiply(out[n], gain), 7);
+            const i32 y = (grit_drive(x, drive, makeup) + (step >> 1)) & ~(step - 1);
+            hp += multiply(y - hp, hp_hold);
+            held = shl_clamp(multiply(y - hp, level), 3);   // level is Q28
+            if (__builtin_expect(held > knee_at || held < -knee_at, 0)) held = round_off(held, f.knee);
+            hold_left = hold;
+            quiet_now = static_cast<u32>(held + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);
+        }
+        const u32 c = hold_left < 64 - n ? hold_left : 64 - n;
+        for (u32 i = 0; i < c; ++i) output[n + i] = held;
+        if (quiet_now) under += c;
+        hold_left -= c;
+        n += c;
+    }
+    f.hp = hp;
     f.held = held;
-    f.held_y = held_y;
     f.hold_left = hold_left;
     return under;
 }
@@ -233,11 +253,11 @@ static inline void finish(Voice& voice, const i32* out, i32* output) {
     f.makeup = g > 0 ? tables::grit_makeup[g] : 0;
     f.hold = g > 9 ? static_cast<u32>(1 + (g - 9) * 2) : 0;
     f.step = g > 9 ? static_cast<i32>(1) << (16 + ((g - 10) * 7) / 5) : 0;   // 2^(14 - 1.4 (g - 9)) steps a working level
-    f.held_y = g > 9 && f.hold_left ? (grit_drive(f.held, f.drive, f.makeup) + (f.step >> 1)) & ~(f.step - 1) : 0;
+    // The high-pass's coefficient for a whole hold: 1 - (1 - c)^hold.
     const u32 under = g == 0 ? finish_pass<grit_none>(f, out, output)
                     : g < 0 ? finish_pass<grit_soft>(f, out, output)
                     : g <= 9 ? finish_pass<grit_drive_only>(f, out, output)
-                    : finish_pass<grit_crush>(f, out, output);
+                    : finish_crush(f, out, output, one - power(one - 7323000, f.hold));
     voice.hp = f.hp;
     voice.low = f.low;
     voice.held = f.held;
