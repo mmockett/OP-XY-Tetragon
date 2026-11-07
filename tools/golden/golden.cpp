@@ -330,6 +330,18 @@ extern "C" int main() {
     using namespace golden;
     const u32 blocks = GOLDEN_BENCH_BLOCKS;
     u32 heavy_model = 0, heavy_level = 0, heaviest = 0;
+#ifdef GOLDEN_PROFILE
+    // A profiling build runs one of the benchmark's runs: 1 the kit, 2 one
+    // voice of GOLDEN_HEAVY_MODEL at GOLDEN_HEAVY_LEVEL, 3 that voice x capacity.
+    {
+        Count c;
+        const Kind kind = GOLDEN_PROFILE == 1 ? kKit : GOLDEN_PROFILE == 2 ? kOne : kCeiling;
+        run(kind, level_payload(GOLDEN_HEAVY_MODEL, GOLDEN_HEAVY_LEVEL, true), blocks, true, c);
+        report("profile", GOLDEN_HEAVY_MODEL, GOLDEN_HEAVY_LEVEL, c);
+        say("done\n");
+        return 0;
+    }
+#endif
     {
         Count c;
         run(kKit, Payload(), blocks, true, c);
