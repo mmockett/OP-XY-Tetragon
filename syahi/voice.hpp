@@ -669,6 +669,22 @@ static inline void rattle_pass(Core& v, i32* out) {
     v.wb = z.band;
 }
 
+// Plans the head's modes for the block; returns the ones to run (the others
+// are quiet and only advance).
+__attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, i32 energy_end, i32 glide_now, u32* live) {
+    u32 lives = 0;
+    for (u32 k = 0; k < head_modes; ++k) {
+        Partial& m = v.part[k];
+        plan_mode(v, m, k, energy_end, glide_now);
+        for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
+        if (!strikes.count && quiet(m)) {
+            skip(m, 64);
+            continue;
+        }
+        live[lives++] = k;
+    }
+    return lives;
+}
 static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     Strikes strikes;
     schedule(v, strikes);
@@ -713,17 +729,8 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     }
     // The head's modes: plan each, skip the quiet, run the rest between the
     // strikes, landing each strike as it comes.
-    u32 live[head_modes], lives = 0;
-    for (u32 k = 0; k < head_modes; ++k) {
-        Partial& m = v.part[k];
-        plan_mode(v, m, k, energy_end, glide_now);
-        for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
-        if (!strikes.count && quiet(m)) {
-            skip(m, 64);
-            continue;
-        }
-        live[lives++] = k;
-    }
+    u32 live[head_modes];
+    const u32 lives = plan_head(v, strikes, energy_end, glide_now, live);
     {
         u32 begin = 0;
         for (u32 i = 0; i <= strikes.count; ++i) {
