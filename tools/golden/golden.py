@@ -22,7 +22,7 @@ LEVELS = [64, 0, 127]
 # The benchmark's heaviest model and level (index into LEVELS) per kit, from
 # tetragon-capture-001, for the host scenarios' retrigger and ceiling runs.
 # The counted build finds its own, as the benchmark does.
-HEAVY = {"thunder": (5, 0), "curio": (5, 0), "galileo": (14, 2), "syahi": (5, 2)}
+HEAVY = {"thunder": (5, 0), "curio": (5, 0), "galileo": (14, 2), "syahi": (5, 0)}
 BFIN_FLAGS = ["-mcpu=bf707", "-O2", "-std=gnu++11", "-ffreestanding", "-fno-exceptions", "-fno-rtti",
               "-fno-threadsafe-statics", "-fno-use-cxa-atexit", "-fno-asynchronous-unwind-tables",
               "-fno-unwind-tables", "-fno-common", "-fno-tree-loop-distribute-patterns",
@@ -358,12 +358,14 @@ def cmd_bfin(a):
         subprocess.run([str(asm), "-mcpu=bf707", "-o", str(out / o), str(s)], check=True)
         objs.append(str(out / o))
     subprocess.run([str(ld), "-e", "start", "-Ttext=0x10000", "-o", str(out / "golden.elf"), *objs], check=True)
-    # A short build (200 blocks a run) for the simulator's PC profile.
-    dp = defines(info) + ["-DGOLDEN_BENCH_BLOCKS=200", "-DGOLDEN_BFIN"]
-    subprocess.run([str(cxx), *BFIN_FLAGS, *dp, *inc, "-S", str(HERE / "golden.cpp"), "-o", str(out / "profile.s")], check=True)
-    subprocess.run([str(asm), "-mcpu=bf707", "-o", str(out / "profile.o"), str(out / "profile.s")], check=True)
-    subprocess.run([str(ld), "-e", "start", "-Ttext=0x10000", "-o", str(out / "profile.elf"),
-                    str(out / "profile.o"), *objs[1:]], check=True)
+    # Short builds (200 blocks) for the simulator's PC profile: the whole
+    # benchmark, then the kit, the heaviest voice and that voice x capacity alone.
+    for name, only in (("profile", None), ("profile-kit", 1), ("profile-voice", 2), ("profile-ceiling", 3)):
+        dp = defines(info) + ["-DGOLDEN_BENCH_BLOCKS=200", "-DGOLDEN_BFIN"] + ([f"-DGOLDEN_PROFILE={only}"] if only else [])
+        subprocess.run([str(cxx), *BFIN_FLAGS, *dp, *inc, "-S", str(HERE / "golden.cpp"), "-o", str(out / f"{name}.s")], check=True)
+        subprocess.run([str(asm), "-mcpu=bf707", "-o", str(out / f"{name}.o"), str(out / f"{name}.s")], check=True)
+        subprocess.run([str(ld), "-e", "start", "-Ttext=0x10000", "-o", str(out / f"{name}.elf"),
+                        str(out / f"{name}.o"), *objs[1:]], check=True)
     census = subprocess.run([sys.executable, str(HERE / "census.py"), str(out / "golden-g.s")], capture_output=True, text=True)
     (out / "census.txt").write_text(census.stdout + census.stderr)
     print(f"{info['id']}: built {out / 'golden.elf'}")
@@ -407,34 +409,44 @@ def elf_functions(path):
 
 
 def profile(out, run, timeout):
-    """The simulator's PC samples over the short build, summed per function."""
-    work = pathlib.Path(tempfile.mkdtemp())
-    # --verbose makes the run print its statistics at exit, which writes gmon.out.
-    r = subprocess.run([str(pathlib.Path(run).resolve()), "--verbose", "--profile-pc", "--profile-pc-frequency=1009",
-                        "--profile-pc-granularity=4", str((out / "profile.elf").resolve())],
-                       cwd=work, capture_output=True, text=True, timeout=timeout)
-    if not (work / "gmon.out").exists():
-        (out / "profile.txt").write_text("no profile: " + (r.stdout + r.stderr)[-2000:])
-        print("no profile written:", (r.stdout + r.stderr)[-2000:])
-        return
-    raw = (work / "gmon.out").read_bytes()
-    low, high, size = struct.unpack_from("<III", raw, 0)
-    counts = struct.unpack_from("<%dH" % ((len(raw) - 12) // 2), raw, 12)
-    step = (high - low) / max(1, len(counts))
-    funcs = elf_functions(out / "profile.elf")
-    totals, total = {}, 0
-    for i, c in enumerate(counts):
-        if not c:
+    """The simulator's PC samples, summed per function, for each profiling build.
+    For the single runs each function's cost is also given in cycles a sample
+    (a voice-sample for the kit and the ceiling)."""
+    sections = []
+    for name, voices in (("profile", 0), ("profile-kit", 16), ("profile-voice", 1), ("profile-ceiling", 16)):
+        elf = out / f"{name}.elf"
+        if not elf.exists():
             continue
-        pc = low + int(i * step)
-        total += c
-        name = next((n for s, z, n in funcs if s <= pc < s + z), "?")
-        totals[name] = totals.get(name, 0) + c
-    lines = [f"PC samples: {total} (every 1009 cycles; 200 blocks a run; 65535 caps a bucket)"]
-    for name, c in sorted(totals.items(), key=lambda x: -x[1])[:45]:
-        lines.append(f"{100.0 * c / max(1, total):6.2f}%  {name}")
-    (out / "profile.txt").write_text("\n".join(lines) + "\n")
-    print("\n".join(lines[:25]))
+        work = pathlib.Path(tempfile.mkdtemp())
+        freq = 1009 if name == "profile" else 101
+        # --verbose makes the run print its statistics at exit, which writes gmon.out.
+        r = subprocess.run([str(pathlib.Path(run).resolve()), "--verbose", "--profile-pc", f"--profile-pc-frequency={freq}",
+                            "--profile-pc-granularity=4", str(elf.resolve())],
+                           cwd=work, capture_output=True, text=True, timeout=timeout)
+        if not (work / "gmon.out").exists():
+            sections.append(f"## {name}: no profile: " + (r.stdout + r.stderr)[-500:])
+            continue
+        raw = (work / "gmon.out").read_bytes()
+        low, high, size = struct.unpack_from("<III", raw, 0)
+        counts = struct.unpack_from("<%dH" % ((len(raw) - 12) // 2), raw, 12)
+        step = (high - low) / max(1, len(counts))
+        funcs = elf_functions(elf)
+        totals, total = {}, 0
+        for i, c in enumerate(counts):
+            if not c:
+                continue
+            pc = low + int(i * step)
+            total += c
+            name_f = next((n for s, z, n in funcs if s <= pc < s + z), "?")
+            totals[name_f] = totals.get(name_f, 0) + c
+        per = freq / (200 * 64 * voices) if voices else 0
+        lines = [f"## {name}: {total} PC samples, every {freq} cycles, 200 blocks"
+                 + (f"; cycles a {'voice-' if voices > 1 else ''}sample = samples x {per:.4f}" if voices else "")]
+        for f, c in sorted(totals.items(), key=lambda x: -x[1])[:40]:
+            lines.append(f"{100.0 * c / max(1, total):6.2f}%" + (f" {c * per:7.1f} cyc" if voices else "") + f"  {f}")
+        sections.append("\n".join(lines))
+    (out / "profile.txt").write_text("\n\n".join(sections) + "\n")
+    print("\n\n".join(s[:1500] for s in sections))
 
 
 def load_cycles(folder):
