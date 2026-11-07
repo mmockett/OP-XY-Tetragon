@@ -203,6 +203,28 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
     f.low = low;
     return under;
 }
+// Without GRIT the two gains are one (gain x level x 2^10, as Q22 under a
+// 9-bit shift) and the 24 Hz high-pass runs on the output's scale.
+__attribute__((noinline)) static u32 finish_clean(Finish& f, const i32* __restrict out, i32* __restrict output) {
+    const i32 k = multiply(f.gain, f.level) << 1, knee_at = f.knee.knee;
+    i32 hp = f.hp;
+    u32 under = 0;
+    i32 most = 0;
+    for (u32 n = 0; n < 64; ++n) {
+        const i32 x = shl_clamp(multiply(out[n], k), 9);
+        hp += multiply(x - hp, 7323000);   // 1 - e^(-2 pi 24 / 44100), Q31
+        const i32 y = x - hp;
+        output[n] = y;
+        const i32 a = absolute(y);
+        most = a > most ? a : most;
+        under += static_cast<u32>(y + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);
+    }
+    if (most > knee_at)
+        for (u32 n = 0; n < 64; ++n)
+            if (output[n] > knee_at || output[n] < -knee_at) output[n] = round_off(output[n], f.knee);
+    f.hp = hp;
+    return under;
+}
 // GRIT past +9: the whole output chain runs once a hold (the rate it
 // crushes to) and its result holds, so a hold of 3 to 13 samples costs one
 // sample's work. The 24 Hz high-pass steps by the hold (hp_hold); `held` is
@@ -254,7 +276,7 @@ static inline void finish(Voice& voice, const i32* out, i32* output) {
     f.hold = g > 9 ? static_cast<u32>(1 + (g - 9) * 2) : 0;
     f.step = g > 9 ? static_cast<i32>(1) << (16 + ((g - 10) * 7) / 5) : 0;   // 2^(14 - 1.4 (g - 9)) steps a working level
     // The high-pass's coefficient for a whole hold: 1 - (1 - c)^hold.
-    const u32 under = g == 0 ? finish_pass<grit_none>(f, out, output)
+    const u32 under = g == 0 ? finish_clean(f, out, output)
                     : g < 0 ? finish_pass<grit_soft>(f, out, output)
                     : g <= 9 ? finish_pass<grit_drive_only>(f, out, output)
                     : finish_crush(f, out, output, one - power(one - 7323000, f.hold));
