@@ -341,11 +341,17 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
     m.u = multiply(m.u, m.decay);
     // Pitch at the block's end; the increment glides there sample by sample.
     const i32 pitch = lifted(m, energy_end, glide_now);
-    const u32 cap = increment(lg(10800));   // the half rate's Nyquist, 11 kHz
-    u32 target = increment(pitch);
-    if (target > cap) target = cap;
-    if (m.inc > cap) m.inc = cap;
-    m.dinc = (static_cast<i32>(target) - static_cast<i32>(m.inc)) >> 6;
+    // A mode whose pitch can't move (no bend, no glide) keeps its increment
+    // after the first block.
+    if (m.bend || v.spec.glide || !v.air_time) {
+        const u32 most = increment(lg(10800));   // the half rate's Nyquist, 11 kHz
+        u32 target = increment(pitch);
+        if (target > most) target = most;
+        if (m.inc > most) m.inc = most;
+        m.dinc = (static_cast<i32>(target) - static_cast<i32>(m.inc)) >> 6;
+    } else {
+        m.dinc = 0;
+    }
     // Modulation: the head's gain, the fade under Nyquist, swell and beat.
     i32 mod = v.head_gain;
     // The fade under the half rate's Nyquist, 9 to 10.5 kHz; below 8.5 kHz
@@ -689,6 +695,16 @@ __attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, 
     u32 lives = 0;
     for (u32 k = 0; k < head_modes; ++k) {
         Partial& m = v.part[k];
+        // A quiet mode with no strike only falls and moves on (its level is
+        // under -78 dB of a strike: it is set to rest).
+        if (!strikes.count && quiet(m)) {
+            m.a = multiply(m.a, m.decay);
+            m.p = multiply(m.p, m.decay);
+            m.u = multiply(m.u, m.decay);
+            m.g = m.dg = 0;
+            skip(m, 64);
+            continue;
+        }
         plan_mode(v, m, k, energy_end, glide_now);
         for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
         if (!strikes.count && quiet(m)) {
