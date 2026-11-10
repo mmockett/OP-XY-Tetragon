@@ -1,6 +1,6 @@
 # Syahi
 
-![Syahi's screen: a tabla in section on the left, a hand's index finger on its head, and the head seen from above on the right, its syahi a dark disc and its nodal lines lit by a stroke](docs/screen.png)
+![Syahi's screen: a tabla standing on its ring, its body in dark bands with straps and wooden tuning blocks, the head on top with its syahi built up in rings, the palm's pad, the stroke's spot and its nodal lines](docs/screen.png)
 
 One struck head, loaded and shaped into any drum. Syahi is a synthesis drum
 kit for the OP-XY: each of its 24 keys holds one of eight models (BOOM,
@@ -60,8 +60,8 @@ roll on one key stays one voice.
 | 1 | MACHINE | boom … wire | The key's model (BOUNCE shows as "bnce", to fit its column). Its eight controls keep their values |
 | 1 | CHOKE | none, 1, 2, 3 | Keys in one group cut each other (closed and open hats) |
 | 1 | PAN | -100 … 100 | The key's pan |
-| 1 | LEVEL | -30dB … 0dB | The key's level |
-| 2 | HUMAN | off, 1 … 15 | Each hit lands a little off its SPOT, a little softer and a little off pitch (at 15: SPOT spread by about 14 steps, up to 30% softer, about 14 cents), drawn from the key's own note count. On screen the strike mark wanders with it |
+| 1 | LEVEL | -30 … 0 | The key's level, in dB |
+| 2 | HUMAN | off, 1 … 15 | Each hit lands a little off its SPOT, a little softer and a little off pitch (at 15: SPOT spread by about 14 steps, up to 30% softer, about 14 cents), drawn from the key's own note count. On screen the stroke's spot wanders with it |
 | 2 | GRIT | -16 … +15 | Below 0 a tape-rounded hit (a low-pass from 16 kHz down to 1.2 kHz); above 0 a tanh drive; above +9 the rate and bits drop too (each sample held 3 to 13 times, 13 down to 6 bits under the hit's peak) |
 | 2 | FX I, FX II | TRK, 0 … 100 | The key's own send to each effect |
 
@@ -215,85 +215,40 @@ come.
 
 ## The screen
 
-An engraved plate, after the way old instrument catalogues drew an
-instrument twice: the selected key's object in section on the left, standing
-on the floor and filling the plate from the header down, and from above on
-the right. The
-section is cut open: the shell's walls, its dark inside with the far wall's
-lug bolts, the hoops, lugs and tension rods, and what it stands on: a
-kick's spurs, a snare stand's basket and tripod, a floor tom's legs, the
-thunder drum's frame, a tabla's cushion, a practice pad's stand. The bar is a marimba key with
-thick ends and an arched undercut, a cord through the hole at each node, on
-rails and posts over a trestle, its resonator hanging below with a flared
-mouth and a stopper. The cymbal shows its bell, bow and thinning edge
-between felts on a sleeve under a wing nut, on a stand with a tilter, a
-height clamp and a braced tripod. The plan is the head itself: a drum's
-hoop and lugs, the tabla's braid, straps and layered syahi, the cymbal's
-lathe lines, edge and bell, and four keys of a marimba on its frame: the
-bar, its twin and the keys either side, a shorter and a longer, each with its
-grain and the holes the cords run through, over the rails and the posts
-between the keys. The tabla and the bounce are played by hand: Max's drawing of a pointing
-hand, traced line for line, the forearm in from the upper left, the index
-finger out and pointing down onto the head, the thumb lying over the fist and
-three curled fingers stacked under it, with the crease where the wrist meets
-the palm. It is drawn whole and never reshaped: a hit swings it down about
-the wrist until the index's tip touches the head. BOUNCE's hand holds a
-drumstick under the index, in a pointer grip. The striker comes from the left; where it can't reach the
-strike point from there without swinging down beside the head (a stroke out
-at the rim, a rimshot, a big low drum), it comes from the right, over the head.
-
-Every control moves a part:
+A tabla in the stock isometric look, the same drum for every model: it
+stands on its ring, its body in bands with the straps down its front and
+four wooden tuning blocks wedged in them, and on its head the syahi built up
+ring by ring, the resting palm's pad, the stroke's spot and the head's
+nodal lines. The grey says which encoder moves a part: the bands are
+encoder 1's (FORM) darkest greys, the pad 4B4B4B (DECAY), the syahi's rings
+969696 (LOAD), the lit nodal lines and the spot CDCDCD (PRESS, SPOT). Every
+3D face carries a 0.5 px black outline.
 
 | Control | What moves |
 | --- | --- |
-| TUNE | The whole object's size, to 0.8 in section (still standing on the floor) and 0.86 from above (a smaller drum is a higher note); on TABLA the gatte hammered down the straps |
-| DECAY | A folded cloth on the head: over half of it for the shortest ring, smaller as the ring lengthens, sliding off the rim for the longest |
-| FORM | The head's section: thin skin, a syahi lens, a slab, an undercut bar, a cymbal's bell and bow, a bell. A head domed high draws the section a little smaller so it stays under the header |
-| SPOT | The striker and the strike mark move out from the centre; the nodal circles give way to diameters |
-| BEND, SQUEEZE | Tension rods backed out and a slack, sagging head; the lacing's waist pinched in or bowed out (a talking drum) |
-| BEATER, STICK, MALLET, HAND, HANDS, HAMMER | The striker itself: a felt, wooden or plastic beater; a brush, a stick, a rimshot; a yarn-wound ball shrinking as it hardens; the hand's swing: HAND cocks the wrist further back at rest, from a fingertip's small flick to a slap's full swing; HANDS slides BOUNCE's stick back through the fist over its first 60% (the fingertip then strikes) and widens the swing; a soft or steel hammer |
-| LOAD, PRESS, GOURD | The syahi's lens and the plan's layered disc grow; the palm's heel goes down and dents the head; the shell bellies into a pot, its straps lying on the belly |
-| SHELL, AIR, HEADS | The kick's shell deepens, its port going down with it and its spurs shortening to the floor; rings of air out of the port; the second head, detuned, seen through the first |
-| WIRES, SNAP, HEAD | The snare wires under the bottom head: at none they hang clear of it, and as WIRES rises they press to it and swing wider; the strainer's lever, hanging out from the shell for loose wires and thrown up against it as they draw tight (and the wires finer and flatter); the muffling ring, a wide band across the head from above for a dead head, a narrow one at the rim for a ringing one |
-| BEAT, TUBE, ALLOY | The twin key beside the bar, shorter and turned; the resonator lengthens toward the floor, its stopper with it; the wood's grain fades and the bar thins as it turns to bronze |
-| WASH, SWELL, SIZZLE | The lathe's grooves, cut one by one between its lines and brighter as they deepen; a gong's turned-down rim; rivets round the edge and a chain hanging over it |
-| COUNT, GAP, SHRINK | The stick's bouncing path over the head and its marks from above |
-| SWEEP, RATE, SPRING | The spring under the thunder drum: its width, its stretch, its coils |
-| HUMAN | The strike mark wanders, hit to hit, as the sound does |
+| TUNE | The tuning blocks slide down the straps to tighten the head |
+| DECAY | The palm's pad on the head: large for a short ring, small for a long one |
+| LOAD | The syahi: one ring to five, its black disc widening with them |
+| PRESS | More of the head's six nodal lines are lit, one to all six |
+| FORM | The body's bands: four for a skin down to one for a gong, the head going down with them |
+| SPOT | The stroke's spot moves out from the centre toward the rim |
+| HUMAN | The spot wanders, hit to hit, as the sound does |
 
-A hit flexes the head (up to 8 px) in the stroke's mode, sends two rings
-out from the strike mark and draws the nodal lines of the mode it excites
-on the head from above, bright and fading as it rings down: circles for a
-centre strike, diameters toward the rim, and across a bar its first mode's
-two nodes or its second mode's three (the bar flexes as a free bar does,
-still at the cords). The motion lasts as long as the
-sound: it follows DECAY. A kit's voice plays until its own sound ends (the
-OP-XY applies no amp envelope to a drum kit's voices, and letting a key go
-changes nothing), so the screen ignores the envelope page too.
+A hit lights all six nodal lines white; they go back one by one over the
+time the sound takes to fall 60 dB, so the motion follows DECAY. A kit's
+voice plays until its own sound ends (the OP-XY applies no amp envelope to a
+drum kit's voices, and letting a key go changes nothing), so the screen
+ignores the envelope page too.
 
-The screen is 267 nodes of 512 and four reshaping outlines of 64 points (the
-head, the shell, the part that couples to it, the striker; the hand is static). The section is
-drawn at 1.25 times its artwork, the plan at 1.06. Every line draws about
-1 px wide, as stock Drumline's do (the four outlines have palette entries of
-their own, since their scale of 1.25 widens a stroke), and ribbons about 1.4
-px across; greys step from near white for the subject (head and striker)
-through structure and detail to engraving. The dark bodies (the shells' insides, the heads, the cymbal and the
-bars from above, the stands) are fixed fills drawn under the outlines;
-nothing that moves is filled. Every outline is a closed ribbon checked
-against the OP-XY's drawing rules over every value of every control
-(`tests/screen.cpp`) and by a screen checker over 9.8 million frames (no
-faults, nothing over the header). Nothing changes at rest; while hits
-sound 3.2 to 10.6 nodes change a frame on average (peak 17). A turned control
-that moves many parts at once (TUNE scales the whole object) moves them
-over a few frames, never more than 26 nodes in one; only a model switch
-redraws everything at once.
-
-Contact sheets at the screen's own size, each model with every control at
-0, 50 and 100, both Shift rows and a hit: [boom](docs/sheets/boom.png),
-[snare](docs/sheets/snare.png), [tom](docs/sheets/tom.png),
-[tabla](docs/sheets/tabla.png), [bar](docs/sheets/bar.png),
-[metal](docs/sheets/metal.png), [bounce](docs/sheets/bounce.png),
-[wire](docs/sheets/wire.png), and [all eight](docs/sheets/overview.png).
+The screen is 68 nodes of 512 and reshapes no outline: every part is a fixed
+outline that the display shows, hides, slides, or (the flat pad and syahi)
+scales. Each is one closed subpath of at most 60 points, lines are thin
+closed ribbons, and `tools/make_panel.py` checks every outline against the
+OP-XY's drawing rules (points 1/8 px apart, a closing edge of 1/4 px, some
+area, no turn sharper than 150 degrees). Nothing changes at rest; a hit
+changes six nodes, then one at a time. FORM taking a band off moves the
+whole head; such a change goes over a few frames, never more than 26 nodes in
+one (`tests/screen.cpp`).
 
 ## CPU
 
