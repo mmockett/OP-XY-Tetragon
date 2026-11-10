@@ -1,13 +1,16 @@
 // GALILEO's screen checks, through its real display():
-// - every frame is valid, and every reshaping outline follows the device's
-//   drawing rules (64 distinct points at least 1/8 px apart, a closing edge of
-//   at least 1/4 px, area enclosed), across every model and every control's
-//   ends, at rest and mid-run;
-// - churn while a run plays stays within budget, and is 0 at rest;
+// - every frame is valid, and the reshaping outline (the drum's ring) follows
+//   the device's drawing rules (64 distinct points at least 1/8 px apart, a
+//   closing edge of at least 1/4 px, area enclosed, no turn sharper than
+//   SHARPEST degrees: the device strokes with unlimited mitres), across every
+//   model and every control's ends, at rest and mid-run;
+// - churn while a run plays stays within budget, and is 0 at rest; turning
+//   any control a step at a time changes at most 30 nodes in a frame;
 // - the run plays out whatever the track's amp envelope and gate do: a kit's
 //   voice ignores both (it plays until its own sound ends), so the screen does;
-// - the dots of the ball's path light as it passes them and go out again,
-//   a few a frame, once it rests;
+// - a hit whose sound lands at once still shows the ball roll down the board,
+//   and with reduced motion it is on the head at once;
+// - the controls show: risers, bells, balls, wires and the drum's size;
 // - Shift shows MACHINE, CHOKE, PAN, LEVEL and SPACE, FEEL, FX I, FX II;
 // - every header caption fits its column in the device font (advance widths
 //   measured with the suite's tools/caption_width.py; tools/check_captions.py
@@ -16,6 +19,7 @@
 #include "../display.cpp"
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <initializer_list>
 
 namespace {
@@ -56,22 +60,30 @@ unsigned step(double fps = 60) {
 }
 void note() { ++input.note_serial; input.held_notes = 1; }
 
-// The device's rules for a reshaping outline (the SDK's docs/display.md).
+// The device's rules for a reshaping outline (the SDK's docs/display.md), and
+// no turn sharper than SHARPEST degrees: a turn near straight back draws a
+// long mitre spike on the device.
+const double SHARPEST = 150.0;
 void check_outlines(const char* what) {
     CHECK(opxy::draw::valid(frame), "%s: invalid frame", what);
+    const double limit = std::cos(SHARPEST * 3.14159265358979 / 180.0);
     for (unsigned p = 0; p < Frame::path_count; ++p) {
         const auto& path = frame.paths[p];
         long long area = 0;
-        double closest = 1e9;
+        double closest = 1e9, sharpest = 1;
         for (unsigned i = 0; i < 64; ++i) {
             const auto& a = path.points[i];
             const auto& b = path.points[(i + 1) % 64];
+            const auto& c = path.points[(i + 2) % 64];
             area += static_cast<long long>(a.x) * b.y - static_cast<long long>(b.x) * a.y;
             for (unsigned j = i + 1; j < 64; ++j) {
                 const double dx = (path.points[j].x - a.x) / 1024.0, dy = (path.points[j].y - a.y) / 1024.0;
                 const double d = dx * dx + dy * dy;
                 if (d < closest) closest = d;
             }
+            const double ux = b.x - a.x, uy = b.y - a.y, vx = c.x - b.x, vy = c.y - b.y;
+            const double lu = std::sqrt(ux * ux + uy * uy), lv = std::sqrt(vx * vx + vy * vy);
+            if (lu > 0 && lv > 0) { const double k = (ux * vx + uy * vy) / (lu * lv); if (k < sharpest) sharpest = k; }
         }
         const auto& first = path.points[0];
         const auto& last = path.points[63];
@@ -79,16 +91,17 @@ void check_outlines(const char* what) {
         CHECK(closest >= 1.0 / 64, "%s: path %u has points %.3f px apart", what, p, closest);
         CHECK(cx * cx + cy * cy >= 1.0 / 16, "%s: path %u closes over %.3f px", what, p, cx * cx + cy * cy);
         CHECK(area != 0, "%s: path %u encloses no area", what, p);
+        CHECK(sharpest >= limit, "%s: path %u turns sharper than %.0f degrees", what, p, SHARPEST);
     }
 }
-// Where the ball is drawn (x, Q10).
-int ball_x() { return frame.nodes[galileo::art::ball].x; }
-// The dots of the ball's path lit (palette 4).
-unsigned lit_dots() {
-    unsigned n = 0;
-    for (unsigned i = 0; i < 7; ++i) n += frame.nodes[galileo::art::fall0 + i].shade == 4;
-    for (unsigned i = 0; i < 24; ++i) n += frame.nodes[galileo::art::hop0 + i].shade == 4;
-    return n;
+// Where the first ball to roll is drawn (one ball: slot 0), Q10.
+int ball_x() { return frame.nodes[galileo::art::ball0].x; }
+int ball_y() { return frame.nodes[galileo::art::ball0].y; }
+bool shown(unsigned n) { return frame.nodes[n].x != opxy::draw::hidden_x * 1024; }
+unsigned count_shown(unsigned first, unsigned count, unsigned stride) {
+    unsigned k = 0;
+    for (unsigned i = 0; i < count; ++i) k += shown(first + i * stride);
+    return k;
 }
 
 // Advance widths at 20 px, in half pixels, for ASCII 32..126 (Univers Next Pro
@@ -163,13 +176,36 @@ int main() {
         }
         std::printf("churn: worst mean %.1f, worst peak %u nodes a frame\n", worst_mean, worst_peak);
     }
+    // Turning any control a step a frame, from 0 to 127 and back, from three
+    // bases: at most 30 nodes change in a frame, and none once it stops.
+    {
+        unsigned worst = 0;
+        const unsigned char bases[3][8] = {{0, 0, 0, 0, 0, 0, 0, 0}, {64, 64, 64, 64, 64, 64, 64, 64}, {127, 127, 127, 127, 127, 127, 127, 127}};
+        for (unsigned b = 0; b < 3; ++b)
+            for (unsigned s = 0; s < 8; ++s) {
+                unsigned char c[8];
+                std::memcpy(c, bases[b], 8);
+                begin(1, c);
+                step();
+                for (int v = 0; v < 256; ++v) {
+                    const int raw = v < 128 ? v : 255 - v;
+                    input.slots[s] = raw >= 127 ? 0x7fffffff : raw << 24;
+                    if (s >= 4) input.parameters[s - 4] = input.slots[s];
+                    const unsigned n = step();
+                    if (n > worst) worst = n;
+                    CHECK(n <= 30, "slot %u stepped to %d changes %u nodes in a frame", s, raw, n);
+                }
+                step();
+                const unsigned rest = step();
+                CHECK(rest == 0, "slot %u still changes %u nodes once it stops", s, rest);
+            }
+        std::printf("controls: at most %u nodes a frame turning one control a step\n", worst);
+    }
     // The run plays out: a short amp envelope and a note let go at 0.1 s
-    // change nothing, as a kit's voice ignores both. The path's dots light as
-    // the ball passes and go dark again a few a frame once it rests.
+    // change nothing, as a kit's voice ignores both.
     {
         unsigned char roll[8] = {57, 76, 44, 64, 88, 64, 70, 0};   // eight 1/32s and a bounce: about 0.7 s
         int free_x[3], cut_x[3];
-        unsigned lit[3] = {0, 0, 0};
         for (int pass = 0; pass < 2; ++pass) {
             begin(1, roll);
             if (pass) { input.amp.attack = 0; input.amp.decay = 0x08000000; input.amp.sustain = 0; input.amp.release = 0x7f000000; }
@@ -179,44 +215,52 @@ int main() {
             for (int f = 1; f <= 45; ++f) {
                 if (f == 6 && pass) { input.held_notes = 0; ++input.note_off_serial; }
                 step();
-                if (f == 15 || f == 30 || f == 45) {
-                    (pass ? cut_x : free_x)[k] = ball_x();
-                    if (!pass) lit[k] = lit_dots();
-                    ++k;
-                }
+                if (f == 15 || f == 30 || f == 45) (pass ? cut_x : free_x)[k++] = ball_x();
             }
         }
         for (int k = 0; k < 3; ++k) CHECK(free_x[k] == cut_x[k], "the amp envelope or the gate moves the ball (frame %d: %d, %d)", 15 * (k + 1), free_x[k], cut_x[k]);
-        CHECK(lit[0] <= lit[1] && lit[1] <= lit[2] && lit[2] > 4, "the path's dots don't light as the ball passes (%u, %u, %u)", lit[0], lit[1], lit[2]);
-        for (int f = 0; f < 200; ++f) step();
-        CHECK(lit_dots() == 0, "%u dots still lit after the ball rests", lit_dots());
     }
-    // A hit whose sound lands at once (no frets) still shows the ball travel:
-    // from the catch over 0.1 s, each frame a shorter step than the last, then
-    // the strike as it lands. With reduced motion it is on the body at once.
+    // A hit whose sound lands at once (no frets) still shows the ball roll:
+    // from the head down the board over 0.1 s, faster each frame, then onto
+    // the drum, and back to the head once it rests. With reduced motion it is
+    // on the head of the drum at once.
     {
         unsigned char hit[8] = {57, 76, 44, 64, 88, 0, 0, 0};
         begin(1, hit);
         step();
-        const int rest_x = ball_x();
+        const int rest_x = ball_x(), rest_y = ball_y();
         note();
-        int xs[10];
-        unsigned head_keys[10];
-        for (int f = 0; f < 10; ++f) { step(); xs[f] = ball_x(); head_keys[f] = frame.paths[0].key; }
-        CHECK(xs[0] == rest_x, "the ball leaves the catch before the note's first frame (%d, %d)", xs[0], rest_x);
-        for (int f = 1; f < 6; ++f) CHECK(xs[f] > xs[f - 1], "the ball doesn't travel at frame %d (%d, %d)", f, xs[f - 1], xs[f]);
-        for (int f = 2; f < 6; ++f)
-            CHECK(xs[f] - xs[f - 1] < xs[f - 1] - xs[f - 2], "the travel doesn't ease out at frame %d", f);
-        CHECK(xs[7] == xs[9], "the ball hasn't landed by 0.12 s (%d, %d)", xs[7], xs[9]);
-        unsigned struck = 0;
-        for (int f = 1; f < 10; ++f) if (head_keys[f] != head_keys[0] && !struck) struck = static_cast<unsigned>(f);
-        CHECK(struck >= 5 && struck <= 8, "the strike shows at frame %u, not as the ball lands", struck);
+        int xs[12];
+        for (int f = 0; f < 12; ++f) { step(); xs[f] = ball_x(); }
+        CHECK(xs[0] == rest_x, "the ball leaves the head before the note's first frame (%d, %d)", xs[0], rest_x);
+        for (int f = 1; f < 5; ++f) CHECK(xs[f] > xs[f - 1], "the ball doesn't roll at frame %d (%d, %d)", f, xs[f - 1], xs[f]);
+        for (int f = 2; f < 5; ++f) CHECK(xs[f] - xs[f - 1] > xs[f - 1] - xs[f - 2], "the roll doesn't speed up at frame %d", f);
+        CHECK(xs[8] == xs[11] && xs[11] > rest_x + 100 * 1024, "the ball hasn't come to the drum by 0.15 s (%d, %d)", xs[8], xs[11]);
+        for (int f = 0; f < 120; ++f) step();
+        CHECK(ball_x() == rest_x && ball_y() == rest_y, "the ball isn't back at the head after its run");
         begin(1, hit);
         input.reduced_motion = 1;
         step();
         note();
         step();
-        CHECK(ball_x() == xs[9], "with reduced motion the ball isn't on the body at once (%d, %d)", ball_x(), xs[9]);
+        CHECK(ball_x() == xs[11], "with reduced motion the ball isn't on the drum at once (%d, %d)", ball_x(), xs[11]);
+    }
+    // The controls show: TILT one to four risers, FRETS none to nine bells,
+    // BALLS one to six, the second control one to six wires, the first the
+    // drum's size (one copy shown).
+    {
+        using namespace galileo::art;
+        unsigned char lo[8] = {0, 0, 0, 0, 0, 0, 0, 0}, hi[8] = {127, 127, 127, 127, 127, 127, 127, 127};
+        begin(1, lo);
+        step();
+        CHECK(count_shown(riser1_left, 3, riser_nodes) == 0 && count_shown(bell0_hanger, bells, bell_nodes) == 0 &&
+              count_shown(ball5, balls, ball_nodes) == 1 && count_shown(drum0_wire0, wires, 1) == 1 && shown(drum0_head) && !shown(drum6_head),
+              "every control at 0 doesn't show one riser, no bells, one ball, one wire and the largest drum");
+        begin(1, hi);
+        step();
+        CHECK(count_shown(riser1_left, 3, riser_nodes) == 3 && count_shown(bell0_hanger, bells, bell_nodes) == bells &&
+              count_shown(ball5, balls, ball_nodes) == balls && count_shown(drum6_wire0, wires, 1) == wires && shown(drum6_head) && !shown(drum0_head),
+              "every control at 127 doesn't show four risers, nine bells, six balls, six wires and the smallest drum");
     }
     // Shift's rows in the kit's own header.
     {

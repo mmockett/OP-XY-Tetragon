@@ -118,13 +118,13 @@
       }
     ],
     "display": {
-      "stateBytes": 452,
+      "stateBytes": 444,
       "stateAlignment": 4,
-      "paths": 2,
+      "paths": 1,
       "points": 64,
-      "nodes": 209,
+      "nodes": 147,
       "texts": 16,
-      "palette": 15
+      "palette": 2
     },
     "modelGroups": [
       {
