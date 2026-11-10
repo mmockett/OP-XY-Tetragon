@@ -1,6 +1,6 @@
 # THUNDER
 
-![THUNDER's screen: a broad iron thunder sheet hung under a slim beam, struck by a felt mallet, a chain lying across its face](docs/screen.png)
+![THUNDER's screen: an iron thunder sheet hung on wires from a wooden gallows, a felt-ringed mallet at its foot, a chalk cross and a chain on its face](docs/screen.png)
 
 One theatre thunder sheet, played every way a stagehand would, as a drum kit.
 Each of the 24 keys holds one of twelve ways of playing the sheet: struck
@@ -90,45 +90,45 @@ centroid and the time to fall 40 dB.
 
 | Control | Models | Caption at 0 / 50 / 100 | What it does |
 | --- | --- | --- | --- |
-| SIZE | all | BOOM `B0` `A1` `G#2`; TOM `A1` `D#3` `G#4`; FLICK `2.6k` `4.9k` `9.0k` | The sheet's size as its pitch, about two octaves on the drums (BOOM 30 to 105 Hz, TOM 55 to 420 Hz), or the band a flick, a snap, a pour or a chirp rings in. On screen the sheet grows, from 264 to 336 px wide. |
-| DAMP | all | BOOM `1.3s` `0.18s` `25ms`; CRASH `3.2s` `1.3s` `0.55s` | The felt pad pressed on the sheet: how long it rings, from over a second to a dead thud. BOOM falls 40 dB in 5.8 s, 0.80 s and 0.11 s; at its default it rings 0.55 s, a deep kick whose body holds for a third of a second. On screen the felt pad swings in on its lever from beside the sheet until it presses the iron, and squashes. |
-| BEATER | BOOM SLAP TOM CRASH CLANK | `0` `50` `100` | Felt, then wood, then a steel rod: how long the mallet stays on the sheet (6 ms to 0.08 ms, and a felt never longer than one cycle of the note), so how many of its modes it reaches, and its knock on the head, from a felt thud (on BOOM and TOM, 300 to 700 Hz) to a ringing click. The drum keeps its weight across the travel, within half a LU at the defaults: a felt thud is as loud as a steel strike. A tom's centroid moves 223, 373, 406 Hz. On screen the head turns from a wrapped felt ball to a wooden barrel to a bare steel rod. |
-| SPOT | BOOM SLAP TOM CRASH CLANK FLICK HOP BOW | `0` `50` `100` (BOW: the mode, `1` to `5`) | Where it is struck, from dead centre (odd modes only, a round thump) to near a corner (every mode, clangorous). On BOW, which of the sheet's modes sings. On screen the mallet, flicker, ball or bow moves. |
-| TENSION | BOOM SLAP FLICK TOM CRASH HOP BOW SHAKE | `0` `50` `100` | Plate to membrane: a slack sheet's modes spread into metal, a taut one's crowd into a drum. On CRASH it brings the drum-like body up under the wash (centroid 7.8, 7.6, 7.3 kHz); on SLAP it tightens the head, half an octave up, with less sag. On FLICK it moves the sizzle's six modes. On screen the turnbuckles screw in and the sheet's buckled edges flatten. |
-| CAMBER | BOOM TOM | `0` `50` `100` | How far a hit's pitch sags as the sheet relaxes, up to 3.5 times on BOOM: a kick's drop, from physics, not an envelope. On screen the sheet curves under its straight batten. |
-| GLIDE | BOOM | `6ms` `29ms` `0.14s` | How long the sag takes. On screen the rigging sandbag grows. |
-| CHAIN | all | `0` `50` `100` | Links lying on the sheet, from none to full snare wires on anything: they slap when the sheet lifts them, more of them, longer. The links ring a band topped at 6 to 7 kHz: a rattle, not a fizz. A kick with CHAIN 50 has its centroid move from 78 Hz to 5.4 kHz; on SLAP more wires buzz louder and longer. On screen links leave the cleat on the left post and lie across the sheet's face. |
-| LINKS | SLAP | `0` `50` `100` | The wires from tight and bright (a short, high buzz) to long and loose (lower, and rattling on). On screen the links grow. |
-| METAL, SHEET | SLAP POP GRIT ZAP; CLANK | `0` `50` `100` | The sheet's own ring under the sound, from dry to a long metallic tail. On screen rings spread over the sheet's face, none when it is dry, one, then three, wider and brighter, and a hit swells them. |
-| POPS | POP | `1` `4` `7` | How many snaps: one for a finger snap, seven for a crowd. On screen, as many dents. |
-| SPREAD | POP | `4ms` `11ms` `32ms` | Time between snaps, from one fat clap to a flam. On screen the dents spread apart. |
-| SNAP | POP | `0` `50` `100` | A soft pap (a 9 ms burst) to a hard click (0.6 ms), and higher. On screen the clamp's screw is driven in. |
-| SCATTER | POP | `0` `50` `100` | Timing, level and crackle of the snaps, from machine-tight (every clap the same, its peak within about 1 dB) to ragged. On screen the dents scatter. |
-| NAIL | FLICK | `0` `50` `100` | A fingertip to a coin's edge: the tick of the flick, how bright the ring is and how much noisy sizzle runs among its clangs. On screen the tip turns from a pad to a coin. |
-| SWING | FLICK CRASH | `0` `50` `100` | The sheet swaying on its chains: a slow swish through the ring, and the sheet turning away (up to 9 dB quieter at the far end of its swing), for open hats and washes. On screen the sheet leans and sways. |
-| SCRAPE | FLICK | `2ms` `9ms` `60ms` | A tick to a dragged brush stroke (the flick lasts this long). On screen a brush's scuff draws across the sheet. |
-| ROLL | TOM | `1` `5` `8` | Strikes in one hit, from one to a flam, a ruff and a roll, each softer and quicker. On screen the strikes are marked round the spot. |
-| SWELL | CRASH | `0` `50` `100` | A gong-like bloom: energy cascading into the high modes, peaking 30 ms to 450 ms after the hit (CRASH falls 40 dB in 1.3, 2.1, 3.5 s). On screen the bloom spreads from the strike. |
-| SHAPE | CLANK | `0` `50` `100` | The frame's shackle bent from a straight bar (free-bar partials 1 : 2.76 : 5.40) into a stirrup (1 : 1.47 : 2.09), a two-tone cowbell. On screen its arms bend up. |
-| BUZZ | CLANK | `0` `5` `10` | The shackle loose on its pin, chattering: up to ten re-strikes, closer as it rises. On screen its nut backs off the pin. |
-| BEAD | GRIT | `0` `50` `100` | Soft grains to hard shot: higher, shorter ticks (centroid 4.0, 5.7, 7.0 kHz). On screen the beads grow. |
-| GRAINS | GRIT | `40` `222` `1200` | Grains a second at the pour's height. On screen, more beads in the stream. |
-| SWELL | GRIT | `0` `50` `100` | A pour that starts hard ("chk") or swells ("shhk"). On screen the beads bunch at the lip or spread down the stream. |
-| POUR | GRIT | `50ms` `0.16s` `0.50s` | How long the pour runs. On screen the scoop tips further. |
-| BALL | HOP | `0` `50` `100` | A rubber ball to a steel bearing: how hard each bounce strikes. On screen the ball shrinks and shines. |
-| DROP | HOP | `0cm` `3cm` `18cm` | How high it falls from: the first bounce's length (60 to 380 ms), so how long it bounces (0.37, 0.75, 1.6 s). On screen the ball waits higher and its arcs grow. |
-| LOSS | HOP | `0.88` `0.69` `0.52` | Restitution: how much height each bounce keeps (1.15, 0.56, 0.44 s of bouncing). On screen each arc is smaller. |
-| SWEEP | ZAP | `15ms` `68ms` `0.30s` | How far the pickup is from the tap, so how long the chirp falls. On screen the stylus moves away from the pickup. |
-| ECHOS | ZAP | `0` `3` `5` | Reflections off the sheet's edges, each later, longer and softer. On screen, as many wavefronts. |
-| DEPTH | ZAP | `24st` `54st` `83st` | How far the chirp falls, in semitones. On screen the sheet bows. |
-| CURVE | ZAP | `0` `50` `100` | The fall's shape: a fast drop then a long tail, or a held note that dives (centroid 1.0, 1.5, 1.6 kHz). On screen the stylus leans. |
-| PRESS | BOW | `0` `50` `100` | A pure tone, a squeal, a scratch (centroid 0.6, 1.2, 2.2 kHz). On screen the bow presses into the edge and tilts. |
-| SPEED | BOW | `50ms` `0.28s` `1.5s` | How slowly the bow swells in. On screen the bow is drawn along its length. |
-| BEND | BOW | `0` `50` `100` | A hand flexing the sheet as it sings: a scoop of up to half an octave up into the note and a vibrato of up to 2.4 semitones either way, the singing saw's wobble. On screen the sheet flexes. |
-| RUMBLE | SHAKE | `0.30s` `1.0s` `3.5s` | How long the sheet is shaken. On screen the handle is pulled further out. |
-| RATE | SHAKE | `3.0Hz` `7.0Hz` `16Hz` | How fast it is shaken. On screen the grip is shorter, for quicker throws. |
-| CRACK | SHAKE | `0` `50` `100` | The opening thunderclap, from a push to a crack. On screen a crease shows at the corner. |
-| SWELL | SHAKE | `0` `50` `100` | Where the storm peaks: at once, in the middle, or at the end, a riser. On screen the sheet sways. |
+| SIZE | all | BOOM `B0` `A1` `G#2`; TOM `A1` `D#3` `G#4`; FLICK `2.6k` `4.9k` `9.0k` | The sheet's size as its pitch, about two octaves on the drums (BOOM 30 to 105 Hz, TOM 55 to 420 Hz), or the band a flick, a snap, a pour or a chirp rings in. On screen the sheet grows. |
+| DAMP | all | BOOM `1.3s` `0.18s` `25ms`; CRASH `3.2s` `1.3s` `0.55s` | The felt pad pressed on the sheet: how long it rings, from over a second to a dead thud. BOOM falls 40 dB in 5.8 s, 0.80 s and 0.11 s; at its default it rings 0.55 s, a deep kick whose body holds for a third of a second. On screen one to four felt pads clamp the sheet's lower edge. |
+| BEATER | BOOM SLAP TOM CRASH CLANK | `0` `50` `100` | Felt, then wood, then a steel rod: how long the mallet stays on the sheet (6 ms to 0.08 ms, and a felt never longer than one cycle of the note), so how many of its modes it reaches, and its knock on the head, from a felt thud (on BOOM and TOM, 300 to 700 Hz) to a ringing click. The drum keeps its weight across the travel, within half a LU at the defaults: a felt thud is as loud as a steel strike. A tom's centroid moves 223, 373, 406 Hz. On screen the mallet's felt rings come off as it rises, down to its wooden core. |
+| SPOT | BOOM SLAP TOM CRASH CLANK FLICK HOP BOW | `0` `50` `100` (BOW: the mode, `1` to `5`) | Where it is struck, from dead centre (odd modes only, a round thump) to near a corner (every mode, clangorous). On BOW, which of the sheet's modes sings. On screen the chalk cross moves across the sheet. |
+| TENSION | BOOM SLAP FLICK TOM CRASH HOP BOW SHAKE | `0` `50` `100` | Plate to membrane: a slack sheet's modes spread into metal, a taut one's crowd into a drum. On CRASH it brings the drum-like body up under the wash (centroid 7.8, 7.6, 7.3 kHz); on SLAP it tightens the head, half an octave up, with less sag. On FLICK it moves the sizzle's six modes. On screen the sheet sags on its wires when slack and hangs straight when taut. |
+| CAMBER | BOOM TOM | `0` `50` `100` | How far a hit's pitch sags as the sheet relaxes, up to 3.5 times on BOOM: a kick's drop, from physics, not an envelope. On screen the sheet bows out of its plane. |
+| GLIDE | BOOM | `6ms` `29ms` `0.14s` | How long the sag takes. |
+| CHAIN | all | `0` `50` `100` | Links lying on the sheet, from none to full snare wires on anything: they slap when the sheet lifts them, more of them, longer. The links ring a band topped at 6 to 7 kHz: a rattle, not a fizz. A kick with CHAIN 50 has its centroid move from 78 Hz to 5.4 kHz; on SLAP more wires buzz louder and longer. On screen up to nine links lie across the sheet. |
+| LINKS | SLAP | `0` `50` `100` | The wires from tight and bright (a short, high buzz) to long and loose (lower, and rattling on). |
+| METAL, SHEET | SLAP POP GRIT ZAP; CLANK | `0` `50` `100` | The sheet's own ring under the sound, from dry to a long metallic tail. |
+| POPS | POP | `1` `4` `7` | How many snaps: one for a finger snap, seven for a crowd. On screen the mallet's felt rings come off as it rises, down to its wooden core. |
+| SPREAD | POP | `4ms` `11ms` `32ms` | Time between snaps, from one fat clap to a flam. On screen the chalk cross moves across the sheet. |
+| SNAP | POP | `0` `50` `100` | A soft pap (a 9 ms burst) to a hard click (0.6 ms), and higher. |
+| SCATTER | POP | `0` `50` `100` | Timing, level and crackle of the snaps, from machine-tight (every clap the same, its peak within about 1 dB) to ragged. |
+| NAIL | FLICK | `0` `50` `100` | A fingertip to a coin's edge: the tick of the flick, how bright the ring is and how much noisy sizzle runs among its clangs. On screen the mallet's felt rings come off as it rises, down to its wooden core. |
+| SWING | FLICK CRASH | `0` `50` `100` | The sheet swaying on its chains: a slow swish through the ring, and the sheet turning away (up to 9 dB quieter at the far end of its swing), for open hats and washes. |
+| SCRAPE | FLICK | `2ms` `9ms` `60ms` | A tick to a dragged brush stroke (the flick lasts this long). |
+| ROLL | TOM | `1` `5` `8` | Strikes in one hit, from one to a flam, a ruff and a roll, each softer and quicker. |
+| SWELL | CRASH | `0` `50` `100` | A gong-like bloom: energy cascading into the high modes, peaking 30 ms to 450 ms after the hit (CRASH falls 40 dB in 1.3, 2.1, 3.5 s). |
+| SHAPE | CLANK | `0` `50` `100` | The frame's shackle bent from a straight bar (free-bar partials 1 : 2.76 : 5.40) into a stirrup (1 : 1.47 : 2.09), a two-tone cowbell. |
+| BUZZ | CLANK | `0` `5` `10` | The shackle loose on its pin, chattering: up to ten re-strikes, closer as it rises. |
+| BEAD | GRIT | `0` `50` `100` | Soft grains to hard shot: higher, shorter ticks (centroid 4.0, 5.7, 7.0 kHz). On screen the mallet's felt rings come off as it rises, down to its wooden core. |
+| GRAINS | GRIT | `40` `222` `1200` | Grains a second at the pour's height. On screen the chalk cross moves across the sheet. |
+| SWELL | GRIT | `0` `50` `100` | A pour that starts hard ("chk") or swells ("shhk"). |
+| POUR | GRIT | `50ms` `0.16s` `0.50s` | How long the pour runs. |
+| BALL | HOP | `0` `50` `100` | A rubber ball to a steel bearing: how hard each bounce strikes. On screen the mallet's felt rings come off as it rises, down to its wooden core. |
+| DROP | HOP | `0cm` `3cm` `18cm` | How high it falls from: the first bounce's length (60 to 380 ms), so how long it bounces (0.37, 0.75, 1.6 s). |
+| LOSS | HOP | `0.88` `0.69` `0.52` | Restitution: how much height each bounce keeps (1.15, 0.56, 0.44 s of bouncing). |
+| SWEEP | ZAP | `15ms` `68ms` `0.30s` | How far the pickup is from the tap, so how long the chirp falls. On screen the mallet's felt rings come off as it rises, down to its wooden core. |
+| ECHOS | ZAP | `0` `3` `5` | Reflections off the sheet's edges, each later, longer and softer. On screen the chalk cross moves across the sheet. |
+| DEPTH | ZAP | `24st` `54st` `83st` | How far the chirp falls, in semitones. On screen the sheet bows out of its plane. |
+| CURVE | ZAP | `0` `50` `100` | The fall's shape: a fast drop then a long tail, or a held note that dives (centroid 1.0, 1.5, 1.6 kHz). |
+| PRESS | BOW | `0` `50` `100` | A pure tone, a squeal, a scratch (centroid 0.6, 1.2, 2.2 kHz). On screen the mallet's felt rings come off as it rises, down to its wooden core. |
+| SPEED | BOW | `50ms` `0.28s` `1.5s` | How slowly the bow swells in. |
+| BEND | BOW | `0` `50` `100` | A hand flexing the sheet as it sings: a scoop of up to half an octave up into the note and a vibrato of up to 2.4 semitones either way, the singing saw's wobble. On screen the sheet bows out of its plane. |
+| RUMBLE | SHAKE | `0.30s` `1.0s` `3.5s` | How long the sheet is shaken. On screen the mallet's felt rings come off as it rises, down to its wooden core. |
+| RATE | SHAKE | `3.0Hz` `7.0Hz` `16Hz` | How fast it is shaken. On screen the chalk cross moves across the sheet. |
+| CRACK | SHAKE | `0` `50` `100` | The opening thunderclap, from a push to a crack. |
+| SWELL | SHAKE | `0` `50` `100` | Where the storm peaks: at once, in the middle, or at the end, a riser. |
 
 Defaults are clean: CHAIN and the other colouring controls default to 0 on
 most keys, and every key's level is trimmed so that a hit sounds about as
@@ -279,42 +279,25 @@ Euler-Bernoulli theory, and everything else from the sheet's physics.
 
 ![Every model at its defaults and 30 ms after a hit, at 1:1](docs/controls-1x.png)
 
-The iron sheet is the screen: about two thirds of its width, hung close under
-a slim oak beam whose posts stand at the screen's edges. The sheet is clipped
-to a batten strapped to the beam by three C-clips; a hem folded under its top
-shows as a band with five rivets along it, one more on each side,
-and a rolled lip runs along its foot as a bead. A felt damper on a lever hangs beside
-its top left corner; wire stays run from grommets in its lower corners through
-open turnbuckles to eye bolts on the posts; a rigging sandbag hangs from a snap
-hook under its foot; a chain hangs from a cleat on the left post. The frame is
-one grey, its oak filled dark grey (#181818) and its iron fittings a step
-lighter (#262626), as GALILEO's are; everything else is drawn in two greys, unfilled.
-Every line is 1 px wide as drawn and a wire about 1.5 px across, after stock
-Drumline's fine look: the outlines, drawn at twice their size, take palette
-entries at half the width, and the chain's links and the beads, drawn large,
-are authored larger still and placed smaller, so their lines stay fine.
+The screen is the thunder sheet itself, drawn in the OP-XY's own isometric
+look: an iron sheet hung on two wires from a wooden gallows, a base, two
+posts and a beam, with the mallet hanging at the front on its cord. Each
+part answers to the encoder of its own grey. Encoder 1 is the sheet, a light
+outline that grows with SIZE. Encoder 2 clamps one to four dark felt pads on
+its lower edge as DAMP rises. Encoder 3 strips the mallet's three felt rings
+one by one down to its wooden core. Encoder 4 moves the chalk cross across
+the sheet. On the second row TENSION lets the sheet sag on its wires,
+CAMBER (DEPTH on ZAP, BEND on BOW) bows it, and CHAIN lays up to nine
+links across its face. Every model shares the one sheet: its own encoder 3
+and 4 controls move the rings and the cross.
 
-Every control moves a part (the table above says which), and each model brings
-its own implement: a mallet with a cane handle, a turned collar and a
-cord-wrapped grip; a spring-steel flicker in a wooden grip; a G-clamp with a
-T-bar driving its screw and the dents it pops; a grocer's scoop pouring beads;
-a dropped bearing and its arcs; a stylus with a wooden handle and a contact
-pickup on a clip; a cello bow under the sheet's foot, with its frog, eye and
-button; the shaking handle bolted through a plate, and the crease it cracks;
-and the frame's shackle hung between the sheet and the right post, its nut
-backing off the pin, struck from below. METAL and SHEET spread rings over
-the sheet's face, as CRASH's SWELL blooms from its strike. The chain either hangs from its cleat or lies
-across the sheet's face, one run each, never a link between.
-
-A hit throws the sheet's edge, its hem and its lip into the
-model's mode shape, a hanging sheet's (clamped at the top, free at its foot):
-hardest in the first frames, by up to twice its ringing size, then ringing on
-for as long as the model's sound does (at least a quarter of a second, so a
-short hit still reads). The implement recoils, the sandbag rides the foot, the
-chain's links hop, the bearing bounces, the bow is drawn or the handle jerked.
-A kit voice plays to its own end (stock applies no amp envelope to a kit), so
-M2 moves nothing. Only the selected key's notes move it, a still screen
-changes nothing, and reduced motion keeps it still.
+A hit sets the sheet's foot rippling in the model's mode shape (clamped at
+the top on its wires, free at its foot), the cross, the chain and the
+hammered marks riding the ripple, for as long as the model's sound rings (at
+least a quarter of a second, so a short hit still reads). A kit voice plays
+to its own end (stock applies no amp envelope to a kit), so M2 moves
+nothing. Only the selected key's notes move it, a still screen changes
+nothing, and reduced motion keeps it still.
 
 Contact sheets of each model's controls at 0, 50 and 100, its hits (30, 120
 and 400 ms on) and both Shift rows, at 1:1: [docs/sheets/](docs/sheets/).
