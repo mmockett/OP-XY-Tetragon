@@ -165,6 +165,32 @@ inline i32 knee(i32 y) {
     return (y < 0 ? -s : s) << 3;
 }
 
+// The hit's gain on a block the limiter leaves alone; whether any sample
+// reaches the quiet floor (the block's highest and lowest).
+__attribute__((noinline)) static bool gain_pass(i32* out, i32 g) {
+    i32 top = -full - 1, bottom = full;
+    for (u32 i = 0; i < frames; ++i) {
+        const i32 y = mul(out[i], g) << 6;
+        out[i] = y;
+        top = y > top ? y : top;
+        bottom = y < bottom ? y : bottom;
+    }
+    return top >= quiet_floor || bottom <= -quiet_floor;
+}
+
+// The same with the limiter's gain l moving by d a sample, and the knee.
+__attribute__((noinline)) static bool limit_pass(i32* out, i32 g, i32 l, i32 d) {
+    i32 top = -full - 1, bottom = full;
+    for (u32 i = 0; i < frames; ++i) {
+        const i32 y = knee(mul(mul(out[i], g), l) << 3);
+        l += d;
+        out[i] = y;
+        top = y > top ? y : top;
+        bottom = y < bottom ? y : bottom;
+    }
+    return top >= quiet_floor || bottom <= -quiet_floor;
+}
+
 inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy::Parameters parameters, opxy::Pitch) {
     if (voice.pending || voice.next != voice.model) {
         voice.pending = 0;
@@ -203,22 +229,12 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     i32 l = voice.lim;
     bool loud = false;
     if (l == full && want == full) {
-        for (u32 i = 0; i < frames; ++i) {
-            const i32 y = mul(out[i], g) << 6;
-            output[i] = y;
-            loud = loud || y >= quiet_floor || y <= -quiet_floor;
-        }
+        loud = gain_pass(out, g);
     } else {
         // Down at once; up 1 dB a block, ramped across it, never past what the block allows.
         if (want < l) l = want;
         const i32 to = lo(l > F(0.888) ? full : l + (l >> 3), want);
-        const i32 d = (to - l) >> 6;
-        for (u32 i = 0; i < frames; ++i) {
-            const i32 y = knee(mul(mul(out[i], g), l) << 3);
-            l += d;
-            output[i] = y;
-            loud = loud || y >= quiet_floor || y <= -quiet_floor;
-        }
+        loud = limit_pass(out, g, l, (to - l) >> 6);
         voice.lim = to;
     }
     voice.quiet = loud ? 0 : voice.quiet + 1;

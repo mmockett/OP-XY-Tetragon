@@ -19,6 +19,17 @@ const i32 full = 0x7fffffff;
 const u32 frames = opxy::block_frames;
 
 inline i32 mul(i32 a, i32 b) { return opxy::q31::multiply(a, b); }
+// Branch hints for the sample loops, so a part that sounds keeps to the
+// straight path: an untaken branch costs a cycle, a taken one five and a
+// mispredicted one nine.
+#define CURIO_LIKELY(x) __builtin_expect(!!(x), 1)
+#define CURIO_UNLIKELY(x) __builtin_expect(!!(x), 0)
+// x << 1 kept in a data register: left alone, the Blackfin compiler folds a
+// doubling and the add after it into the address unit, moving both through
+// P registers and stalling on them. The SDK's saturating add of x to itself
+// stays in the data unit; it is x << 1 for every |x| < 2^30, which a
+// resonator's feedback never leaves.
+inline i32 twice(i32 x) { return opxy::q31::add(x, x); }
 inline i32 clamp(i32 v, i32 low, i32 high) { return v < low ? low : v > high ? high : v; }
 inline i32 lo(i32 a, i32 b) { return a < b ? a : b; }
 inline i32 hi(i32 a, i32 b) { return a > b ? a : b; }
@@ -32,7 +43,7 @@ inline i32 sc(i32 v, i32 c) { return mul(v, c << 19); }
 inline i32 lerp(i32 a, i32 b, i32 c) { return a + sc(b - a, c); }
 
 // 2^(x / 4096) as a whole number, x in 0 .. 31 * 4096; below 0 it is 0.
-inline u32 ex2(i32 x) {
+static __attribute__((noinline)) inline u32 ex2(i32 x) {
     if (x < 0) return 0;
     if (x >= 31 * 4096) return 0x7fffffffu;
     const u32 o = static_cast<u32>(x) >> 12, f = static_cast<u32>(x) & 4095u, i = f >> 4, r = f & 15u;
@@ -40,7 +51,7 @@ inline u32 ex2(i32 x) {
     return (a + (((b - a) * r) >> 4)) >> (30 - o);
 }
 // log2(v) in Q12, for v >= 1 (0 gives -32 octaves).
-inline i32 lg2(u32 v) {
+static __attribute__((noinline)) inline i32 lg2(u32 v) {
     if (!v) return -(32 << 12);
     i32 o = 31;
     while (!(v & 0x80000000u)) { v <<= 1; --o; }
@@ -62,7 +73,7 @@ inline i32 hz(u32 whole, u32 per = 1) { return lg2(whole) - (per > 1 ? lg2(per) 
 // The phase increment of a pitch, capped below 20 kHz.
 inline u32 inc(i32 lp) { return lp >= 58520 ? 1948000000u : ex2(lp + 67877); }
 // A per-sample decay, Q31: exp(-1 / (tau * 44100)) for tau in microseconds.
-inline i32 decay(u32 tau_us) {
+static __attribute__((noinline)) inline i32 decay(u32 tau_us) {
     if (tau_us < 100) tau_us = 100;
     const u32 d = ex2(145421 - lg2(tau_us));
     return d >= 0x7fffffffu ? 0 : static_cast<i32>(0x7fffffffu - d);
@@ -147,6 +158,86 @@ inline i32 bp(Res& z, const ResK& k, i32 x) {
 }
 // Strikes a resonator with amplitude a (Q28): it rings as a r^n sin((n + 1) w).
 inline void strike(Res& z, const ResK& k, i32 a) { z.y1 += mul(a, k.s); }
+// A free resonator (no input) rung through n samples and added into y: the
+// same samples as ring(z, k, 0) each sample, its state held in registers,
+// two samples a turn so the last two outputs trade places.
+__attribute__((always_inline)) inline void ring_free(Res& z, const ResK& k, i32* y, u32 n) {
+    i32 a = z.y1, b = z.y2;   // the last output and the one before
+    const i32 c = k.c, r = k.r2;
+    if (n & 1) {
+        const i32 v = (mul(c, a) - mul(r, b)) << 1;
+        b = a;
+        a = v;
+        *y++ += v;
+    }
+    for (u32 j = 0; j < (n >> 1); ++j) {
+        b = (mul(c, a) - mul(r, b)) << 1;
+        y[0] += b;
+        a = (mul(c, b) - mul(r, a)) << 1;
+        y[1] += a;
+        y += 2;
+    }
+    z.y1 = a;
+    z.y2 = b;
+}
+static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) { ring_free(z, k, y, n); }
+// A band-pass (bp) through n samples of x, each output o handed with its
+// place in y to emit(y[j], o): two samples a turn so the states trade
+// places (a hardware loop), the odd one first.
+template <class Emit> __attribute__((always_inline)) inline void bp_run(Res& z, const ResK& k, const i32* x, i32* y, u32 n, Emit emit) {
+    i32 y1 = z.y1, y2 = z.y2, x1 = z.x1, x2 = z.x2;
+    const i32 c = k.c, r2 = k.r2, b = k.b;
+    if (n & 1) {
+        const i32 in = mul(*x++, b);
+        const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+        x2 = x1;
+        x1 = in;
+        y2 = y1;
+        y1 = o;
+        emit(*y++, o);
+    }
+    for (u32 h = 0; h < (n >> 1); ++h) {
+        const i32 i0 = mul(x[0], b);
+        y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+        x2 = i0;
+        emit(y[0], y2);
+        const i32 i1 = mul(x[1], b);
+        y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+        x1 = i1;
+        emit(y[1], y1);
+        x += 2;
+        y += 2;
+    }
+    z.y1 = y1;
+    z.y2 = y2;
+    z.x1 = x1;
+    z.x2 = x2;
+}
+// A resonator driven by in(y[j]) through n samples, each output handed to
+// emit(y[j], o), the same way.
+template <class In, class Emit> __attribute__((always_inline)) inline void drive_run(Res& z, const ResK& k, i32* y, u32 n, In in, Emit emit) {
+    i32 y1 = z.y1, y2 = z.y2;
+    const i32 c = k.c, r2 = k.r2;
+    if (n & 1) {
+        const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in(*y);
+        y2 = y1;
+        y1 = o;
+        emit(*y++, o);
+    }
+    for (u32 h = 0; h < (n >> 1); ++h) {
+        y2 = twice(mul(c, y1) - mul(r2, y2)) + in(y[0]);
+        emit(y[0], y2);
+        y1 = twice(mul(c, y2) - mul(r2, y1)) + in(y[1]);
+        emit(y[1], y1);
+        y += 2;
+    }
+    z.y1 = y1;
+    z.y2 = y2;
+}
+// A bank of free resonators in one call, each rung in turn.
+static __attribute__((noinline)) inline void ring_bank(Res* z, const ResK* k, u32 count, i32* y, u32 n) {
+    for (u32 m = 0; m < count; ++m) ring_free(z[m], k[m], y, n);
+}
 
 // A one-pole low-pass's coefficient for a pitch: 1 - exp(-w), Q31.
 inline i32 pole(i32 lp) {
@@ -159,12 +250,15 @@ inline i32 pole(i32 lp) {
 
 // A soft clip: tanh, for x Q28 at unit drive; its output is Q28.
 inline i32 tanh(i32 x) {
-    const i32 m = x < 0 ? -x : x;
-    if (m >= (4 << 28)) return x < 0 ? -(table::tanh[256] << 13) : table::tanh[256] << 13;
+    const i32 sg = x >> 31;           // -1 below zero: (v ^ sg) - sg is v or -v without a branch
+    const i32 m = (x ^ sg) - sg;
+    if (CURIO_UNLIKELY(m >= (4 << 28))) return ((table::tanh[256] << 13) ^ sg) - sg;
     const u32 i = static_cast<u32>(m) >> 22, r = (static_cast<u32>(m) >> 14) & 255u;
     const i32 a = table::tanh[i], b = table::tanh[i + 1];
-    const i32 y = (a << 13) + (((b - a) * static_cast<i32>(r)) << 5);
-    return x < 0 ? -y : y;
+    // (b - a) r as a fractional multiply, exact here (the product is under
+    // 2^18): a cycle where an integer multiply takes three.
+    const i32 y = (a << 13) + (mul((b - a) << 16, static_cast<i32>(r) << 15) << 5);
+    return (y ^ sg) - sg;
 }
 }
 }
@@ -195,7 +289,7 @@ inline i32 band_gain(i32 lp, i32 q) {
     return static_cast<i32>(ex2(((56431 + lg2(static_cast<u32>(q)) - (12 << 12) - lp) >> 1) + (16 << 12)));
 }
 // A resonator for noise: centre lp, quality q (Q12); peak gain 1.
-inline void band(ResK& k, i32 lp, i32 q) {
+static __attribute__((noinline)) inline void band(ResK& k, i32 lp, i32 q) {
     // r = exp(-pi f / (q 44100)): a time constant of q / (pi f).
     const u32 tau_us = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875);   // log2(1e6 / pi) = 18.28
     tune(k, inc(lp), decay(tau_us));

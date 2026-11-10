@@ -21,13 +21,16 @@ inline i32 spiky(u32& rng) {
 struct Ice {
     u32 rng, t;
     i32 c[8], tune;
-    // The chirps: a falling sine and a band of noise riding it, three in turn.
-    struct Chirp { u32 ph, f, df; i32 u, v, a; Res z; ResK k; i32 hi_inc, lo_inc; };
+    // The chirps: a falling sine and a band of noise riding it, two in turn.
+    struct Chirp { u32 ph, f, df; i32 u, v, a; i32 hi_inc, lo_inc; };
     Chirp ch[2];
     u32 turn, newest;
-    Res zr;
-    ResK zk;
-    i32 uk, chirp_amp, chk, chak, zing, zgate;
+    // The band: its own noise, low-passed at a sixteenth of the chirp's
+    // pitch and rung by the chirp's sine, so it rides the pitch as a band
+    // of an eighth of it.
+    u32 zrng;
+    i32 zlp, za;
+    i32 uk, chirp_amp, chk, chak, zgate;
     // Cracks: the snap's envelope; the shards and the far shore's echoes.
     Env crack;
     i32 crack_k, crack_amp, crack_lp, crack_a;
@@ -42,7 +45,8 @@ struct Ice {
     ResK nzk;
     Env hiss, grain;
     i32 hiss_amp, hiss_gain, grain_rate;
-    u32 grain_p;
+    u32 grain_p, hrng;   // the surface draws its own noise
+    i32 blast;           // the lake's last half-rate sample
     i32 drive, undrive;
 
     void snap(i32 g, bool echo_hit) {
@@ -56,7 +60,6 @@ struct Ice {
         h.f = static_cast<u32>(h.lo_inc + h.hi_inc);
         h.df = 0;
         h.v = h.a = mul(mul(chirp_amp, g), F(0.75));
-        h.z = Res();
         if (echo_hit) {
             body.hit(mul(body_amp, g), body.vk, decay(1000));
             hiss.v += lev(mul(hiss_amp, mul(g, F(0.5))), hiss_gain << 12);
@@ -69,7 +72,11 @@ struct Ice {
         t = 0;
         turn = 0;
         newest = 0;
-        zr = Res();
+        zrng = (x.seed * 2654435761u) | 1u;
+        hrng = (x.seed * 2246822519u + 0x9e3779b9u) | 1u;
+        blast = 0;
+        zlp = 0;
+        za = 0;
         echo = 0;
         const i32 sheet = c[1];
         // The chirp falls from fhi to flo as 1 / (1 + t / tc)^2.
@@ -82,14 +89,12 @@ struct Ice {
             ch[s].u = 0;
             ch[s].hi_inc = static_cast<i32>(hi - lo_);
             ch[s].lo_inc = static_cast<i32>(lo_);
-            ch[s].z = Res();
         }
         const i32 tch = 20000 + sc(310000, pw(c[4], C(1.6)));
         chk = decay(static_cast<u32>(tch));
         chak = mul(chk, decay(800));
         chirp_amp = U(0.08) + sc(U(0.7), c[3]);
         zgate = mul(chirp_amp, F(0.75 / 16));
-        zing = band_gain(hz(2000), C(8.0));
         // The snap: 4 ms of high-passed, spiky noise.
         crack.v = 0;
         crack.k = decay(static_cast<u32>(1800 - sc(800, c[0])));
@@ -132,9 +137,190 @@ struct Ice {
         snap(full, false);
     }
     bool waiting() const { return shards > 0 || (c[7] > 0 && echo < 4); }
-    void run(i32* out) {
+    // The block in passes, each with its state in registers, split at the
+    // shards and echoes; the noise is drawn in the same order as ever.
+    // A chirp into y; the newest carries its band of noise while it sounds
+    // well above zero (under -24 dB of its start the band is lost under the
+    // tone: it rests).
+    template <bool band> __attribute__((noinline)) void chirp_pass(Chirp& h, i32* y, u32 n) {
+        u32 ph = h.ph, f = h.f, zr = zrng;
+        const u32 df = h.df;
+        i32 v = h.v, a = h.a, zl = zlp;
+        const i32 k = chk, ka = chak, zk = za;
+        for (u32 j = 0; j < n; ++j) {
+            ph += f;
+            f += df;
+            v = mul(v, k);
+            a = mul(a, ka);   // the attack runs out on its own
+            const i32 level = v - a;   // three quarters of the chirp's level (start)
+            const i32 s = sine(ph);
+            i32 o = mul(level, s);
+            if (band) {
+                // Unit RMS at 2 kHz as the band-pass had, 0.35 of the tone.
+                zl += mul(zk, noise(zr) - zl);
+                o += lev(gn(mul(zl, s), 459000), level);   // 15 x 0.35 / 0.75, Q16
+            }
+            y[j] += o;
+        }
+        h.ph = ph;
+        h.f = f;
+        h.v = v;
+        h.a = a;
+        if (band) {
+            zrng = zr;
+            zlp = zl;
+        }
+    }
+    // The snap: 4 ms of high-passed, spiky noise.
+    __attribute__((noinline)) void crack_pass(i32* y, u32 n) {
+        i32 cv = crack.v, lp = crack_lp;
+        const i32 ck = crack.k, ca = crack_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            cv = mul(cv, ck);
+            const i32 cr = lev(spiky(r), cv);
+            lp += mul(ca, cr - lp);
+            y[j] += cr - lp;
+        }
+        crack.v = cv;
+        crack_lp = lp;
+        rng = r;
+    }
+    // Load drives the crack and the chirps (quiet samples pass the curve's
+    // straight foot); the lake and the surface stay clean beneath them, so
+    // the crack stands out of the body.
+    __attribute__((noinline)) void drive_pass(const i32* x, i32* out, u32 n) {
+        const i32 dr = drive, ud = undrive << 14;
+        for (u32 j = 0; j < n; ++j) {
+            // The curve all the way, held at its shoulder (tanh 4) past it:
+            // no branch for the quiet samples' straight foot.
+            i32 d = mul(x[j], dr);
+            if (CURIO_UNLIKELY(d > (1 << 23))) d = 1 << 23;
+            if (CURIO_UNLIKELY(d < -(1 << 23))) d = -(1 << 23);
+            out[j] = mul(tanh(d << 7), ud) << 1;
+        }
+    }
+    // The lake, 150..260 Hz: at half the rate, two samples a step, drawn
+    // back up to the full rate halfway between each pair; a span of odd
+    // length takes its last sample as a single step.
+    __attribute__((noinline)) void body_pass(i32* y, u32 n) {
+        u32 ph = body.ph;
+        const u32 in1 = body.inc, in = in1 << 1;
+        i32 v = body.v, a = body.a, bv = blip.v;
+        const i32 vk = mul(body.vk, body.vk), ak = mul(body.ak, body.ak), bk = mul(blip.k, blip.k);
+        if (v <= 4096) { blast = 0; return; }   // until the next echo
+        i32 last = blast;
+        for (u32 j = 0; j < (n >> 1); ++j) {
+            ph += in;
+            if (CURIO_UNLIKELY(bv > (1 << 24))) { bv = mul(bv, bk); ph += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.6), bv))); }
+            v = mul(v, vk);
+            a = mul(a, ak);   // the attack runs out on its own
+            const i32 x = mul(v - a, sine(ph));
+            y[0] += (last >> 1) + (x >> 1);
+            y[1] += x;
+            last = x;
+            y += 2;
+        }
+        if (n & 1) {
+            ph += in1;
+            if (bv > (1 << 24)) { bv = mul(bv, blip.k); ph += static_cast<u32>(mul(static_cast<i32>(in1), mul(F(0.6), bv))); }
+            v = mul(v, body.vk);
+            a = mul(a, body.ak);
+            const i32 x = mul(v - a, sine(ph));
+            y[0] += x;
+            last = x;
+        }
+        blast = last;
+        body.ph = ph;
+        body.v = v;
+        body.a = a;
+        blip.v = bv;
+    }
+    // The surface: noise with a crunch of micro-cracks.
+    __attribute__((noinline)) void hiss_pass(i32* y, u32 n) {
+        i32 hv = hiss.v, gv = grain.v;
+        u32 r = hrng;
+        const u32 gp = grain_p;
+        const i32 hk = hiss.k, gk = grain.k;
+        i32 y1 = nz.y1, y2 = nz.y2, x1 = nz.x1, x2 = nz.x2;
+        const i32 c = nzk.c, r2 = nzk.r2, b = nzk.b;
+        if (hv <= 4096) return;   // until the next echo
+        // Each micro-crack restarts the crunch, which then dies away; two
+        // samples a turn so the band's states trade places.
+        if (n & 1) {
+            gv = mul(gv, gk);
+            if (CURIO_UNLIKELY(r < gp)) gv = one;
+            hv = mul(hv, hk);
+            const i32 in = mul(noise(r), b);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            *y++ += lev(o, hv + lev(hv, gv));
+        }
+        for (u32 j = 0; j < (n >> 1); ++j) {
+            gv = mul(gv, gk);
+            if (CURIO_UNLIKELY(r < gp)) gv = one;
+            hv = mul(hv, hk);
+            const i32 i0 = mul(noise(r), b);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+            x2 = i0;
+            y[0] += lev(y2, hv + lev(hv, gv));
+            gv = mul(gv, gk);
+            if (CURIO_UNLIKELY(r < gp)) gv = one;
+            hv = mul(hv, hk);
+            const i32 i1 = mul(noise(r), b);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+            x1 = i1;
+            y[1] += lev(y1, hv + lev(hv, gv));
+            y += 2;
+        }
+        hiss.v = hv;
+        grain.v = gv;
+        hrng = r;
+        nz.y1 = y1;
+        nz.y2 = y2;
+        nz.x1 = x1;
+        nz.x2 = x2;
+    }
+    // n samples between events: the chirps (the newest carries a band of
+    // noise riding its pitch), the snap and the noise, the band, the drive,
+    // the lake and the surface.
+    __attribute__((noinline)) void span(i32* out, u32 n) {
+        i32 x[frames];
+        for (u32 j = 0; j < n; ++j) x[j] = 0;
+        for (u32 s = 0; s < 2; ++s) {
+            Chirp& h = ch[s];
+            if (!h.v && !h.a) continue;
+            // The newest carries its band while well above zero (under -24 dB
+            // of its start the band is lost under the tone: it rests).
+            if (s == newest && h.v - h.a > zgate) chirp_pass<true>(h, x, n);
+            else chirp_pass<false>(h, x, n);
+        }
+        // The snap, once under its floor, stays there until the next crack.
+        if (crack.v > 4096) crack_pass(x, n);
+        drive_pass(x, out, n);
+        body_pass(out, n);
+        hiss_pass(out, n);
+    }
+    // A shard or an echo at t.
+    __attribute__((noinline)) void events() {
         static const u32 delay[4] = {70000, 130000, 210000, 300000};
         static const i32 gain[4] = {F(0.8), F(0.6), F(0.4), F(0.25)};
+        if (shards && t == next_shard) {
+            --shards;
+            shard_amp = mul(shard_amp, F(0.88));
+            snap(shard_amp, false);
+            next_shard = shards ? t + samples(static_cast<u32>(mul(8000 + (draw(rng) * 30000 >> 12), F(1.0) - sc(F(0.5), c[2])) << 0)) : 0;
+        }
+        if (c[7] > 0 && echo < 4 && t == next_echo) {
+            snap(sc(gain[echo], c[7]), true);
+            ++echo;
+            if (echo < 4) next_echo = samples(static_cast<u32>(mul(static_cast<i32>(delay[echo]), spread_scale) << 1));
+        }
+    }
+    void run(i32* out) {
         // Each chirp's pitch for the block: u = 1 / (1 + t / tc) steps on in
         // four quarters, the pitch glides between the ends (a ramp a sample),
         // and its noise band follows. A chirp gone quiet stops.
@@ -147,76 +333,22 @@ struct Ice {
             const u32 f1 = static_cast<u32>(h.lo_inc + mul(h.hi_inc, mul(h.u, h.u)));
             h.f = f0;
             h.df = static_cast<u32>(static_cast<i32>(f1 - f0) >> 6);
-            if (s == static_cast<int>(newest)) tune_band(zk, f0);
+            // The band's low-pass: 1 - exp(-w / 16) at the chirp's pitch.
+            if (s == static_cast<int>(newest)) za = mul(static_cast<i32>(f0 >> 1), F(3.14159265 / 8.0));
         }
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (shards && t == next_shard) {
-                --shards;
-                shard_amp = mul(shard_amp, F(0.88));
-                snap(shard_amp, false);
-                next_shard = shards ? t + samples(static_cast<u32>(mul(8000 + (draw(rng) * 30000 >> 12), F(1.0) - sc(F(0.5), c[2])) << 0)) : 0;
-            }
-            if (c[7] > 0 && echo < 4 && t == next_echo) {
-                snap(sc(gain[echo], c[7]), true);
-                ++echo;
-                if (echo < 4) next_echo = samples(static_cast<u32>(mul(static_cast<i32>(delay[echo]), spread_scale) << 1));
-            }
-            // The snap.
-            i32 y = 0;
-            if (crack.v > 4096) {
-                const i32 cr = lev(spiky(rng), crack.step());
-                crack_lp += mul(crack_a, cr - crack_lp);
-                y = cr - crack_lp;
-            }
-            // The chirps; the newest carries a band of noise riding its pitch.
-            const Chirp& hn = ch[newest];
-            // Under -24 dB of its start the band is lost under the tone: it rests.
-            const bool zon = hn.v - hn.a > zgate;
-            const i32 zband = zon ? gn(bp(zr, zk, noise(rng)), zing) : 0;
-            for (int s = 0; s < 2; ++s) {
-                Chirp& h = ch[s];
-                if (!h.v && !h.a) continue;
-                h.ph += h.f;
-                h.f += h.df;
-                h.v = mul(h.v, chk);
-                if (h.a) { h.a = mul(h.a, chak); if (h.a < 64) h.a = 0; }
-                const i32 level = h.v - h.a;   // three quarters of the chirp's level (start)
-                y += mul(level, sine(h.ph));
-                if (zon && s == static_cast<int>(newest)) y += lev(mul(zband, F(0.35 / 0.75)), level);
-            }
-            // Load drives the crack and the chirps (quiet samples pass the
-            // curve's straight foot); the lake and the surface stay clean
-            // beneath them, so the crack stands out of the body.
-            const i32 d = mul(y, drive);
-            const i32 s = d < 400000 && d > -400000 ? d << 7 : d >= (1 << 23) ? U(0.99933) : d <= -(1 << 23) ? -U(0.99933) : tanh(d << 7);
-            y = mul(s, undrive << 14) << 1;
-            // The lake.
-            if (body.v > 4096) {
-                body.ph += body.inc;
-                if (blip.v > (1 << 24)) body.ph += static_cast<u32>(mul(static_cast<i32>(body.inc), mul(F(0.6), blip.step())));
-                y += mul(body.level(), sine(body.ph));
-            }
-            // The surface: noise with a crunch of micro-cracks.
-            if (hiss.v > 4096) {
-                if (rng < grain_p) grain.v = one;
-                const i32 src = noise(rng);
-                i32 level = hiss.step();
-                if (grain.v) { level += lev(level, grain.step()); if (grain.v < 4096) grain.v = 0; }
-                y += lev(bp(nz, nzk, src), level);
-            }
-            out[i] = y;
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            // The next shard or echo in this block.
+            u32 e = frames;
+            if (shards) { const u32 d = next_shard - t0; if (d < e && d >= i) e = d; }
+            if (c[7] > 0 && echo < 4) { const u32 d = next_echo - t0; if (d < e && d >= i) e = d; }
+            if (e > i) span(out + i, e - i);
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
+            events();
         }
-    }
-    static void tune_band(ResK& k, u32 f) {
-        // A band of quality 8 at the chirp's pitch.
-        i32 s, c;
-        sincos(f, s, c);
-        const i32 r = full - mul(static_cast<i32>(f), F(3.14159265 / 16.0));   // 1 - pi f / (8 rate)
-        k.c = mul(r, c) << 1;
-        k.r2 = mul(r, r) >> 1;
-        k.s = s << 1;
-        k.g = mul(full - r, s) << 2;
-        k.b = full - r;
+        t = t0 + frames;
     }
 };
 
@@ -359,27 +491,143 @@ struct Sheet {
         th_a = pole(hz(160));
     }
     bool waiting() const { return lump < lumps; }
-    // N modes rung together over samples [from, end), their states held
-    // close, driven by x when drive: the same as ringing each in turn.
-    template <int N, bool drive> void rings(const u32* which, const i32* x, i32* yb, u32 from, u32 end) {
-        i32 y1[N], y2[N], kc[N], kr[N], g[N];
-        for (int q = 0; q < N; ++q) {
-            y1[q] = mode[which[q]].y1; y2[q] = mode[which[q]].y2;
-            kc[q] = modek[which[q]].c; kr[q] = modek[which[q]].r2;
-            g[q] = gain[which[q]];
+    // The block in passes, each with its state held in registers, the same
+    // sums sample for sample as ringing every mode each sample.
+    // The blow's noise for n samples (zero once it has died away); whether
+    // any sample sounds.
+    __attribute__((noinline)) bool blow_pass(i32* xb, u32 n) {
+        i32 v = burst.v, lp = burst_lp;
+        const i32 k = burst.k, a = burst_a;
+        u32 r = brng;
+        i32 any = 0;
+        if (v <= 4096) {   // until the next shake
+            for (u32 j = 0; j < n; ++j) xb[j] = 0;
+            return false;
         }
-        for (u32 i = from; i < end; ++i) {
-            i32 acc = 0;
-            for (int q = 0; q < N; ++q) {
-                i32 y = (mul(kc[q], y1[q]) - mul(kr[q], y2[q])) << 1;
-                if (drive) y += lev(x[i], g[q]);
-                y2[q] = y1[q];
-                y1[q] = y;
-                acc += y;
+        for (u32 j = 0; j < n; ++j) {
+            i32 x = 0;
+            if (CURIO_LIKELY(v > 4096)) {
+                v = mul(v, k);
+                lp += mul(a, lev(noise(r), v) - lp);
+                x = lp * 2;
             }
-            yb[i] += acc;
+            xb[j] = x;
+            any |= x;
         }
-        for (int q = 0; q < N; ++q) { mode[which[q]].y1 = y1[q]; mode[which[q]].y2 = y2[q]; }
+        burst.v = v;
+        burst_lp = lp;
+        brng = r;
+        return any != 0;
+    }
+    // A ringing mode through n samples, driven by x when drive, added into y:
+    // two samples a turn, so the last two outputs trade places, not move.
+    template <bool drive> __attribute__((always_inline)) static void ring_live(Res& z, const ResK& k, i32 g, const i32* x, i32* y, u32 n) {
+        i32 a = z.y1, b = z.y2;   // the last output and the one before
+        const i32 c = k.c, r = k.r2;
+        if (n & 1) {
+            i32 v = twice(mul(c, a) - mul(r, b));
+            if (drive) v += lev(*x++, g);
+            b = a;
+            a = v;
+            *y++ += v;
+        }
+        for (u32 j = 0; j < (n >> 1); ++j) {
+            b = twice(mul(c, a) - mul(r, b));
+            if (drive) b += lev(x[0], g);
+            y[0] += b;
+            a = twice(mul(c, b) - mul(r, a));
+            if (drive) a += lev(x[1], g);
+            y[1] += a;
+            x += 2;
+            y += 2;
+        }
+        z.y1 = a;
+        z.y2 = b;
+    }
+    // The ringing modes listed in which, in one call.
+    template <bool drive> __attribute__((noinline)) void ring_lives(const u32* which, u32 count, const i32* x, i32* y, u32 n) {
+        for (u32 q = 0; q < count; ++q) {
+            const u32 m = which[q];
+            ring_live<drive>(mode[m], modek[m], gain[m], x, y, n);
+        }
+    }
+    // A resting mode rings only where the blow drives it.
+    __attribute__((noinline)) static void ring_rest(Res& z, const ResK& k, i32 g, const i32* x, i32* y, u32 n) {
+        i32 y1 = z.y1, y2 = z.y2;
+        const i32 c = k.c, r = k.r2;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 xj = x[j];
+            if (CURIO_LIKELY(xj)) {
+                const i32 v = twice(mul(c, y1) - mul(r, y2)) + lev(xj, g);
+                y2 = y1;
+                y1 = v;
+                y[j] += v;
+            }
+        }
+        z.y1 = y1;
+        z.y2 = y2;
+    }
+    // The beater's clank and the block's level; and the noise the rattle
+    // and the thunder share, drawn after the clank's as before.
+    template <bool clanking> __attribute__((noinline)) void clank_pass(i32* yb, i32* nb, u32 n) {
+        i32 cv = clank.v, lp = clank_lp, s = sum;
+        const i32 k = clank.k, a = clank_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            i32 y = yb[j];
+            if (clanking && cv > 4096) {
+                // The beater's own clank on the iron, brighter and louder for a rod.
+                cv = mul(cv, k);
+                const i32 ck = lev(noise(r), cv);
+                lp += mul(a, ck - lp);
+                y += ck - lp;
+            }
+            s += (y < 0 ? -y : y) >> 6;
+            yb[j] = y;
+            nb[j] = noise(r);
+        }
+        clank.v = cv;
+        clank_lp = lp;
+        sum = s;
+        rng = r;
+    }
+    // The frame's rattle and the cascade share one band of noise (two
+    // samples a turn, so the states trade places).
+    __attribute__((noinline)) void rattle_pass(const i32* nb, i32* yb, i32 renv) {
+        i32 y1 = rat.y1, y2 = rat.y2, x1 = rat.x1, x2 = rat.x2;
+        const i32 c = ratk.c, r2 = ratk.r2, b = ratk.b;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            const i32 i0 = mul(nb[0], b);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+            x2 = i0;
+            yb[0] += lev(y2, renv);
+            const i32 i1 = mul(nb[1], b);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+            x1 = i1;
+            yb[1] += lev(y1, renv);
+            nb += 2;
+            yb += 2;
+        }
+        rat.y1 = y1;
+        rat.y2 = y2;
+        rat.x1 = x1;
+        rat.x2 = x2;
+    }
+    // The thunder: the shared noise low-passed, throbbing.
+    __attribute__((noinline)) void thunder_pass(const i32* nb, i32* yb, i32 throb) {
+        i32 tv = thunder.v, ta = thatt.v, lp = th_lp;
+        const i32 tk = thunder.k, tak = thatt.k, a = th_a;
+        for (u32 j = 0; j < frames; ++j) {
+            if (CURIO_LIKELY(tv > 4096)) {
+                tv = mul(tv, tk);
+                ta = mul(ta, tak);
+                lp += mul(a, nb[j] - lp);
+                yb[j] += mul(lev(lp, tv - ta), throb);
+            }
+        }
+        thunder.v = tv;
+        thatt.v = ta;
+        th_lp = lp;
     }
     void run(i32* out) {
         ph61 += 64u * 5940910u;   // 61 Hz
@@ -399,60 +647,48 @@ struct Sheet {
             on[m] = e > 8192 || burst.v > 4096;
             if (!on[m]) mode[m].y1 = mode[m].y2 = 0;
         }
-        // The block in three passes, the same sums sample for sample as
-        // ringing every mode each sample, but each mode's state held close
-        // for the block: first the blow and the roll's strokes,
-        i32 xb[frames], yb[frames];
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        // First the blow, split at the shakes and the roll's strokes,
+        i32 xb[frames];
         u32 strike_i[16];
         i32 strike_a[16];
         u32 strikes = 0;
         bool blow = false;
-        for (u32 i = 0; i < frames; ++i) {
+        for (u32 i = 0;;) {
+            u32 e = frames;
+            if (lump < lumps) {
+                const u32 d = lump_at[lump] - t;
+                if (d < frames && d >= i) e = d;
+            }
+            if (e > i && blow_pass(xb + i, e - i)) blow = true;
+            i = e;
+            if (i >= frames) break;
             while (lump < lumps && t + i == lump_at[lump]) {
                 const i32 a = lump_amp[lump];
                 if (a >= 0) burst.v += a;
                 else if (strikes < 16) { strike_i[strikes] = i; strike_a[strikes] = a; ++strikes; }
                 ++lump;
             }
-            i32 x = 0;
-            if (burst.v > 4096) {
-                burst_lp += mul(burst_a, lev(noise(brng), burst.step()) - burst_lp);
-                x = burst_lp * 2;
-            }
-            xb[i] = x;
-            yb[i] = 0;
-            blow |= x != 0;
         }
-        // then the modes, four at a time between the roll's strokes: those
-        // still ringing, driven by the blow if it sounds (lev(0, g) is 0); a
-        // resting mode rings only while the blow drives it,
+        // then the modes between the roll's strokes: those still ringing,
+        // driven by the blow if it sounds (lev(0, g) is 0); a resting mode
+        // rings only while the blow drives it,
         u32 live[16], n = 0;
         for (u32 m = 0; m < modes; ++m) {
             if (on[m]) { live[n++] = m; continue; }
-            Res z = mode[m];
-            const ResK k = modek[m];
-            const i32 g = gain[m];
             u32 i = 0;
             for (u32 s = 0; s <= strikes; ++s) {
                 const u32 end = s < strikes ? strike_i[s] : frames;
-                if (blow) for (; i < end; ++i) if (xb[i]) yb[i] += ring(z, k, lev(xb[i], g));
+                if (blow && end > i) ring_rest(mode[m], modek[m], gain[m], xb + i, out + i, end - i);
                 i = end;
-                if (s < strikes) dsp::strike(z, k, mul(amp[m], -strike_a[s] << 3) << ROLL);
+                if (s < strikes) dsp::strike(mode[m], modek[m], mul(amp[m], -strike_a[s] << 3) << ROLL);
             }
-            mode[m] = z;
         }
-        u32 i = 0;
-        for (u32 s = 0; s <= strikes; ++s) {
+        for (u32 s = 0, i = 0; s <= strikes; ++s) {
             const u32 end = s < strikes ? strike_i[s] : frames;
-            u32 j = 0;
-            if (blow) {
-                for (; j + 4 <= n; j += 4) rings<4, true>(live + j, xb, yb, i, end);
-                if (j + 2 <= n) { rings<2, true>(live + j, xb, yb, i, end); j += 2; }
-                if (j < n) rings<1, true>(live + j, xb, yb, i, end);
-            } else {
-                for (; j + 4 <= n; j += 4) rings<4, false>(live + j, xb, yb, i, end);
-                if (j + 2 <= n) { rings<2, false>(live + j, xb, yb, i, end); j += 2; }
-                if (j < n) rings<1, false>(live + j, xb, yb, i, end);
+            if (end > i) {
+                if (blow) ring_lives<true>(live, n, xb + i, out + i, end - i);
+                else ring_lives<false>(live, n, xb + i, out + i, end - i);
             }
             i = end;
             // A roll's stroke strikes the modes outright.
@@ -463,27 +699,21 @@ struct Sheet {
                 }
         }
         // then the clank, the rattle and the thunder.
-        u32 s = 0;
-        for (u32 i = 0; i < frames; ++i, ++t) {
+        i32 nb[frames];
+        for (u32 s = 0, i = 0;;) {
+            const u32 end = s < strikes ? strike_i[s] : frames;
+            if (end > i) {
+                // The clank, once under its floor, stays there until the next stroke.
+                if (clank.v > 4096) clank_pass<true>(out + i, nb + i, end - i);
+                else clank_pass<false>(out + i, nb + i, end - i);
+            }
+            i = end;
+            if (s >= strikes) break;
             while (s < strikes && strike_i[s] == i) clank.v += mul(-strike_a[s++], F(0.5));
-            i32 y = yb[i];
-            if (clank.v > 4096) {
-                // The beater's own clank on the iron, brighter and louder for a rod.
-                const i32 ck = lev(noise(rng), clank.step());
-                clank_lp += mul(clank_a, ck - clank_lp);
-                y += ck - clank_lp;
-            }
-            sum += (y < 0 ? -y : y) >> 6;
-            const i32 n = noise(rng);
-            // The frame's rattle and the cascade share one band of noise.
-            y += lev(bp(rat, ratk, n), renv);
-            if (thunder.v > 4096) {
-                const i32 tv = thunder.step() - (thatt.v = mul(thatt.v, thatt.k));
-                th_lp += mul(th_a, n - th_lp);
-                y += mul(lev(th_lp, tv), throb);
-            }
-            out[i] = y;
         }
+        t += frames;
+        rattle_pass(nb, out, renv);
+        if (thunder.v > 4096) thunder_pass(nb, out, throb);
     }
 };
 
@@ -512,11 +742,13 @@ struct Spark {
     u32 pre;
     i32 glass_amp;
     bool glass_on;
+    u32 orng;   // the ozone's own noise
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
+        orng = (x.seed * 2654435761u) | 1u;
         t = 0;
         k = 0;
         const u32 main = 3 + static_cast<u32>(c[0] * 3 >> 12);
@@ -582,50 +814,170 @@ struct Spark {
         for (int m = 0; m < 2; ++m) dsp::strike(glass[m], glassk[m], lev(lvl[k], m ? glass_amp >> 1 : glass_amp));
         ++k;
     }
+    // The block in passes, each with its state in registers, split at the
+    // cracks; the noise is drawn in the same order as ever.
+    // The burst of band noise (it rings on while its band does), and the
+    // noise for the snap and the ozone in draw order.
+    template <bool bursting> __attribute__((noinline)) void burst_pass(i32* y, i32* sb, u32 n) {
+        i32 bv = burst.v, ba = batt, y1 = burstr.y1, y2 = burstr.y2, x1 = burstr.x1, x2 = burstr.x2;
+        i32 sv = snap.v;   // the snap's draws stop as it falls quiet, as its own pass's do
+        const i32 bk = burst.k, ak = bak, c = bpk.c, r2 = bpk.r2, b = bpk.b, g = bgain, sk = snap.k;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (bursting && CURIO_LIKELY(bv > 4096 || y1 > 4096 || y1 < -4096)) {
+                bv = mul(bv, bk);
+                ba = mul(ba, ak);
+                const i32 in = mul(lev(noise(r), bv - ba), b);
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                y[j] += gn(o, g);
+            }
+            if (CURIO_UNLIKELY(sv > 4096)) {
+                sv = mul(sv, sk);
+                sb[j] = spiky(r);
+            }
+        }
+        burst.v = bv;
+        batt = ba;
+        burstr.y1 = y1;
+        burstr.y2 = y2;
+        burstr.x1 = x1;
+        burstr.x2 = x2;
+        rng = r;
+    }
+    // The snap: a shock's broadband click at each crack.
+    __attribute__((noinline)) void snap_pass(i32* y, const i32* sb, u32 n) {
+        i32 v = snap.v, lp = snap_lp;
+        const i32 k = snap.k, a = snap_a;
+        if (v <= 4096) { snap_lp = 0; return; }   // until the next crack
+        for (u32 j = 0; j < n; ++j) {
+            if (CURIO_LIKELY(v > 4096)) {
+                v = mul(v, k);
+                const i32 sn = lev(sb[j], v);
+                lp += mul(a, sn - lp);
+                y[j] += sn - lp;
+            } else {
+                lp = 0;
+            }
+        }
+        snap.v = v;
+        snap_lp = lp;
+    }
+    // Ozone, swelling in as the cracks go on.
+    __attribute__((noinline)) void ozone_pass(i32* y, u32 tt, u32 n) {
+        u32 r = orng;
+        i32 lv = oz_level, y1 = oz.y1, y2 = oz.y2, x1 = oz.x1, x2 = oz.x2;
+        const i32 ramp = oz_ramp, k = to_k, c = ozk.c, r2 = ozk.r2, b = ozk.b, g = ozgain;
+        const u32 last = end;
+        for (u32 j = 0; j < n; ++j, ++tt) {
+            if (CURIO_UNLIKELY(tt <= last)) lv += ramp;
+            else lv = mul(lv, k);
+            const i32 in = mul(noise(r), b);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            y[j] += lev(gn(o, g), lv);
+        }
+        orng = r;
+        oz_level = lv;
+        oz.y1 = y1;
+        oz.y2 = y2;
+        oz.x1 = x1;
+        oz.x2 = x2;
+    }
+    // The arc's mains buzz, from half way through the cracks.
+    __attribute__((noinline)) void arc_pass(i32* y, u32 tt, u32 n) {
+        u32 ph = ph120;
+        i32 lp = arc_lp, v = arc.v;
+        const i32 a = arc_a, k = arc.k;
+        const u32 last = end;
+        for (u32 j = 0; j < n; ++j, ++tt) {
+            if (CURIO_LIKELY(tt * 2 > last)) {
+                ph += 11687059u;   // 120 Hz
+                const i32 sq = static_cast<i32>(ph) >= 0 ? one >> 1 : -(one >> 1);
+                const i32 hum = sq + (sine(ph * 2) >> 3);
+                lp += mul(a, hum - lp);
+                if (CURIO_LIKELY(tt > last)) v = mul(v, k);
+                y[j] += lev(lp, v);
+            }
+        }
+        ph120 = ph;
+        arc_lp = lp;
+        arc.v = v;
+    }
+    // The jar's body.
+    __attribute__((noinline)) void body_pass(i32* y, u32 n) {
+        u32 ph = body.ph;
+        const u32 in = body.inc;
+        i32 v = body.v, a = body.a;
+        const i32 vk = body.vk, ak = body.ak;
+        for (u32 j = 0; j < n; ++j) {
+            if (CURIO_LIKELY(v)) {
+                ph += in;
+                v = mul(v, vk);
+                a = mul(a, ak);   // the attack runs out on its own
+                y[j] += mul(v - a, sine(ph));
+                if (CURIO_UNLIKELY(v < 4096)) v = 0;
+            }
+        }
+        body.ph = ph;
+        body.v = v;
+        body.a = a;
+    }
+    // The distance: the whole low-passed.
+    __attribute__((noinline)) void dist_pass(i32* y, u32 n) {
+        i32 lp = out_lp;
+        const i32 a = out_a;
+        for (u32 j = 0; j < n; ++j) {
+            lp += mul(a, y[j] - lp);
+            y[j] = lp;
+        }
+        out_lp = lp;
+    }
+    // n samples after the pre-delay, between cracks.
+    __attribute__((noinline)) void span(i32* y, u32 tt, u32 n) {
+        i32 sb[frames];
+        for (u32 j = 0; j < n; ++j) y[j] = 0;
+        // The burst, once quiet with its band rung out, stays so until the next crack.
+        if (burst.v > 4096 || burstr.y1 > 4096 || burstr.y1 < -4096) burst_pass<true>(y, sb, n);
+        else if (snap.v > 4096) burst_pass<false>(y, sb, n);
+        snap_pass(y, sb, n);
+        if (glass_on) {
+            ring_bank(glass, glassk, 2, y, n);
+        }
+        ozone_pass(y, tt, n);
+        if (c[4] > 0) arc_pass(y, tt, n);
+        if (body.v) body_pass(y, n);
+        if (c[7] > 0) dist_pass(y, n);
+    }
     void run(i32* out) {
         // The jar's glass rests once it has rung out, until the next crack.
         glass_on = k < n || (glass[0].y1 > 2048 || glass[0].y1 < -2048 || glass[1].y1 > 2048 || glass[1].y1 < -2048);
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (t < pre) { out[i] = 0; continue; }
-            const u32 tt = t - pre;
-            while (k < n && tt == at[k]) crack_now();
-            i32 y = 0;
-            if (burst.v > 4096 || burstr.y1 > 4096 || burstr.y1 < -4096) {
-                const i32 env = burst.step() - (batt = mul(batt, bak));
-                y = gn(bp(burstr, bpk, lev(noise(rng), env)), bgain);
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            if (t0 + i < pre) {
+                // Before the distance's delay: silence.
+                u32 e = pre - t0;
+                if (e > frames) e = frames;
+                for (; i < e; ++i) out[i] = 0;
+                if (i >= frames) break;
             }
-            if (snap.v > 4096) {
-                const i32 sn = lev(spiky(rng), snap.step());
-                snap_lp += mul(snap_a, sn - snap_lp);
-                y += sn - snap_lp;
-            } else if (snap_lp) {
-                snap_lp = 0;
-            }
-            if (glass_on) y += ring(glass[0], glassk[0], 0) + ring(glass[1], glassk[1], 0);
-            // Ozone.
-            if (tt <= end) oz_level += oz_ramp;
-            else oz_level = mul(oz_level, to_k);
-            const i32 o = bp(oz, ozk, noise(rng));
-            y += lev(gn(o, ozgain), oz_level);
-            if (c[4] > 0 && tt * 2 > end) {
-                ph120 += 11687059u;   // 120 Hz
-                const i32 sq = static_cast<i32>(ph120) >= 0 ? one >> 1 : -(one >> 1);
-                const i32 hum = sq + (sine(ph120 * 2) >> 3);
-                arc_lp += mul(arc_a, hum - arc_lp);
-                const i32 a = tt > end ? arc.step() : arc.v;
-                y += lev(arc_lp, a);
-            }
-            if (body.v) {
-                body.ph += body.inc;
-                y += mul(body.level(), sine(body.ph));
-                if (body.v < 4096) body.v = 0;
-            }
-            if (c[7] > 0) {
-                out_lp += mul(out_a, y - out_lp);
-                y = out_lp;
-            }
-            out[i] = y;
+            const u32 tt = t0 + i - pre;
+            // The next crack in this block.
+            u32 e = frames;
+            if (k < n) { const u32 d = at[k] - tt; if (d < frames - i) e = i + d; }
+            if (e > i) span(out + i, tt, e - i);
+            i = e;
+            if (i >= frames) break;
+            const u32 now = t0 + i - pre;
+            while (k < n && now == at[k]) crack_now();
         }
+        t = t0 + frames;
     }
 };
 
@@ -705,57 +1057,154 @@ struct Cork {
         fizz.k = decay(static_cast<u32>(120000 + sc(400000, c[2])));
     }
     bool waiting() const { return !popped || glug < glugs; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            i32 y = 0;
-            if (t < pre) {
-                ph_sq += sq_inc0 + sq_step * t;
-                sq_att = mul(sq_att, sq_attk);
-                const i32 s = mul(sq_amp - sq_att, sine(ph_sq));
-                const i32 sq = (s < 0 ? -mul(sq_amp, F(0.3)) : mul(sq_amp, F(0.3))) + s;
-                sq_lp += mul(sq_a, sq - sq_lp);
-                y += sq_lp;
-            } else if (!popped) {
-                popped = true;
-                pop_fall = full;
-                const i32 g = U(0.6) + sc(U(0.6), c[1]);
-                pop.hit(g, pop_k0, decay(600));
-                body.hit(sc(U(0.5), c[3]), decay(static_cast<u32>(mul(18000 + sc(60000, c[3]), F(0.75)) << 1)), decay(600));
-                thock.v = U(0.1) + sc(U(2.4), c[4]);
-            }
-            if (popped) {
-                pop_fall = mul(pop_fall, popk_fall);
-                pop.ph += pop.inc - static_cast<u32>(mul(static_cast<i32>(pop.inc), mul(F(0.3), pop_fall)));
-                y += mul(pop.level(), sine(pop.ph));
-                body.ph += body.inc;
-                y += mul(body.level(), sine(body.ph));
-                if (thock.v > 4096) {
-                    th_lp += mul(th_a, lev(noise(rng), thock.step()) - th_lp);
-                    y += th_lp;
-                }
-            }
-            if (glug < glugs && t == glug_at) {
-                gl.v = gl.a = 0;
-                gl.ph = 0;
-                gl.hit(gl_amp, decay(20000), decay(400));
-                gl_rise = 0;
-                ++glug;
-                glug_at += samples(70000);
-            }
-            if (gl.v > 4096) {
-                gl_rise += 190;   // (1 + 8 t): 8 / 44100 each sample, Q20
-                gl.ph += gl_inc + static_cast<u32>(mul(static_cast<i32>(gl_inc), gl_rise << 11));
-                y += mul(gl.level(), sine(gl.ph));
-            }
-            if (fizz.v > 4096) {
-                noise(rng);
-                const i32 click = rng < fizz_p ? noise(rng) : 0;
-                const i32 r = ring(fz, fzk, mul(click, fzk.g));
-                fz_hp += mul(fz_a, r - fz_hp);
-                y += lev(r - fz_hp, fizz.step());
-            }
-            out[i] = y;
+    // The block in passes, each with its state in registers, split at the
+    // pop and the glugs; the noise is drawn in the same order as ever.
+    // The squeak as the cork turns: 2.2 to 3.7 kHz over the twist.
+    __attribute__((noinline)) void squeak_pass(i32* y, u32 n) {
+        u32 ph = ph_sq, tt = t;
+        i32 att = sq_att, lp = sq_lp;
+        const u32 i0 = sq_inc0, st = sq_step;
+        const i32 ak = sq_attk, amp = sq_amp, a = sq_a, edge = mul(sq_amp, F(0.3));
+        for (u32 j = 0; j < n; ++j, ++tt) {
+            ph += i0 + st * tt;
+            att = mul(att, ak);
+            const i32 s = mul(amp - att, sine(ph));
+            const i32 sq = (s < 0 ? -edge : edge) + s;
+            lp += mul(a, sq - lp);
+            y[j] += lp;
         }
+        ph_sq = ph;
+        sq_att = att;
+        sq_lp = lp;
+    }
+    // The neck's pop, bent up from 0.7 of itself.
+    __attribute__((noinline)) void pop_pass(i32* y, u32 n) {
+        u32 ph = pop.ph;
+        const u32 in = pop.inc;
+        i32 v = pop.v, a = pop.a, fall = pop_fall;
+        const i32 vk = pop.vk, ak = pop.ak, fk = popk_fall;
+        for (u32 j = 0; j < n; ++j) {
+            fall = mul(fall, fk);
+            ph += in - static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.3), fall)));
+            v = mul(v, vk);
+            a = mul(a, ak);   // the attack runs out on its own
+            y[j] += mul(v - a, sine(ph));
+        }
+        pop.ph = ph;
+        pop.v = v;
+        pop.a = a;
+        pop_fall = fall;
+    }
+    // The thock of the cork, and the fizz's clicks in draw order.
+    template <bool thocking, bool fizzing> __attribute__((noinline)) void noise_pass(i32* y, i32* cb, u32 n) {
+        i32 tv = thock.v, lp = th_lp, fv = fizz.v;
+        const i32 tk = thock.k, a = th_a, fk = fizz.k;
+        const u32 p = fizz_p;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (thocking && CURIO_LIKELY(tv > 4096)) {
+                tv = mul(tv, tk);
+                lp += mul(a, lev(noise(r), tv) - lp);
+                y[j] += lp;
+            }
+            if (fizzing && CURIO_LIKELY(fv > 4096)) {
+                fv = mul(fv, fk);
+                noise(r);
+                cb[j] = r < p ? noise(r) : 0;
+            }
+        }
+        thock.v = tv;
+        th_lp = lp;
+        rng = r;
+    }
+    // A glug, rising (1 + 8 t).
+    __attribute__((noinline)) void glug_pass(i32* y, u32 n) {
+        u32 ph = gl.ph;
+        const u32 in = gl_inc;
+        i32 v = gl.v, a = gl.a, rise = gl_rise;
+        const i32 vk = gl.vk, ak = gl.ak;
+        for (u32 j = 0; j < n; ++j) {
+            if (CURIO_LIKELY(v > 4096)) {
+                rise += 190;   // 8 / 44100 each sample, Q20
+                ph += in + static_cast<u32>(mul(static_cast<i32>(in), rise << 11));
+                v = mul(v, vk);
+                a = mul(a, ak);   // the attack runs out on its own
+                y[j] += mul(v - a, sine(ph));
+            }
+        }
+        gl.ph = ph;
+        gl.v = v;
+        gl.a = a;
+        gl_rise = rise;
+    }
+    // The fizz: sparse clicks through a bright resonance.
+    __attribute__((noinline)) void fizz_pass(i32* y, const i32* cb, u32 n) {
+        i32 fv = fizz.v, y1 = fz.y1, y2 = fz.y2, hp = fz_hp;
+        const i32 fk = fizz.k, c = fzk.c, r2 = fzk.r2, g = fzk.g, a = fz_a;
+        for (u32 j = 0; j < n; ++j) {
+            if (CURIO_LIKELY(fv > 4096)) {
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(cb[j], g);
+                y2 = y1;
+                y1 = o;
+                hp += mul(a, o - hp);
+                fv = mul(fv, fk);
+                y[j] += lev(o - hp, fv);
+            }
+        }
+        fizz.v = fv;
+        fz.y1 = y1;
+        fz.y2 = y2;
+        fz_hp = hp;
+    }
+    // n samples between events.
+    __attribute__((noinline)) void span(i32* y, u32 n) {
+        i32 cb[frames];
+        for (u32 j = 0; j < n; ++j) y[j] = 0;
+        if (t < pre) squeak_pass(y, n);
+        if (popped) {
+            pop_pass(y, n);
+            tone_at(body, y, n);
+        }
+        const bool th = popped && thock.v > 4096, fz_on = fizz.v > 4096;
+        if (th && fz_on) noise_pass<true, true>(y, cb, n);
+        else if (th) noise_pass<true, false>(y, cb, n);
+        else if (fz_on) noise_pass<false, true>(y, cb, n);
+        if (gl.v > 4096) glug_pass(y, n);
+        if (fz_on) fizz_pass(y, cb, n);
+    }
+    // The pop, or a glug, at t.
+    __attribute__((noinline)) void events() {
+        if (t >= pre && !popped) {
+            popped = true;
+            pop_fall = full;
+            const i32 g = U(0.6) + sc(U(0.6), c[1]);
+            pop.hit(g, pop_k0, decay(600));
+            body.hit(sc(U(0.5), c[3]), decay(static_cast<u32>(mul(18000 + sc(60000, c[3]), F(0.75)) << 1)), decay(600));
+            thock.v = U(0.1) + sc(U(2.4), c[4]);
+        }
+        if (glug < glugs && t == glug_at) {
+            gl.v = gl.a = 0;
+            gl.ph = 0;
+            gl.hit(gl_amp, decay(20000), decay(400));
+            gl_rise = 0;
+            ++glug;
+            glug_at += samples(70000);
+        }
+    }
+    void run(i32* out) {
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            t = t0 + i;
+            events();
+            // The next event in this block: the pop, or a glug.
+            u32 e = frames;
+            if (!popped) { const u32 d = pre - t0; if (d < e) e = d; }
+            if (glug < glugs) { const u32 d = glug_at - t0; if (d < e && d > i) e = d; }
+            span(out + i, e - i);
+            i = e;
+            if (i >= frames) break;
+        }
+        t = t0 + frames;
     }
 };
 }
