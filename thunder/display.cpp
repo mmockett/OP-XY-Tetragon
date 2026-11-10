@@ -1,10 +1,15 @@
 #include "display.h"
 
-// THUNDER's screen: a theatre thunder sheet hung from its batten in a
-// gallows frame, played the way the selected key's model plays it. The
-// sheet's outline, its hem and its rolled lip are the two reshaping paths; everything else is a part placed from the key's controls. A hit sets
-// the sheet rippling in the model's mode shape for as long as the model's own
-// sound rings (a kit voice plays to its end: stock gives kits no amp envelope).
+// THUNDER's screen: the iron sheet hung on two wires from a wooden gallows,
+// in the stock look (tools/make_panel.py draws it). Encoder 1 sizes the sheet,
+// a hollow outline and the one reshaping path; encoder 2 clamps one to four
+// felt pads on its lower edge; encoder 3 strips the felt rings off the
+// mallet's core; encoder 4 moves the chalk cross where it is struck. On the
+// second row the model's TENSION lets the sheet sag on its wires, its CAMBER
+// (or DEPTH, or BEND) bows it, and CHAIN lays links across it. A hit sets the
+// sheet's free foot rippling in the model's mode shape for as long as the
+// model's own sound rings (a kit voice plays to its end: stock gives kits no
+// amp envelope); the marks on its face ride the ripple.
 namespace thunder {
 namespace view {
 using opxy::i32;
@@ -51,102 +56,46 @@ inline i32 fall(i32 a, i32 b) {
     const i32 l = x + (x >> 1) - (x >> 4) - (x >> 7);        // times log2 e
     return static_cast<i32>(pow2v(-l) >> 1);
 }
-inline i32 iabs(i32 v) { return v < 0 ? -v : v; }
 inline i32 lerp(i32 a, i32 b, i32 t) { return a + (((b - a) >> 2) * t >> 8); }   // t Q10; |b - a| < 2^21
 inline i32 clampi(i32 v, i32 lo, i32 hi) { return v < lo ? lo : v > hi ? hi : v; }
-// A tenth-degree turn as a unit vector.
-inline Turn turned(i32 tenths) {
-    const i32 ph = (tenths * 4096) / 225;   // 65536 / 3600
-    const Turn t = {cs(ph) >> 4, sn(ph) >> 4};
-    return t;
-}
 // A value a (b / a)^t for t a Q10 unit, as log2 Q16: lerp of the logs.
 inline i32 lmix(i32 la, i32 lb, i32 t) { return la + (((lb - la) >> 1) * t >> 9); }
-// The direction of (dx, dy) in tenths of a degree, as turned() takes it:
-// bisection on the cross product within the half-turn that holds it.
-inline i32 angle_of(i32 dx, i32 dy) {
-    const i32 base = dy >= 0 ? 0 : 1800;
-    if (dy < 0) { dx = -dx; dy = -dy; }
-    i32 lo = 0;
-    for (i32 b = 1024; b; b >>= 1) {
-        if (lo + b > 1800) continue;
-        const Turn t = turned(lo + b);
-        if ((static_cast<i32>(t.cos) * (dy >> 6) - static_cast<i32>(t.sin) * (dx >> 6)) >= 0) lo += b;
-    }
-    return base + lo;
+// A Q10 fraction t of three or nine, rounded: how many pads, rings or links.
+inline i32 count_of(i32 t, i32 most) { return (t * most + 512) >> 10; }
+
+// ---------------------------------------------------------------- the projection
+// A world point (Q10 units: X down to the right, Y down to the left, Z up) on
+// screen, Q10 px: the isometric view, scaled to fit the stage (art.h).
+inline i32 screen_x(i32 x, i32 y) { return art::ox + (((x - y) * art::kc) >> 10); }
+inline i32 screen_y(i32 x, i32 y, i32 z) { return art::oy + (((x + y) * art::kh) >> 10) - ((z * art::kz) >> 10); }
+template <class F>
+inline void put(F& f, u32 node, i32 x, i32 y, i32 z) {
+    place(f, node, screen_x(x, y), screen_y(x, y, z), unit, 0, keep);
 }
 
-// ---------------------------------------------------------------- the frame
-// The chain's links and GRIT's beads are authored larger than they are drawn
-// (tools/make_panel.py, LINK_K and BEAD_K) and placed that much smaller, so
-// their lines draw near 1 px wide where the parts are drawn large.
-const i32 link_k = 1331, bead_k = 1178;
-template <class F>
-inline void put(F& f, u32 node, i32 x, i32 y, i32 scale, u32 shade, i32 tenths = 0) {
-    place(f, node, x, y, clampi(scale, 64, 2 * unit), shade, shade ? stroke : keep);
-    if (tenths) turn(f, node, turned(tenths));
-}
-template <class F>
-inline void put_shaded(F& f, u32 node, i32 x, i32 y, i32 scale, i32 shade, i32 tenths = 0) {
-    // a part that fades through the greys: parked once it has faded out
-    if (shade <= 0) { hide(f, node); return; }
-    put(f, node, x, y, scale, static_cast<u32>(shade > 8 ? 8 : shade), tenths);
-}
-
-// ---------------------------------------------------------------- the sheet
-// Every model's view of the one sheet: which of its controls move which
-// part (an index into the key's eight, or -1), its mode shape when struck,
-// how fast and far it rings on screen.
+// ---------------------------------------------------------------- each model's sheet
+// Which of the model's controls let the sheet sag (TENSION), bow it (CAMBER,
+// DEPTH, BEND) and lay the chain on it (an index into the key's eight, or -1),
+// and the mode shape a hit rings it in: m half waves across its foot, n down
+// it, hz times a second on screen.
 struct Look {
-    signed char tension, curve, sway, ring, chain, glide;
-    unsigned char m, n, hz, px;
+    signed char tension, curve, chain;
+    unsigned char m, n, hz;
 };
 const Look looks[models] = {
-    {4, 5, -1, -1, 7, 6, 1, 1, 4, 13},    // M::BOOM: CAMBER curves it, GLIDE weighs it
-    {4, -1, -1, 7, 5, -1, 2, 1, 7, 9},    // M::SLAP: METAL rings it
-    {-1, -1, -1, 5, 6, -1, 2, 2, 8, 8},   // M::POP
-    {4, -1, 6, -1, 5, -1, 5, 3, 11, 7},   // M::FLICK: SWING sways it
-    {4, 5, -1, -1, 7, -1, 1, 1, 5, 12},   // M::TOM
-    {4, -1, 6, -1, 7, -1, 3, 2, 6, 10},    // M::CRASH
-    {-1, -1, -1, 5, 6, -1, 2, 1, 7, 7},   // M::CLANK: SHEET rings it
-    {-1, -1, -1, 5, 6, -1, 4, 2, 9, 6},   // M::GRIT
-    {6, -1, -1, -1, 7, -1, 2, 1, 7, 8},   // M::HOP
-    {-1, 4, -1, 5, 6, -1, 3, 1, 9, 8},    // M::ZAP: DEPTH bows it
-    {5, 7, -1, -1, 6, -1, 2, 1, 5, 6},    // M::BOW: BEND flexes it
-    {4, -1, 7, -1, 5, -1, 1, 1, 3, 11},    // M::SHAKE: SWELL sways it
+    {4, 5, 7, 1, 1, 4},     // M::BOOM
+    {4, -1, 5, 2, 1, 7},    // M::SLAP
+    {-1, -1, 6, 2, 2, 8},   // M::POP
+    {4, -1, 5, 5, 3, 11},   // M::FLICK
+    {4, 5, 7, 1, 1, 5},     // M::TOM
+    {4, -1, 7, 3, 2, 6},    // M::CRASH
+    {-1, -1, 6, 2, 1, 7},   // M::CLANK
+    {-1, -1, 6, 4, 2, 9},   // M::GRIT
+    {6, -1, 7, 2, 1, 7},    // M::HOP
+    {-1, 4, 6, 3, 1, 9},    // M::ZAP: DEPTH bows it
+    {5, 7, 6, 2, 1, 5},     // M::BOW: BEND bows it
+    {4, -1, 5, 1, 1, 3},    // M::SHAKE
 };
-
-struct Sheet {
-    i32 cx, top, w, h;          // Q10 px
-    i32 curve, slack, sway;     // Q10 px of camber, Q10 of slack, Q10 px of lean
-    i32 shake;                  // Q14: the struck ripple now, signed
-    u32 m, n;
-    i32 amp;                    // Q10 px
-};
-// A point on the sheet (u, v Q10, 0..1024 across and down) on screen, Q10 px.
-inline void at(const Sheet& s, i32 u, i32 v, i32& x, i32& y) {
-    // (Q10 px times Q10 fractions: every product stays under 2^31)
-    x = s.cx + (((u - 512) * (s.w >> 4)) >> 6) + ((v * s.sway) >> 10);   // it leans from its clamped top
-    y = s.top + ((v * (s.h >> 4)) >> 6);
-    const i32 su = sn(u * 32) >> 4;   // sin(pi u), Q10
-    // camber: a curved shell under the straight batten
-    y += ((s.curve * su >> 10) * (154 + ((870 * v) >> 10))) >> 10;
-    // slack: buckles along its edges, flattening as it is pulled taut
-    if (s.slack) {
-        const i32 b = sn(u * 205 + v * 45) >> 4;          // sin(2 pi (3.2 u + 0.7 v)), Q10
-        const i32 k = (s.slack * 2867) >> 10;             // 2.8 px at full slack, Q10 px
-        y += ((((k * b) >> 10) * su >> 10) * (410 + v)) >> 10;
-    }
-    // the struck ripple, in the model's mode shape
-    if (s.shake) {
-        // a hanging sheet: clamped along its top, free at its foot, so its
-        // shapes run sin((2n - 1) pi v / 2) down it, largest at the foot
-        const i32 mode = ((sn(static_cast<i32>(s.m) * u * 32) >> 4) * (sn(static_cast<i32>(2 * s.n - 1) * v * 16) >> 4)) >> 10;   // Q10
-        const i32 d = (mode * (s.shake >> 4)) >> 10;                 // Q10
-        y += (s.amp * d) >> 10;
-        x += ((s.amp * d) >> 13) * (sn(v * 32) >> 13);
-    }
-}
 
 // ---------------------------------------------------------------- captions
 // A whole number with a unit.
@@ -375,454 +324,111 @@ inline void display(DisplayState& state, const opxy::draw::Input& input, Frame& 
     const i32 hold = gesture(m, t);
     i32 motion = state.age < hold ? 32768 : fall(state.age - hold, tau);
     if (still || state.age >= (1 << 24) - 2048) motion = 0;
-    // quantised so that a still sheet is exactly still
-    const i32 amp_q = motion >> 9;   // 0..64
+    const i32 amp_q = motion >> 9;   // 0..64, quantised so that a still sheet is exactly still
     const i32 phase = static_cast<i32>((static_cast<u32>(state.age) * look.hz * 64u) & 0xffffu);   // 2 pi hz age
-    const i32 shake = amp_q ? (amp_q * (cs(phase) >> 6)) : 0;   // Q14
+    // the ripple's depth at the sheet's foot, Q10 world units: up to 2, in
+    // eighths, so a dying ripple stops rather than creeps
+    const i32 ripple = amp_q ? ((amp_q * 32 * cs(phase)) >> 14) & ~127 : 0;
 
-    // --- the sheet: the hero, 264 to 336 px wide, hung close under the beam
-    Sheet s;
-    s.w = (264 + ((72 * t[0]) >> 10)) << 10;
-    s.h = (100 + ((16 * t[0]) >> 10)) << 10;
-    s.cx = 240 << 10;
-    s.top = 59 << 10;
-    const i32 tens = look.tension >= 0 ? (m == M::CRASH ? (t[4] * 6) / 10 : m == M::BOOM ? 360 + ((664 * t[4]) >> 10) : t[look.tension]) : 700;
-    s.slack = 1024 - tens;
-    s.curve = look.curve >= 0 ? (t[look.curve] * 13) : 0;
-    s.sway = look.sway >= 0 ? (t[look.sway] * 14) : 0;   // up to 14 px at its foot
-    s.m = look.m;
-    s.n = look.n;
-    // a hit throws the sheet hardest in its first frames, then it rings on
-    // at its own size as the sound falls
-    s.amp = (look.px << 10) + (amp_q ? ((look.px * fall(state.age, 160)) >> 5) : 0);
-    s.shake = 0;
-    // the parts hang from the sheet at rest; only its outlines carry a hit's motion
-    const Sheet rest = s;
-    s.shake = shake;
-    if (m == M::BOW && amp_q) s.curve += (t[7] * 3 * (sn(static_cast<i32>(static_cast<u32>(state.age) * 341u)) >> 6)) >> 8;   // the hand flexing it as it sings
-    if ((m == M::FLICK || m == M::CRASH || m == M::SHAKE) && amp_q && look.sway >= 0)
-        s.sway = clampi(s.sway + (((t[look.sway] * 8 >> 4) * amp_q * (sn(static_cast<i32>(static_cast<u32>(state.age) * 128u)) >> 6)) >> 10), -(14 << 10), 14 << 10);
-    const i32 cy = s.top + s.h / 2 + (8 << 10);
-    const i32 pcx = s.cx + s.sway / 2;   // the paths' centre, half way down its lean
-    const i32 qx = rest.w >> 2;          // each half's centre, a quarter of the width out
-    // The sheet is wider than one outline can reach (a path spans 256 px at
-    // scale 2), so it is two outlines, the left half and the right, meeting
-    // under a clip at the middle of its top and at its foot. Each goes out
-    // along the sheet's edge and back inside it: along the fold of its hem
-    // (so the hem is the band between them), 0.4 px inside its side, and
-    // along the top of the rolled lip at its foot (a bead 3.6 px deep). Both
-    // at half size and scale 2.
+    // --- the sheet, in the plane y = 22: SIZE sizes it, TENSION lets it sag
+    // on its wires, CAMBER bows it out of its plane
+    const i32 w = (78 << 10) + 34 * t[0], h = (46 << 10) + 22 * t[0];
+    const i32 x0 = (75 << 10) - w / 2;
+    const i32 taut = look.tension >= 0 ? t[look.tension] : 1024;
+    const i32 top = (80 << 10) - 7 * (1024 - taut);
+    const i32 cam = look.curve >= 0 ? 5 * t[look.curve] : 0;
+    // the ripple at (u, v) on the sheet (Q10 across and down): clamped at its
+    // top, free at its foot, so its shapes run sin((2n - 1) pi v / 2) down it
+    const i32 m_ = look.m, n_ = 2 * look.n - 1;
+    const i32 ox = screen_x(75 << 10, art::sheet_y), oy = screen_y(75 << 10, art::sheet_y, top - h / 2);
     u32 key = 2166136261u;
-    for (u32 i = 0; i < 8; ++i) key = (key ^ static_cast<u32>(raw[i])) * 16777619u;
-    key = (key ^ m) * 16777619u;
-    key = (key ^ static_cast<u32>(shake)) * 16777619u;
-    key = (key ^ static_cast<u32>(s.amp)) * 16777619u;
-    key = (key ^ static_cast<u32>(s.curve)) * 16777619u;
-    key = (key ^ static_cast<u32>(s.sway)) * 16777619u;
+    const i32 shape[6] = {w, h, top, cam, ripple, static_cast<i32>(m)};
+    for (u32 i = 0; i < 6; ++i) key = (key ^ static_cast<u32>(shape[i])) * 16777619u;
     if (!key) key = 1;
-    const i32 hem_v = 82;     // the hem's fold, about 9 px under the top edge
-    const i32 lip = 1843;     // the lip, 3.6 px deep (half-size Q10)
     if (frame.paths[0].key != key) {
-        for (u32 half = 0; half < 2; ++half) {
-            Frame::path_type& o = frame.paths[half];
-            const i32 ox = half ? pcx + qx : pcx - qx;
-            for (u32 i = 0; i < 32; ++i) {
-                // from the top's middle out to the corner, down the side, back along the foot
-                i32 u, v, iv, nx = 0, ny = 0;
-                if (i < 8) { u = 512 - static_cast<i32>(i) * 64; v = 0; iv = hem_v; }
-                else if (i == 8) { u = 0; v = 0; iv = hem_v; nx = 200; }
-                else if (i < 24) { u = 0; v = 112 + ((static_cast<i32>(i) - 9) * 858) / 14; iv = v; nx = 200; }
-                else { u = (static_cast<i32>(i - 24) * 512) / 7; v = 1024; iv = v; nx = i == 24 ? 200 : 0; ny = -lip; }
-                if (half) { u = 1024 - u; nx = -nx; }
-                i32 x, y, xi, yi;
-                at(s, u, v, x, y);
-                if (iv != v) at(s, u, iv, xi, yi);
-                else { xi = x; yi = y; }
-                const u32 a = (i + 48) & 63, b = (47 - i) & 63;
-                o.points[a].x = (x - ox) / 2;
-                o.points[a].y = (y - cy) / 2;
-                o.points[b].x = (xi - ox) / 2 + nx;
-                o.points[b].y = (yi - cy) / 2 + ny;
-            }
-            o.key = key + half;
+        // its top edge left to right, then its foot right to left, 32 points each
+        Frame::path_type& o = frame.paths[0];
+        for (i32 k = 0; k < 32; ++k) {
+            const i32 u = (k * 1024) / 31;
+            const i32 x = x0 + ((w >> 4) * u >> 6);
+            const i32 y = art::sheet_y + ((cam * sn(u * 32)) >> 14);
+            o.points[k].x = screen_x(x, y) - ox;
+            o.points[k].y = screen_y(x, y, top) - oy;
+            const i32 ub = 1024 - u;
+            const i32 xb = x0 + ((w >> 4) * ub >> 6);
+            const i32 yb = art::sheet_y + ((cam * sn(ub * 32)) >> 14) + ((ripple * sn(m_ * ub * 32)) >> 14);
+            o.points[32 + k].x = screen_x(xb, yb) - ox;
+            o.points[32 + k].y = screen_y(xb, yb, top - h) - oy;
         }
+        o.key = key;
     }
-    place(frame, 0, pcx - qx, cy, 2 * unit, 9, stroke);
-    place(frame, 1, pcx + qx, cy, 2 * unit, 9, stroke);
-    Sheet hang = s;
-    hang.shake = 0;
-
-    // corners and edges, Q10 px
-    i32 tlx, tly, trx, try_, blx, bly, brx, bry, bcx, bcy;
-    at(rest, 0, 0, tlx, tly);
-    at(rest, 1024, 0, trx, try_);
-    at(rest, 0, 1024, blx, bly);
-    at(rest, 1024, 1024, brx, bry);
-    at(rest, 512, 1024, bcx, bcy);
-
-    // --- the sheet's iron: C-clips onto the batten, rivets along its hem
-    // and down its sides
-    for (u32 side = 0; side < 3; ++side) {
-        // left, right, and one over the middle, where the two outlines meet
-        const i32 x = side == 2 ? (tlx + trx) / 2 : side ? trx - (40 << 10) : tlx + (40 << 10), y = (side ? try_ : tly) - (1 << 10);
-        put(frame, art::clamp_l + 2 * side, x, y, unit, 5);
-        put(frame, art::clamp_bolt_l + 2 * side, x, y, unit, 5);
-    }
-    {
-        // the sheet as it hangs, leaning but not rippling: the side rivets go with it
-        for (u32 k = 0; k < 7; ++k) {
-            i32 x, y;
-            if (k < 5) at(rest, 80 + static_cast<i32>(k) * 216, 44, x, y);
-            else at(hang, k == 5 ? 26 : 998, 700, x, y);
-            put(frame, art::rivet_0 + k, x, y, unit, 6);
+    place(frame, 0, ox, oy, unit, art::sheet_shade, stroke);
+    // the depth the ripple gives a point on the face at (u, v), in quarters
+    struct Face {
+        i32 left, width, depth, across, down;
+        i32 at(i32 x, i32 v) const {
+            if (!depth) return 0;
+            const i32 u = clampi(((x - left) << 4) / (width >> 6), 0, 1024);
+            return (((depth * sn(across * u * 32)) >> 14) * sn(down * v * 16) >> 14) & ~255;
         }
-    }
-    {
-        // DAMP: a felt pad on a lever hung from the batten beside the sheet's
-        // top left corner. Off, it hangs clear of the sheet; turned up, the
-        // lever swings down onto the iron and the felt squashes wider.
-        const i32 d = t[1];
-        const i32 bx = tlx - (8 << 10), by = 62 << 10;
-        put(frame, art::damper_bracket, bx, by, unit, 5);
-        const i32 ang = 1100 - ((750 * d) >> 10);   // tenths of a degree below the horizontal
-        const Turn r = turned(ang);
-        put(frame, art::damper_arm, bx, by, unit, 8, ang);
-        put(frame, art::damper_pivot, bx, by, unit, 5);
-        const i32 ex = bx + 32 * r.cos, ey = by + 32 * r.sin;
-        const i32 sq = unit + ((d * 300) >> 10);
-        put(frame, art::damper_plate, ex, ey, sq, 5);
-        put(frame, art::damper_pad, ex, ey, sq, 8);
-        put_shaded(frame, art::damper_felt_a, ex, ey, sq, 3 + ((d * 3) >> 10));
-        put_shaded(frame, art::damper_felt_b, ex, ey, sq, 3 + ((d * 3) >> 10));
-        put_shaded(frame, art::damper_felt_c, ex, ey, sq, 3 + ((d * 3) >> 10));
-    }
+    } face = {x0, w, ripple, m_, n_};
+
+    // the wires, from the beam down to the sheet's top, 8 in from its sides
     for (u32 side = 0; side < 2; ++side) {
-        // the stays, wire rope from a grommet in each lower corner out to an
-        // eye bolt on its post; TENSION screws the turnbuckles in
-        i32 x0, y0;
-        at(rest, side ? 984 : 40, 950, x0, y0);
-        const i32 x1 = (side ? 465 : 15) << 10, y1 = 200 << 10;
-        const i32 dx = x1 - x0, dy = y1 - y0;
-        const i32 len2 = (dx >> 4) * (dx >> 4) + (dy >> 4) * (dy >> 4);
-        i32 len = 0;
-        for (i32 b = 1 << 13; b; b >>= 1) if ((len + b) * (len + b) <= len2) len += b;   // sqrt, Q6
-        len <<= 4;
-        const i32 ang = angle_of(dx, dy);
-        put(frame, side ? art::stay_r : art::stay_l, x0, y0, clampi((len * 1024) / (100 << 10), 300, 2047), 6, ang);   // authored 100 long; a long 1 px diagonal, a step brighter
-        put(frame, side ? art::grommet_r : art::grommet_l, x0, y0, unit, 5);
-        const i32 f = 560 - ((tens * 160) >> 10);   // along the stay, Q10
-        const i32 bx = x0 + ((dx * f) >> 10), byy = y0 + ((dy * f) >> 10);
-        const i32 bs = unit + (((1024 - tens) * 500) >> 10);   // an unscrewed turnbuckle is longer
-        put(frame, side ? art::buckle_r : art::buckle_l, bx, byy, bs, 5, ang);
+        const i32 x = side ? x0 + w - art::wire_in : x0 + art::wire_in;
+        put(frame, side ? art::wire_r_a : art::wire_l_a, x, art::sheet_y, art::beam_z - art::wire_a);
+        put(frame, side ? art::wire_r_b : art::wire_l_b, x, art::sheet_y, top);
     }
-    if (m != M::BOW) {
-        // the rigging sandbag on its snap hook under the sheet (taken off to
-        // bow the edge): GLIDE weighs it (BOOM)
-        i32 g = look.glide >= 0 ? 650 + ((t[look.glide] * 760) >> 10) : 1024;   // 0.65..1.4
-        const i32 room = (219 << 10) - bcy;
-        if (g > room / 27) g = room / 27;
-        // it rides the sheet's foot as a hit throws it, in whole pixels
-        i32 hx, hy;
-        at(s, 512, 1024, hx, hy);
-        hy = bcy + (((hy - bcy) + 512) & ~1023);
-        const i32 low = (220 << 10) - 27 * g;   // and never off the bottom of the screen
-        if (hy > low) hy = low;
-        put(frame, art::bag_hook, bcx, hy, g, 5);
-        put(frame, art::bag_rope, bcx, hy, g, 5);
-        put(frame, art::bag_neck, bcx, hy, g, 5);
-        put(frame, art::bag, bcx, hy, g, 8);
-        put(frame, art::bag_seam, bcx, hy, g, 5);
-    } else {
-        for (u32 n = art::bag_hook; n <= art::bag_seam; ++n) hide(frame, n);
+    // the hammered marks on its face
+    static const i32 marks[3][2] = {{307, 358}, {635, 563}, {461, 799}};   // across, down: Q10
+    for (u32 k = 0; k < art::marks; ++k) {
+        const i32 x = x0 + ((w >> 4) * marks[k][0] >> 6);
+        put(frame, art::mark_0 + k, x, art::sheet_y + face.at(x, marks[k][1]), top - ((h >> 4) * marks[k][1] >> 6));
     }
+    // SPOT (encoder 4): the chalk cross where it is struck, a fifth of the way
+    // across to four fifths
     {
-        // CHAIN: links leave the cleat on the left post and lie across the
-        // sheet's lower face as one run, growing from its left; the rest
-        // hang from the cleat as another. A link never floats between them:
-        // the one moving fades out of the hanging run and into the lying one.
-        // LINKS lengthens them (SLAP)
-        const i32 on = look.chain >= 0 ? t[look.chain] * 12 : 0;   // Q10 links
-        const i32 size = m == M::SLAP ? 1100 + ((t[6] * 500) >> 10) : 1280;   // drawn large enough to read as iron links
-        const i32 hop_on = amp_q > 2 && state.age < 400;
-        const i32 pitch = (13 * size) / (2 * (rest.w >> 10));   // 6.5 px a link at unit size, in u
-        for (u32 k = 0; k < 12; ++k) {
-            const i32 j = static_cast<i32>(k);
-            const i32 f = clampi(on - (11 - j) * 1024, 0, 1024);   // the free end leaves first
-            if (f < 512) {
-                // hanging from the cleat, interlocked, fading as it leaves
-                // larger than the lying run, so each link reads on the post
-                const i32 hang = 1480;
-                const i32 hang_y = (102 << 10) + ((j * 6656 * hang) >> 10);
-                put_shaded(frame, art::link_0 + k, 17 << 10, hang_y, (hang << 10) / link_k, 5 - ((f * 9) >> 10), 900);
-            } else {
-                // lying on the sheet: the free end at the left, a gentle sag
-                const i32 n = 11 - j;   // its place in the run
-                const i32 u = 120 + n * pitch;
-                i32 x, y;
-                at(rest, u, 840 + ((sn(u * 40) * 30) >> 14), x, y);
-                if (hop_on && state.age >= n * 23) {
-                    // the rattle runs along the chain from its free end, each
-                    // link in its own steps of 72 ms, so a frame moves only a
-                    // few of them
-                    const i32 tq = ((state.age - n * 23) / 72) * 72 + 36;
-                    const i32 aq = tq < hold ? 64 : fall(tq - hold, tau) >> 9;   // the ring as it was at that step
-                    y -= ((aq * (iabs(sn(tq * 96 + j * 7000)) >> 6) * 900) >> 14) & ~511;
-                }
-                const i32 slope = (cs(u * 40) * 3) >> 12;   // follows the sag, tenths of a degree
-                put_shaded(frame, art::link_0 + k, x, y, (size << 10) / link_k, 1 + (((f - 512) * 14) >> 10), slope);
+        const i32 x = x0 + ((w >> 4) * lerp(205, 819, t[3]) >> 6);
+        const i32 z = top - ((h >> 4) * 430 >> 6);
+        const i32 y = art::sheet_y + face.at(x, 430);
+        put(frame, art::cross_a, x, y, z);
+        put(frame, art::cross_b, x, y, z);
+    }
+    // CHAIN: up to nine links lying across the sheet's lower face
+    {
+        const i32 n = look.chain >= 0 ? count_of(t[look.chain], 9) : 0;
+        for (i32 k = 0; k < 9; ++k) {
+            if (k >= n) { hide(frame, art::link_0 + static_cast<u32>(k)); continue; }
+            const i32 x = x0 + ((10 + 7 * k) << 10);
+            const i32 z = top - ((h >> 4) * 717 >> 6) - ((k & 1) << 10);
+            put(frame, art::link_0 + static_cast<u32>(k), x, (21 << 10) + face.at(x, 717), z);
+        }
+    }
+    // DAMP (encoder 2): one to four felt pads clamped on the sheet's lower
+    // edge, from its right
+    {
+        const i32 n = 1 + count_of(t[1], 3);
+        for (i32 k = 0; k < 4; ++k) {
+            const u32 node = art::pad_0_left + 3 * static_cast<u32>(k);
+            if (k >= n) {
+                for (u32 f = 0; f < 3; ++f) hide(frame, node + f);
+                continue;
+            }
+            const i32 x = x0 + w - (14 << 10) - k * (11 << 10);
+            for (u32 f = 0; f < 3; ++f) put(frame, node + f, x, 19 << 10, top - h - (3 << 10));
+        }
+    }
+    // encoder 3 (BEATER, and the model's third control): the mallet's felt
+    // rings, three at 0, stripped off one by one to its bare wooden core
+    {
+        const i32 rings = 3 - count_of(t[2], 3);
+        for (i32 k = 1; k <= 3; ++k) {
+            const u32 node = art::ring_1_side - 2 * static_cast<u32>(k - 1);
+            for (u32 f = 0; f < 2; ++f) {
+                if (k <= rings) place(frame, node + f, 0, 0, unit, 0, keep);
+                else hide(frame, node + f);
             }
         }
-    }
-
-    // --- the implement
-    // every model's parts: parked unless this model uses them
-    const bool mallet = m == M::BOOM || m == M::SLAP || m == M::TOM || m == M::CRASH || m == M::CLANK;
-    for (u32 n = art::mallet_handle; n < art::node_count; ++n) hide(frame, n);
-    i32 sx, sy;
-    const i32 spot = t[3];
-    at(rest, 512 + ((380 * spot) >> 10), 512 - ((340 * spot) >> 10), sx, sy);
-    i32 swing = 0;   // the mallet's handle: down and right, or down and left under the shackle
-    if (m == M::CLANK) {
-        // the shackle hangs from the beam by its strap, between the sheet and
-        // the right post; SHAPE bends its arms up into a stirrup, BUZZ backs
-        // its nut off the pin; the mallet strikes its bar from below
-        const i32 px = 436 << 10, py = 90 << 10;   // drawn a third as large again, to read at 1:1
-        put(frame, art::shackle_strap, px, py, unit, 5);
-        put(frame, art::shackle_eye, px, py, unit, 5);
-        put(frame, art::shackle_pin, px, py, unit, 5);
-        put(frame, art::shackle_nut, px, py - (11 << 10) - t[7] * 11, unit, 8, (t[7] * 1200) >> 10);
-        put(frame, art::shackle_bar, px, py, unit, 8);
-        const i32 bend = (t[4] * 800) >> 10;
-        put(frame, art::shackle_arm_l, px - (15 << 10), py, unit, 8, bend);
-        put(frame, art::shackle_arm_r, px + (15 << 10), py, unit, 8, -bend);
-        sx = px - (22 << 10) + spot * 40;
-        sy = py + (19 << 10);
-        swing = 900;
-    }
-    if (mallet) {
-        // the head lands on SPOT; BEATER turns it from a wrapped felt ball to
-        // a wooden barrel to a bare steel rod; a hit throws it back
-        const i32 b = t[2];
-        const i32 rec = still ? 0 : ((fall(state.age, 61) * 14) >> 5) & ~511;   // Q10 px, in half pixels
-        const i32 hx = swing ? sx - rec : sx + rec, hy = sy - rec;
-        const i32 ang = swing + (swing ? (rec >> 7) : -(rec >> 7));   // a few degrees back
-        put(frame, art::mallet_handle, hx, hy, unit, 8, ang);
-        put(frame, art::mallet_grip, hx, hy, unit, 5, ang);
-        put(frame, art::mallet_collar, hx, hy, unit, 8, ang);
-        put(frame, art::mallet_cord_a, hx, hy, unit, 5, ang);
-        put(frame, art::mallet_cord_b, hx, hy, unit, 5, ang);
-        const i32 felt = 8 - ((b * 14) >> 10);
-        const i32 fs = unit - ((b * 300) >> 10);
-        put_shaded(frame, art::mallet_felt, hx, hy, fs, felt, ang);
-        put_shaded(frame, art::mallet_wrap_a, hx, hy, fs, felt - 3, ang);
-        put_shaded(frame, art::mallet_wrap_b, hx, hy, fs, felt - 3, ang);
-        const i32 wood = 8 - (iabs(b - 512) * 20 >> 10);
-        put_shaded(frame, art::mallet_wood, hx, hy, unit, wood, ang);
-        const i32 rod = ((b - 480) * 15) >> 10;
-        put_shaded(frame, art::mallet_rod, hx, hy, unit, rod, ang);
-        put_shaded(frame, art::mallet_ferrule, hx, hy, unit, rod - 1, ang);
-    }
-    if (m == M::TOM) {
-        // ROLL: the strikes it bounces, marked round the spot
-        const i32 n = t[6] * 7;   // Q10 marks
-        for (u32 k = 0; k < 7; ++k) {
-            const i32 f = clampi(n - static_cast<i32>(k) * 1024, 0, 1024);
-            put_shaded(frame, art::roll_0 + k, sx, sy, unit, (f * 7) >> 10);
-        }
-    }
-    if (m == M::CRASH) {
-        // SWELL: the bloom spreading from the strike
-        for (u32 k = 0; k < 3; ++k) {
-            const i32 f = clampi(t[5] * 3 - static_cast<i32>(k) * 1024, 0, 1024);
-            const i32 grow = (amp_q >> 2) * 20;   // in steps, so it redraws only as it visibly shrinks
-            put_shaded(frame, art::swell_0 + k, sx, sy, 700 + ((f * 324) >> 10) + grow, (f * 6) >> 10);
-        }
-    }
-    if (look.ring >= 0) {
-        // METAL, SHEET: the sheet's own ring, as rings spreading over its
-        // face, one more and wider the longer it rings; a hit swells them
-        const i32 metal = t[look.ring];
-        i32 rx, ry;
-        at(rest, 330, 330, rx, ry);
-        for (u32 k = 0; k < 3; ++k) {
-            const i32 f = clampi(metal * 3 - static_cast<i32>(k) * 1024, 0, 1024);
-            const i32 grow = f ? (amp_q >> 2) * 20 : 0;   // in steps, as CRASH's bloom
-            put_shaded(frame, art::swell_0 + k, rx, ry, 640 + ((f * 384) >> 10) + grow, f ? 4 + ((f * 4) >> 10) : 0);
-        }
-    }
-    if (m == M::FLICK) {
-        // the flicker's tip on SPOT, from the top right corner toward the
-        // middle; NAIL from a fingertip to a coin; SCRAPE drags a brush across
-        i32 fx, fy;
-        at(rest, 860 - ((360 * spot) >> 10), 300 + ((300 * spot) >> 10), fx, fy);
-        const i32 sp = still ? 0 : (((fall(state.age, 82) * 90) >> 15) * (cs(static_cast<i32>(static_cast<u32>(state.age) * 64u)) >> 4)) >> 10;
-        const i32 fk = 1150, lean = 250;   // drawn large, its grip low over the corner
-        put(frame, art::flick_grip, fx, fy, fk, 5, lean + (sp >> 1));
-        put(frame, art::flick_ferrule, fx, fy, fk, 8, lean + (sp >> 1));
-        put(frame, art::flick_strip, fx, fy, fk, 8, lean + sp);
-        put_shaded(frame, art::flick_pad, fx, fy, fk, 8 - ((t[2] * 11) >> 10), lean + sp);
-        put_shaded(frame, art::flick_coin, fx, fy, fk, ((t[2] * 11) >> 10) - 3, lean + sp);
-        put_shaded(frame, art::flick_scuff, fx, fy, 300 + ((t[7] * 1600) >> 10), (t[7] * 7) >> 10);
-    }
-    if (m == M::POP) {
-        // a G-clamp on the lower edge; SNAP drives its screw in; POPS dents
-        // the sheet, SPREAD spaces them, SCATTER scatters them
-        i32 cx0, cy0;
-        at(rest, 700, 1024, cx0, cy0);
-        const i32 drive = t[4] * 16;   // Q10 px: the screw driven in
-        const i32 jolt = still ? 0 : ((fall(state.age, 60) * 4) >> 5) & ~511;
-        put(frame, art::pop_frame, cx0, cy0, unit, 5);
-        put(frame, art::pop_screw, cx0, cy0 + drive, unit, 8);
-        put(frame, art::pop_thread_a, cx0, cy0 + drive, unit, 5);
-        put(frame, art::pop_thread_b, cx0, cy0 + drive, unit, 5);
-        put(frame, art::pop_pad, cx0, cy0 + drive, unit, 8);
-        const i32 ty = cy0 - (63 << 10) + drive - jolt;   // the T-bar on the screw's head
-        put(frame, art::pop_handle, cx0, ty, unit, 8);
-        put(frame, art::pop_knob_l, cx0, ty, unit, 8);
-        put(frame, art::pop_knob_r, cx0, ty, unit, 8);
-        const i32 n = 1 + ((t[2] * 6 + 512) >> 10);
-        const i32 gap = (10 << 10) + t[3] * 16;
-        i32 dx0, dy0;
-        at(rest, 470, 560, dx0, dy0);
-        for (i32 k = 0; k < 7; ++k) {
-            if (k >= n) continue;
-            const i32 off = (2 * k - (n - 1)) * gap / 2;
-            const i32 jx = (sn(k * 23000 + 3000) * t[7]) >> 10, jy = (sn(k * 17000 + 9000) * t[7]) >> 11;
-            // each dent snaps through in turn as it pops
-            const i32 lit = amp_q > 4 && state.age < (k + 1) * 30 + 60 ? 8 : 6;
-            put(frame, art::dent_0 + static_cast<u32>(k), dx0 + off + jx, dy0 + jy, unit + (lit == 8 ? 200 : 0), static_cast<u32>(lit));
-        }
-    }
-    if (m == M::GRIT) {
-        // a scoop tipped by POUR, beads falling from its lip: GRAINS how
-        // many, BEAD how big, SWELL whether they start in a rush
-        const i32 hx = trx + (26 << 10), hy = 84 << 10;   // held off its top right corner
-        const i32 ang = -60 - ((t[7] * 420) >> 10);
-        put(frame, art::scoop_handle, hx, hy, unit, 5, ang);
-        put(frame, art::scoop_bowl, hx, hy, unit, 8, ang);
-        put(frame, art::scoop_lip, hx, hy, unit, 5, ang);
-        put(frame, art::scoop_ring, hx, hy, unit, 5, ang);
-        const Turn r = turned(ang);
-        const i32 lx = hx - 66 * r.cos, ly = hy - 66 * r.sin;   // the lip
-        // the stream falls straight down from the lip onto the sheet's face
-        i32 tx, ty;
-        at(rest, clampi(((lx - rest.cx) << 6) / (rest.w >> 4) + 512, 0, 1024), 800, tx, ty);
-        tx = lx;
-        const i32 n = 2 + ((t[3] * 8) >> 10);
-        const i32 size = 800 + ((t[2] * 1000) >> 10);
-        const i32 drop = still ? 0 : (state.age < hold + 200 ? (state.age * 8) & 1023 : 0);
-        for (i32 k = 0; k < 10; ++k) {
-            if (k >= n) continue;
-            // spaced down the stream: bunched at the lip (a rush), or spread to the sheet
-            const i32 f0 = (k * 1024) / n;
-            const i32 f = ((f0 + drop / n) & 1023);
-            const i32 bunch = lerp((f * f) >> 10, f, t[4]);
-            put(frame, art::bead_0 + static_cast<u32>(k), lerp(lx, tx, bunch) + ((sn(k * 9000) * 3) >> 4), lerp(ly + (4 << 10), ty, bunch), (size << 10) / bead_k, 8);
-        }
-    }
-    if (m == M::HOP) {
-        // the ball waits at the height it drops from (DROP), over where it
-        // lands (SPOT); LOSS shrinks each bounce; BALL from rubber to steel
-        i32 lx, ly;
-        at(rest, 300 + ((480 * spot) >> 10), 760, lx, ly);
-        const i32 e = lerp(901, 563, t[5]);   // restitution, Q10
-        const i32 height = (20 << 10) + t[4] * 50;   // Q10 px
-        i32 px = lx, h = height;
-        i32 sx0 = lx;
-        for (u32 k = 0; k < 3; ++k) {
-            h = (((h * e) >> 10) * e) >> 10;   // each bounce e^2 as high
-            const i32 sc = h / 36;
-            const i32 wid = 40 * sc;
-            put_shaded(frame, art::arc_0 + k, px + wid, ly, clampi(sc, 120, 2047), 5 - static_cast<i32>(k));
-            px += wid;
-        }
-        // the ball: resting high, or in flight after a hit
-        i32 bx = sx0, by = ly - height;
-        if (!still && state.age < hold + 600) {
-            const i32 first = static_cast<i32>(pow2v(lmix(L(0.06), L(0.38), t[4])) >> 6);   // Q10 s
-            i32 at_ = state.age, gap = first, hh = height, x0 = sx0;
-            // the fall: half a gap
-            if (at_ < first / 2) {
-                const i32 p = (at_ << 11) / (first > 1 ? first : 1);   // Q10 through the fall
-                by = ly - hh + ((hh * ((p * p) >> 10)) >> 10);
-            } else {
-                at_ -= first / 2;
-                for (u32 k = 0; k < 8; ++k) {
-                    hh = (((hh * e) >> 10) * e) >> 10;
-                    gap = (gap * e) >> 10;
-                    const i32 wid = 40 * (hh / 36);
-                    if (at_ < gap && gap > 0) {
-                        const i32 p = (at_ << 10) / gap;   // Q10 through the bounce
-                        bx = x0 + ((wid >> 2) * p >> 8);
-                        by = ly - ((hh * ((4 * p * (1024 - p)) >> 10)) >> 10);
-                        break;
-                    }
-                    at_ -= gap;
-                    x0 += wid;
-                    bx = x0;
-                    by = ly;
-                }
-            }
-        }
-        const i32 bs = 1500 - ((t[2] * 640) >> 10);   // rubber (big) to a steel bearing
-        put(frame, art::ball, bx, by, bs, 8);
-        put_shaded(frame, art::ball_band, bx, by, bs, 6 - ((t[2] * 8) >> 10));
-        put_shaded(frame, art::ball_shine, bx, by, bs, ((t[2] * 9) >> 10) - 1);
-    }
-    if (m == M::ZAP) {
-        // a pickup clipped at the far corner, the stylus tapping SWEEP away
-        // (the farther, the longer the fall); CURVE leans it; ECHOS the
-        // wavefronts it sends back
-        i32 px, py;
-        at(rest, 940, 870, px, py);
-        put(frame, art::pickup, px, py, unit, 8);
-        put(frame, art::pickup_core, px, py, unit, 5);
-        put(frame, art::pickup_cable, px, py, unit, 5);
-        put(frame, art::pickup_clip, px, py, unit, 5);
-        const i32 d = 200 + ((t[2] * 560) >> 10);
-        i32 qx, qy;
-        at(rest, 940 - d, 870 - ((d * 700) >> 10), qx, qy);
-        const i32 tap = still ? 0 : ((fall(state.age, 61) * 8) >> 5) & ~511;
-        put(frame, art::stylus, qx + tap, qy - tap, unit, 8, (t[7] * 500) >> 10);
-        put(frame, art::stylus_handle, qx + tap, qy - tap, unit, 5, (t[7] * 500) >> 10);
-        put(frame, art::stylus_tip, qx + tap, qy - tap, unit, 8);
-        const i32 n = (t[3] * 5 + 512) >> 10;
-        for (u32 k = 0; k < 5; ++k) {
-            const i32 grow = amp_q ? (amp_q << 3) : 0;
-            put_shaded(frame, art::wave_0 + k, px, py, unit + grow, static_cast<i32>(k) < n ? 6 - static_cast<i32>(k) : 0);
-        }
-    }
-    if (m == M::BOW) {
-        // the bow under the lower edge at SPOT (which mode sings); PRESS
-        // pushes it into the edge and tilts it; SPEED sets how far along its
-        // length it has been drawn, and a note draws it
-        i32 ex, ey;
-        at(rest, 372 + ((t[3] * 300) >> 10), 1024, ex, ey);
-        const i32 draw_ = amp_q ? (sn(static_cast<i32>(static_cast<u32>(state.age) * 24u)) * 20 >> 4) : 0;
-        const i32 bx = ex + ((512 - t[4]) * 20) + draw_;
-        const i32 by = ey + (11 << 10) - t[2] * 10;   // PRESS: from well clear of the edge to against it
-        const i32 tilt = -((t[2] * 80) >> 10);       // and 8 degrees of tilt
-        put(frame, art::bow_hair, bx, by, unit, 8, tilt);
-        put(frame, art::bow_stick, bx, by, unit, 8, tilt);
-        put(frame, art::bow_frog, bx, by, unit, 5, tilt);
-        put(frame, art::bow_eye, bx, by, unit, 8, tilt);
-        put(frame, art::bow_head, bx, by, unit, 5, tilt);
-        put(frame, art::bow_button, bx, by, unit, 5, tilt);
-    }
-    if (m == M::SHAKE) {
-        // the handle at the lower left corner: RUMBLE how far it is pulled,
-        // RATE how short and quick a throw; CRACK creases the corner
-        const u32 hz_ = pow2v(lmix(L(3), L(16), t[3])) >> 12;   // Q4 Hz
-        const i32 jerk = amp_q ? ((sn(static_cast<i32>((static_cast<u32>(state.age) * hz_ * 4u) & 0xffffu)) * amp_q) >> 11) : 0;
-        const i32 ang = 560 + ((t[2] * 420) >> 10) + jerk;   // out to the left, pulled up further
-        const i32 len = unit - ((t[3] * 300) >> 10);
-        put(frame, art::handle_grip, blx, bly, len, 8, ang);
-        put(frame, art::handle_plate, blx, bly, unit, 5);
-        put(frame, art::handle_bolt, blx, bly, unit, 8);
-        // CRACK: a crease running up from the corner, longer and brighter
-        i32 kx, ky;
-        at(rest, 70, 900, kx, ky);
-        put_shaded(frame, art::crease, kx, ky, 500 + ((t[6] * 900) >> 10), (t[6] * 8 + 1000) >> 10);
     }
 
     // --- the header: both rows, the edited one bright; while Shift is held

@@ -118,11 +118,11 @@
       }
     ],
     "display": {
-      "stateBytes": 7516,
+      "stateBytes": 1940,
       "stateAlignment": 4,
-      "paths": 4,
-      "points": 64,
-      "nodes": 267,
+      "paths": 0,
+      "points": 0,
+      "nodes": 68,
       "texts": 16,
       "palette": 16
     }

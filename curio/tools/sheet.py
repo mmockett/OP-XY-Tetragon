@@ -63,9 +63,9 @@ def svg(fragment, frame):
             x, y, s, c, sn, shade, paint = frame["nodes"][n]
             k = s / 1024
             el.set("transform", f"matrix({k * c / 1024:.4f} {k * sn / 1024:.4f} {-k * sn / 1024:.4f} {k * c / 1024:.4f} {x / 1024:.3f} {y / 1024:.3f})")
-            if n < 4:
+            if n < len(frame["paths"]):
                 p = frame["paths"][n]
-                el.set("d", "M" + " L".join(f"{p[2 * j] / 1024:.3f},{p[2 * j + 1] / 1024:.3f}" for j in range(64)) + " Z")
+                el.set("d", "M" + " L".join(f"{p[2 * j] / 1024:.3f},{p[2 * j + 1] / 1024:.3f}" for j in range(len(p) // 2)) + " Z")
             if paint:
                 f, st, w = palette[shade]
                 el.set("stroke", st)

@@ -1,15 +1,18 @@
 // THUNDER's screen checks, run by sdk.py test. The screen runs on the host
 // for every model, each control at five settings, through a hit, and fails on
 // any frame the OP-XY would draw wrongly beyond what opxy::draw::valid
-// checks: a shown outline draws streaks or slivers on the device when it has
-// no area (traced out and back, or turning straight back), when neighbouring
-// points lie within an eighth of a pixel, or when its closing edge is under a
-// quarter of a pixel. It also checks how many nodes change a frame while a
-// note sounds (the device slows past about 20) and that a still screen
-// changes none; that every caption fits its column in the OP-XY's font; the
-// Shift rows; and that the track's amp envelope moves nothing (stock never
-// applies it to a kit's voices, which play to their own end).
+// checks: the sheet's outline draws streaks or slivers on the device when it
+// has no area (traced out and back), when neighbouring points lie within an
+// eighth of a pixel, when its closing edge is under a quarter of a pixel, or
+// when it turns sharper than SHARPEST degrees anywhere (the device strokes
+// with mitred joins and no mitre limit, so a sharp turn draws a spike). It
+// also checks how many nodes change a frame while a note sounds (the device
+// slows past about 20) and that a still screen changes none; that every
+// caption fits its column in the OP-XY's font; the Shift rows; and that the
+// track's amp envelope moves nothing (stock never applies it to a kit's
+// voices, which play to their own end).
 #include "../display.cpp"
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -18,7 +21,8 @@
 namespace {
 using namespace opxy::draw;
 typedef thunder::Frame F;
-const opxy::i32 apart = unit / 8;   // path units (Q10): the outlines are drawn at twice this on screen
+const opxy::i32 apart = unit / 8;   // path units (Q10): the outline is drawn at unit scale
+const double SHARPEST = 150.0;      // degrees: the sharpest turn the outline may make
 int failures = 0;
 const unsigned char defaults[12][8] = {
     {52, 92, 18, 10, 110, 70, 58, 0}, {64, 84, 74, 40, 96, 80, 44, 40}, {64, 80, 64, 60, 64, 12, 0, 15},
@@ -26,6 +30,7 @@ const unsigned char defaults[12][8] = {
     {56, 92, 90, 40, 96, 30, 0, 0}, {74, 70, 70, 84, 40, 20, 0, 40}, {60, 70, 96, 50, 50, 50, 20, 0},
     {64, 66, 44, 40, 60, 30, 0, 40}, {56, 50, 40, 30, 50, 20, 0, 30}, {50, 50, 56, 60, 30, 20, 60, 64}};
 
+double sharpest = 0;   // the sharpest turn seen, degrees
 void fail_path(const char* when, const char* what, unsigned p, long a, long b) {
     std::printf("%s: path %u %s (%ld, %ld)\n", when, p, what, a, b);
     ++failures;
@@ -45,9 +50,11 @@ void check_paths(const F& f, const char* when) {
             const Point& c = q[(i + 2) % n];
             const long ex = c.x - b.x, ey = c.y - b.y;
             const long cross = dx * ey - dy * ex, dot = dx * ex + dy * ey, next = ex * ex + ey * ey;
-            if (dot < 0 && size && next) {
-                const double c2 = static_cast<double>(cross) * cross, s = static_cast<double>(size) * next;
-                if (c2 < 0.003 * s) fail_path(when, "turns straight back at point", p, (i + 1) % n, 0);
+            if (size && next) {
+                // the turn between the two edges, 0 straight on, 180 straight back
+                const double turn = std::atan2(cross < 0 ? -static_cast<double>(cross) : static_cast<double>(cross), static_cast<double>(dot)) * 57.29577951308232;
+                if (turn > SHARPEST) fail_path(when, "turns sharper than SHARPEST at point", p, (i + 1) % n, static_cast<long>(turn));
+                if (turn > sharpest) sharpest = turn;
             }
         }
         double area = 0;
@@ -250,7 +257,8 @@ int main() {
                 if (churn > 25) { std::printf("%s: %.1f nodes change a frame while it moves\n", when, churn); ++failures; }
             }
     std::printf("churn: %.1f nodes a frame on average while a hit moves, %.1f at the worst setting, %u in the busiest frame\n", sum_churn / runs, worst_churn, peak);
-    if (peak > 32) { std::printf("the busiest frame changes %u nodes (at most 32)\n", peak); ++failures; }
+    std::printf("the sheet's sharpest turn: %.1f degrees (at most %.0f)\n", sharpest, SHARPEST);
+    if (peak > 30) { std::printf("the busiest frame changes %u nodes (at most 30)\n", peak); ++failures; }
 
     // the amp envelope moves nothing: a kit voice plays to its own end
     // whatever M2 says, so a hit moves as long with any envelope as with none;

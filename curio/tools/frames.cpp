@@ -56,7 +56,7 @@ int main() {
         std::printf("],\"paths\":[");
         for (unsigned p = 0; p < curio::Frame::path_count; ++p) {
             std::printf("%s[", p ? "," : "");
-            for (unsigned i = 0; i < 64; ++i) std::printf("%s%d,%d", i ? "," : "", frame.paths[p].points[i].x, frame.paths[p].points[i].y);
+            for (unsigned i = 0; i < curio::Frame::point_count; ++i) std::printf("%s%d,%d", i ? "," : "", frame.paths[p].points[i].x, frame.paths[p].points[i].y);
             std::printf("]");
         }
         std::printf("],\"texts\":[");
