@@ -93,6 +93,22 @@ inline i32 knee(i32 y) {
     return y < 0 ? -b : b;
 }
 
+// The knee over a block (noinline, and every sample computed, then chosen:
+// the same values as knee(), without a branch a sample). |y| and 4 (|y| - K)
+// come from saturating adds, which hold them at 2^31 - 1 where knee() does.
+__attribute__((noinline)) inline void knee_block(i32* y) {
+    using opxy::q31::add;
+    const i32 k = half_scale - (half_scale >> 2);
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 x = *y, m = x >> 31;
+        const i32 a = add(x ^ m, m & 1);
+        const i32 d = a - k, d2 = add(d, d);
+        const i32 e = add(d2, d2);   // Q31: one once the excess passes 2 (H - K)
+        const i32 b = k + multiply(half_scale >> 2, e + multiply(e, one - e));
+        const i32 sel = -static_cast<i32>(a > k);
+        *y++ = x ^ ((x ^ ((b ^ m) - m)) & sel);
+    }
+}
 // A transient limiter, on the models levels::limit names (a clap's snaps, a
 // pour's loudest beads, a shackle's and a bearing's strikes, whose peaks stand
 // far over their body, and a tom's hard beater): a block's peak over 0.8 of
@@ -104,12 +120,24 @@ inline i32 knee(i32 y) {
 const i32 limit_top = half_scale - (half_scale / 5);
 const i32 limit_log = L(0.8 * 1073741824.0);
 const i32 limit_back = Q31(0.2516);   // 1 - exp(-64 / (0.005 * 44100)) a block
-inline void limit(Voice& voice, i32* y) {
-    i32 peak = 0;
-    for (unsigned i = 0; i < frames; ++i) {
-        const i32 a = absolute(y[i]);
-        if (a > peak) peak = a;
+// The limiter's passes (noinline: inlined, their loops lose the hardware loop).
+// y times a gain that steps from g by step a sample (the step taken first).
+__attribute__((noinline)) inline void ramp_gain(i32* y, u32 count, i32 g, i32 step) {
+    for (u32 n = 0; n < count; ++n) {
+        g += step;
+        *y = multiply(*y, g);
+        ++y;
     }
+}
+// y times a gain.
+__attribute__((noinline)) inline void hold_gain(i32* y, u32 count, i32 g) {
+    for (u32 n = 0; n < count; ++n) {
+        *y = multiply(*y, g);
+        ++y;
+    }
+}
+// peak: the block's largest |y| (the output pass finds it).
+inline void limit(Voice& voice, i32* y, i32 peak) {
     i32 g = voice.lim;
     i32 target = g >= one ? one : g + multiply(one - g, limit_back);
     if (one - target < (one >> 12)) target = one;
@@ -128,11 +156,10 @@ inline void limit(Voice& voice, i32* y) {
         while ((2u << k) <= first + 1) ++k;
         const i32 step = (target - g) >> k;
         const unsigned n = 1u << k;
-        for (unsigned i = 0; i < n; ++i) { g += step; y[i] = multiply(y[i], g); }
-        for (unsigned i = n; i < frames; ++i) y[i] = multiply(y[i], target);
+        ramp_gain(y, n, g, step);
+        hold_gain(y + n, frames - n, target);
     } else {
-        const i32 step = (target - g) >> 6;
-        for (unsigned i = 0; i < frames; ++i) { g += step; y[i] = multiply(y[i], g); }
+        ramp_gain(y, frames, g, (target - g) >> 6);
     }
     voice.lim = target;
 }
@@ -189,19 +216,23 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     const i32 gain = voice.gain, drive = voice.drive;
     i32 most = 0;
     if (!drive) {
+        i32 peak = 0;   // (|y| is exact: y never reaches -2^31)
         for (unsigned i = 0; i < frames; ++i) {
             const i32 y = clamp(multiply(x[i], gain), -(one >> 6), one >> 6) << 6;
             output[i] = y;
-            most |= y < 0 ? -y : y;
+            const i32 a = y < 0 ? -y : y;
+            most |= a;
+            peak = a > peak ? a : peak;
         }
-        if (levels::limit[voice.model]) limit(voice, output);   // level: limiter
+        if (levels::limit[voice.model]) limit(voice, output, peak);   // level: limiter
     } else {
-        // DRIVE in the same pass: 0.6 z (1 - z^2 / 3), z the output at a gain of 1.4..7
+        // DRIVE in the same pass: 0.6 z (1 - z^2 / 3), z the output at a gain of 1.4..7,
+        // held at full scale (which the output alone, at a gain of 1.4 or more, reaches first)
         const i32 g = Q31((1.0 * 2.5) / 32) + drive * Q31((6.0 / 15 * 2.5) / 32);
-        const i32 lim = one >> 5;
+        const i32 gg = multiply(gain, g);   // the model's gain and DRIVE's in one
+        const i32 lim = one >> 11;
         for (unsigned i = 0; i < frames; ++i) {
-            const i32 y0 = clamp(multiply(x[i], gain), -(one >> 6), one >> 6) << 6;
-            const i32 z = clamp(multiply(y0, g), -lim, lim) << 5;
+            const i32 z = clamp(multiply(x[i], gg), -lim, lim) << 11;
             const i32 y = multiply(z, Q31(0.6) - multiply(multiply(z, z), Q31(0.2)));
             output[i] = y;
             most |= y < 0 ? -y : y;
@@ -209,7 +240,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     }
     // (tools/calibrate.py builds a copy without the lines marked "level:", to
     // measure the peaks the cap, the limiter and the knee take)
-    if (most > half_scale - (half_scale >> 2)) for (unsigned i = 0; i < frames; ++i) output[i] = knee(output[i]);   // level: knee
+    if (most > half_scale - (half_scale >> 2)) knee_block(output);   // level: knee
     const bool loud = most >= quiet_under;
     voice.quiet = loud ? 0 : voice.quiet + 1;
     if (voice.quiet >= quiet_blocks && !voice.waiting) voice.done = 1;

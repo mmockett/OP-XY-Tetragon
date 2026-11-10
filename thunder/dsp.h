@@ -60,14 +60,18 @@ inline i32 frac2(i32 l) {
 // log2 of a positive integer, Q16 (note-on work: two searches of the exp2 table).
 inline i32 log2q(u32 x) {
     if (!x) return -32 * octave;
+    // the top bit's place, in five halvings
     u32 n = 0, y = x;
-    while (y >= 2u) { y >>= 1; ++n; }
+    if (y >> 16) { y >>= 16; n += 16; }
+    if (y >> 8) { y >>= 8; n += 8; }
+    if (y >> 4) { y >>= 4; n += 4; }
+    if (y >> 2) { y >>= 2; n += 2; }
+    if (y >> 1) n += 1;
     const u32 m = n <= 30 ? x << (30 - n) : x >> (n - 30);   // the mantissa, Q30
-    u32 lo = 0, hi = 256;
-    while (hi - lo > 1) {
-        const u32 mid = (lo + hi) >> 1;
-        if (tables::exp2[mid] <= m) lo = mid; else hi = mid;
-    }
+    // the last exp2 entry at or under it: from the table's guess for its top
+    // eight bits, at most two steps on
+    u32 lo = tables::log2_start[(m >> 22) & 0xffu];
+    while (tables::exp2[lo + 1] <= m) ++lo;
     const u32 a = tables::exp2[lo], d = tables::exp2[lo + 1] - a;
     u32 rl = 0, rh = 256;
     while (rh - rl > 1) {
