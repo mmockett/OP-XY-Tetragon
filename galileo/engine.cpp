@@ -37,6 +37,8 @@ inline void initialize(Voice& voice, Shared& shared, u32 owner) {
     voice.quiet = voice.kept = 0;
     voice.space = voice.feel = 0;
     voice.seed = 0x6a09e667u ^ (owner * 0x9e3779b9u);
+    voice.planned[1] = 0;
+    voice.body.ready = 0;
     ++shared.active;
 }
 inline void destroy(Voice&, Shared& shared, u32) {
@@ -47,7 +49,15 @@ inline void start(Voice& voice, Shared& shared, u32 owner) {
     // The clock ran unbroken since the last note if some other voice was alive
     // (this one, retriggered, counts: it was rendering).
     const bool continuous = shared.active > voice.fresh;
-    shared.learner.note(shared.now, continuous);
+    // While the SDK passes the project's tempo the kit plays to it: the learner
+    // only marks the note's time (so a gap counts again if the tempo stops
+    // coming) and learns nothing, which spares a search's divisions.
+    if (shared.bpm_x10 && shared.p16_transport) {
+        shared.learner.last = shared.now;
+        shared.learner.has_last = 1;
+    } else {
+        shared.learner.note(shared.now, continuous);
+    }
     shared.latest = owner;
     ++shared.notes;
     voice.fresh = 0;
@@ -113,17 +123,32 @@ inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters
     voice.model = voice.next;
     voice.t = 0;
     // A fresh body: nothing rings over from the last note this voice played.
-    unsigned char* bytes = reinterpret_cast<unsigned char*>(&voice.body);
-    for (unsigned i = 0; i < sizeof(voice.body); ++i) bytes[i] = 0;
-    voice.body.due = 0xffffffffu;
-    voice.body.seed = 0x243f6a88u ^ (shared.notes * 0x85ebca6bu) ^ voice.owner;
+    // A body prepared for the same model and controls keeps its coefficients.
     i32 p[4];
     for (u32 i = 0; i < 4; ++i) p[i] = q31(parameters[i]);
-    body::prepare(voice.body, voice.model, p);
-    voice.gain = trimmed_gain(voice.model, p);
+    body::Body& b = voice.body;
+    if (b.ready && b.model == voice.model && body::keeps(voice.model) && b.p[0] == p[0] && b.p[1] == p[1] &&
+        b.p[2] == p[2] && b.p[3] == p[3]) {
+        body::clear_state(b);
+    } else {
+        static_assert(sizeof(voice.body) % 4 == 0, "Body is whole words");
+        u32* words = reinterpret_cast<u32*>(&b);
+        for (u32 i = 0; i < sizeof(voice.body) / 4; ++i) words[i] = 0;
+        body::prepare(b, voice.model, p);
+        voice.gain = trimmed_gain(voice.model, p);
+    }
+    b.due = 0xffffffffu;
+    b.seed = 0x243f6a88u ^ (shared.notes * 0x85ebca6bu) ^ voice.owner;
     const motion::Feel feel = motion::feel(voice.feel);
-    motion::plan(voice.run, raw(parameters[4]), raw(parameters[5]), raw(parameters[6]), raw(parameters[7]),
-                 voice.space, feel, sixteenth(shared));
+    // The run depends only on these: a repeat of the same key keeps the last one's.
+    const u32 key[3] = {raw(parameters[4]) | raw(parameters[5]) << 8 | raw(parameters[6]) << 16 | raw(parameters[7]) << 24,
+                        (static_cast<u32>(voice.space) & 0xffffu) | static_cast<u32>(voice.feel) << 16 | 1u << 31,
+                        sixteenth(shared)};
+    if (key[0] != voice.planned[0] || key[1] != voice.planned[1] || key[2] != voice.planned[2]) {
+        motion::plan(voice.run, raw(parameters[4]), raw(parameters[5]), raw(parameters[6]), raw(parameters[7]),
+                     voice.space, feel, key[2]);
+        for (u32 i = 0; i < 3; ++i) voice.planned[i] = key[i];
+    }
     voice.balls = voice.run.m;
     for (u32 b = 0; b < voice.run.m; ++b) motion::begin(voice.cursor[b], voice.run, b, jitter(voice, feel.lax));
 }
@@ -163,6 +188,30 @@ inline i32 ceiling(i32 x) {
     return x < 0 ? -y : y;
 }
 
+// The body's sum at the model's gain, held within full scale (never wrapped
+// round), then through the ceiling. Straight under the knee, so a block that
+// stays under it needs neither: the first pass only scales. Returns the
+// block's peak.
+__attribute__((noinline)) i32 finish(const i32* __restrict sum, i32 g, i32* __restrict output) {
+    i32 most = 0;
+    for (u32 i = 0; i < opxy::block_frames; ++i) {
+        const i32 m = dsp::multiply(sum[i], g);
+        output[i] = static_cast<i32>(static_cast<u32>(m) << 5);   // rewritten below if it is over
+        const i32 a = m < 0 ? -m : m;
+        if (a > most) most = a;
+    }
+    if (most <= 901943132 / 32) return most * 32;
+    i32 peak = 0;
+    for (u32 i = 0; i < opxy::block_frames; ++i) {
+        const i32 m = dsp::multiply(sum[i], g);
+        const i32 y = ceiling(m > 0x3ffffff ? dsp::one : m < -0x3ffffff ? -dsp::one : m * 32);
+        output[i] = y;
+        const i32 a = y < 0 ? -y : y;
+        if (a > peak) peak = a;
+    }
+    return peak;
+}
+
 inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy::Parameters parameters, opxy::Pitch) {
     // The kit's clock: the first voice to render in a block moves it on.
     if (voice.stamp == shared.block) {
@@ -191,15 +240,17 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     i32 sum[opxy::block_frames];
     u32 at = 0, next = 0;
     const u32 n = voice.run.n;
-    // Impacts and ghosts strike on an 8-sample grid (0.18 ms): a block splits into
-    // at most eight stretches however many balls land in it, and each stretch
-    // runs the body's parts once.
+    // Impacts and ghosts strike on a 32-sample grid (0.73 ms): a block splits into
+    // at most two stretches however many balls land in it, and each stretch
+    // runs the body's parts once. (Struck modes keep their 8-sample phase; a
+    // tine strikes on the 8-sample grid, a fill on 16.)
+    const u32 grid = ~(body::step_of(voice.model) - 1);
     while (at < opxy::block_frames) {
         u32 until = opxy::block_frames;
-        if (next < count && ((hits[next].at - voice.t) & ~7u) < until) until = (hits[next].at - voice.t) & ~7u;
+        if (next < count && ((hits[next].at - voice.t) & grid) < until) until = (hits[next].at - voice.t) & grid;
         const u32 ghost = body::ghost_due(b);
         if (ghost != 0xffffffffu) {
-            const u32 g = ghost > b.now ? ((ghost - b.now + at) & ~7u) : at;
+            const u32 g = ghost > b.now ? ((ghost - b.now + at) & grid) : at;
             if (g < until) until = g < at ? at : g;
         }
         if (until > at) {
@@ -207,27 +258,18 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             at = until;
         }
         if (at >= opxy::block_frames) break;
-        while (next < count && ((hits[next].at - voice.t) & ~7u) <= at) {
-            body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n);
+        // Each strikes its modes from its 8-sample step, so they ring in the
+        // same phase as they would on that finer grid.
+        while (next < count && ((hits[next].at - voice.t) & grid) <= at) {
+            const u32 fine = (hits[next].at - voice.t) & ~7u;
+            body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n, false, fine > at ? fine - at : 0);
             ++next;
         }
         // Ghosts due within this stretch of the grid strike now.
-        const u32 now = b.now;
-        b.now = now + 7;
         body::strike_ghosts(b, n);
-        b.now = now;
     }
     voice.t += opxy::block_frames;
-    const i32 g = voice.gain;
-    i32 peak = 0;
-    for (unsigned i = 0; i < opxy::block_frames; ++i) {
-        // Held within full scale before the ceiling, never wrapped round.
-        const i32 m = dsp::multiply(sum[i], g);
-        const i32 y = ceiling(m > 0x3ffffff ? dsp::one : m < -0x3ffffff ? -dsp::one : m * 32);
-        output[i] = y;
-        const i32 a = y < 0 ? -y : y;
-        if (a > peak) peak = a;
-    }
+    const i32 peak = finish(sum, voice.gain, output);
     const bool waiting = voice.balls > 0 || body::ghost_due(b) != 0xffffffffu;
     voice.quiet = peak < quiet_floor && !waiting ? voice.quiet + 1 : 0;
     if (voice.quiet >= quiet_blocks) voice.done = 1;

@@ -28,6 +28,7 @@ struct Voice {
     u32 balls;            // balls still moving
     i32 gain;             // the model's output gain, trimmed by its body controls (Q26)
     motion::Run run;
+    u32 planned[4];       // the run's inputs (motion controls, pad fields, tempo), so a repeat isn't planned again
     motion::Cursor cursor[motion::balls_max];
     body::Body body;
 };

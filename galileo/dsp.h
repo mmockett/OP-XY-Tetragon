@@ -3,8 +3,8 @@
 //
 // Everything is integer: the OP-XY's Blackfin has no floating point, no divide
 // instruction and no 64-bit helpers in the module, so there is no `/` or `%` by
-// a variable anywhere here (udiv is a loop, used only when a note starts or the
-// tempo changes). Inside a voice a signal's unit amplitude is 2^28, a sixteenth
+// a variable anywhere here but udiv's (a call, used only when a note starts or
+// a body is tuned, or the tempo changes). Inside a voice a signal's unit amplitude is 2^28, a sixteenth
 // of full scale, so sums of parts never overflow.
 #include <opxy/q31.hpp>
 #include "tables.h"
@@ -39,16 +39,10 @@ inline i32 twice(i32 a) { return sat_add(a, a); }
 // r^2 < 1, so a2 y2 is never -2^31 and its negation never overflows.
 inline i32 resonate(i32 a1, i32 y1, i32 a2, i32 y2) { return sat_add(twice(multiply(a1, y1)), -multiply(a2, y2)); }
 
-// Unsigned division by a shift and subtract: notes and tempo changes only.
-inline u32 udiv(u32 n, u32 d) {
-    if (!d) return 0xffffffffu;
-    u32 quotient = 0, rest = 0;
-    for (int i = 31; i >= 0; --i) {
-        rest = (rest << 1) | ((n >> i) & 1u);
-        if (rest >= d) { rest -= d; quotient |= 1u << i; }
-    }
-    return quotient;
-}
+// Unsigned division, all ones for a zero divisor: notes and tempo changes only.
+// On the Blackfin `/` calls the SDK's ___udivsi3 (sdk/platform/blackfin), which
+// runs only the quotient's significant shift-and-subtract steps.
+inline u32 udiv(u32 n, u32 d) { return d ? n / d : 0xffffffffu; }
 // floor(sqrt(n)).
 inline u32 isqrt(u32 n) {
     u32 root = 0, bit = 1u << 30;
@@ -90,6 +84,8 @@ inline i32 fraction(i32 x) {
     const u32 v = exp2(x + 31 * octave);
     return v > 0x7fffffffu ? one : static_cast<i32>(v);
 }
+// log2 Hz of 0.45 of the rate (19,845 Hz), where increment() caps.
+const i32 log2_cap_hz = 935597;
 // The phase increment for 2^(log2_hz / 65536) Hz, capped below 0.45 of the rate.
 inline u32 increment(i32 log2_hz) {
     const u32 v = exp2(log2_hz + log2_hz_increment);
@@ -120,18 +116,17 @@ inline i32 per_block(i32 r) {
     return r;
 }
 // tanh of x, x in units of 2^28 (|x| up to 4 read from the table, beyond it 1), Q31.
+// Without a branch: |x| is held just under 4, where the table reads its
+// last entry (to the last bit).
 inline i32 tanh(i32 x) {
-    const bool negative = x < 0;
-    u32 a = static_cast<u32>(negative ? -x : x);
-    i32 y;
-    if (a >= (4u << 28)) y = table::tanh[256];
-    else {
-        const u32 index = a >> 22;                    // 256 steps over 0..4
-        const i32 f = static_cast<i32>((a & 0x3fffffu) << 9);
-        const i32 lo = table::tanh[index];
-        y = lo + multiply(table::tanh[index + 1] - lo, f);
-    }
-    return negative ? -y : y;
+    const i32 s = x >> 31;                            // 0, or -1 for x < 0
+    u32 a = static_cast<u32>((x ^ s) - s);            // |x| (-2^31 reads as 2^31)
+    a = a < 0x3fffffffu ? a : 0x3fffffffu;
+    const u32 index = a >> 22;                        // 256 steps over 0..4
+    const i32 f = static_cast<i32>((a << 10) >> 1);   // (a & 0x3fffff) << 9
+    const i32 lo = table::tanh[index];
+    const i32 y = lo + multiply(table::tanh[index + 1] - lo, f);
+    return (y ^ s) - s;
 }
 // A velocity (Q15) raised to a power (Q16), Q15.
 // For an exponent from 1 to 2, v^(1+k) is close to v (1 - k + k v): within 0.05
