@@ -120,11 +120,11 @@
     "display": {
       "stateBytes": 80,
       "stateAlignment": 4,
-      "paths": 4,
-      "points": 64,
-      "nodes": 295,
+      "paths": 1,
+      "points": 4,
+      "nodes": 73,
       "texts": 16,
-      "palette": 9
+      "palette": 1
     },
     "modelGroups": [
       {
