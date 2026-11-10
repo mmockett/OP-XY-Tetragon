@@ -176,8 +176,13 @@ namespace syahi {
 // log2 of a positive integer, Q16 (a value of 0 counts as 1).
 static inline i32 log2u(u32 v) {
     if (!v) return 0;
+    // Normalise in five steps: shift the top set bit to bit 31.
     i32 whole = 31;
-    while (!(v & 0x80000000u)) { v <<= 1; --whole; }
+    if (!(v & 0xffff0000u)) { v <<= 16; whole -= 16; }
+    if (!(v & 0xff000000u)) { v <<= 8; whole -= 8; }
+    if (!(v & 0xf0000000u)) { v <<= 4; whole -= 4; }
+    if (!(v & 0xc0000000u)) { v <<= 2; whole -= 2; }
+    if (!(v & 0x80000000u)) { v <<= 1; whole -= 1; }
     // v is now 1.m in Q31: index the mantissa's top eight bits.
     const u32 index = (v >> 23) & 255u;
     const i32 frac = static_cast<i32>((v >> 7) & 0xffffu) << 15;
@@ -186,6 +191,13 @@ static inline i32 log2u(u32 v) {
 }
 // log2(1 + x) for x in Q16 (x >= 0), Q16.
 static inline i32 log2_1p(i32 x) { return log2u(static_cast<u32>(positive(x)) + 65536u) - 16 * octave; }
+// value * 2^shift, clamped first: no branch (MIN and MAX), for the sample
+// loops. It saturates 2^shift - 1 short of full scale, where shl reaches it.
+static inline i32 shl_clamp(i32 value, u32 shift) {
+    const i32 limit = one >> shift;
+    const i32 v = value > limit ? limit : value;
+    return (v < -limit ? -limit : v) * (static_cast<i32>(1) << shift);
+}
 // value * 2^shift, saturating, for 0 <= shift < 31.
 static inline i32 shl(i32 value, u32 shift) {
     const i32 limit = one >> shift;
@@ -207,4 +219,29 @@ static inline u32 isqrt(u32 x) {
 }
 // The square root of a Q31 fraction: more travel near 0, for amounts that grow from nothing.
 static inline i32 root(i32 c) { return c <= 0 ? 0 : static_cast<i32>(isqrt(static_cast<u32>(c)) * 46341u); }
+}
+
+namespace syahi {
+// x^n for a Q31 x, by squaring.
+static inline i32 power(i32 x, u32 n) {
+    i32 r = one;
+    while (n) {
+        if (n & 1u) r = multiply(r, x);
+        x = multiply(x, x);
+        n >>= 1;
+    }
+    return r;
+}
+// 2^31 / n for a segment of n samples (1..64): a level's step a sample.
+static inline i32 per_sample(i32 span, u32 n) {
+    static const i32 reciprocal[65] = {
+#define R(n) static_cast<i32>(0x7fffffffu / (n))
+        0, R(1), R(2), R(3), R(4), R(5), R(6), R(7), R(8), R(9), R(10), R(11), R(12), R(13), R(14), R(15), R(16),
+        R(17), R(18), R(19), R(20), R(21), R(22), R(23), R(24), R(25), R(26), R(27), R(28), R(29), R(30), R(31), R(32),
+        R(33), R(34), R(35), R(36), R(37), R(38), R(39), R(40), R(41), R(42), R(43), R(44), R(45), R(46), R(47), R(48),
+        R(49), R(50), R(51), R(52), R(53), R(54), R(55), R(56), R(57), R(58), R(59), R(60), R(61), R(62), R(63), R(64),
+#undef R
+    };
+    return n == 1 ? span : multiply(span, reciprocal[n]);
+}
 }

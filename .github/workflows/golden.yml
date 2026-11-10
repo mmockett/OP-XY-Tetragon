@@ -212,7 +212,7 @@ jobs:
       - name: Count base and head
         run: |
           for side in base head; do
-            python3 tools/golden/golden.py sim --out "out/$side/${{ matrix.kit }}" --run sim/bfin-elf-run
+            python3 tools/golden/golden.py sim --profile --out "out/$side/${{ matrix.kit }}" --run sim/bfin-elf-run
           done
       - name: Counted table
         run: |
@@ -228,3 +228,4 @@ jobs:
             out/counts-*.md
             out/*/${{ matrix.kit }}/cycles.txt
             out/*/${{ matrix.kit }}/census.txt
+            out/*/${{ matrix.kit }}/profile.txt
