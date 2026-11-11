@@ -183,6 +183,30 @@ int main() {
         }
     }
     if (weak > 8) fail("too many weak steps", 0, static_cast<int>(weak), 0);
+    // The track menu's scramble: 40 rolls of every model, each control drawn
+    // from its scramble_range as the SDK draws it, all sound, stay under the
+    // ceiling and end within fifteen seconds, as the heaviest settings must.
+    {
+        unsigned seed = 12345;
+        for (unsigned m = 0; m < thunder::kit::models; ++m) {
+            for (int roll = 0; roll < 40; ++roll) {
+                int c[8];
+                for (unsigned s = 0; s < 8; ++s) {
+                    opxy::u8 low = 0, high = 127;
+                    thunder::scramble_range(m, s, &low, &high);
+                    if (low > high) fail("a scramble range runs backwards", m, static_cast<int>(s), 0);
+                    seed = seed * 1664525u + 1013904223u;
+                    c[s] = low + static_cast<int>((seed >> 8) % (high - low + 1u));
+                }
+                double peak;
+                bool ended;
+                play(m, c, nullptr, nullptr, peak, ended, 44100 * 15);
+                if (peak > 0.5) fail("a scramble passes the ceiling", m, roll, static_cast<int>(peak * 1000));
+                if (peak < 0.02) fail("a scramble is (nearly) silent", m, roll, static_cast<int>(peak * 1000));
+                if (!ended) fail("a scramble never ends", m, roll, 0);
+            }
+        }
+    }
     // Every model ends at its heaviest settings too.
     for (unsigned m = 0; m < thunder::kit::models; ++m) {
         for (int v = 0; v <= 127; v += 127) {

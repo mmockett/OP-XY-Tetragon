@@ -25,6 +25,49 @@ inline void start(Voice& voice, Shared&, u32) { voice.pending = 1; }
 inline void destroy(Voice&, Shared&, u32) {}
 inline void drum_select(Voice& voice, Shared&, u32, u32 model) { voice.next = model < kit::models ? model : 0; }
 
+// The ranges the track menu's scramble draws each model's controls from, so a
+// scrambled kit stays playable. SIZE stays within about an octave of the
+// model's default (no 30 Hz rumble under a kick, no shackle gone to a squeak);
+// DAMP never leaves a drum ringing for seconds nor dead (BOOM 0.79 s to 40 ms,
+// models.h's lt0); CHAIN rattles at most half way, except on the snare, whose
+// wires it is; and a sheet's own ring (METAL, SHEET), a long swell, a roll
+// (ROLL, BUZZ), a deep chirp (DEPTH), a slow bow and a long storm (RUMBLE,
+// 2.3 s at 104) stay short of their tops. The level trims (levels.h) hold
+// every control's loudness, so no slot here is narrowed for level alone.
+const opxy::u8 scramble_low[kit::models][8] = {
+    {12, 16, 0, 0, 0, 0, 0, 0},    // BOOM
+    {0, 0, 0, 0, 0, 24, 0, 0},     // SLAP
+    {0, 0, 0, 0, 0, 0, 0, 0},      // POP
+    {0, 12, 0, 0, 0, 0, 0, 0},     // FLICK
+    {24, 8, 0, 0, 0, 0, 0, 0},     // TOM
+    {8, 0, 0, 0, 0, 0, 0, 0},      // CRASH
+    {16, 16, 0, 0, 0, 0, 0, 0},    // CLANK
+    {0, 0, 0, 16, 0, 0, 0, 0},     // GRIT
+    {16, 0, 16, 0, 0, 0, 0, 0},    // HOP
+    {0, 0, 0, 0, 0, 0, 0, 0},      // ZAP
+    {12, 0, 0, 0, 0, 0, 0, 0},     // BOW
+    {0, 0, 0, 0, 0, 0, 0, 0},      // SHAKE
+};
+const opxy::u8 scramble_high[kit::models][8] = {
+    {92, 112, 127, 127, 127, 110, 127, 64},    // BOOM
+    {127, 112, 127, 127, 127, 127, 127, 100},  // SLAP
+    {127, 120, 127, 127, 127, 80, 64, 127},    // POP
+    {127, 127, 127, 127, 127, 64, 127, 127},   // FLICK
+    {112, 112, 127, 127, 127, 100, 80, 64},    // TOM
+    {92, 104, 127, 127, 127, 96, 127, 64},     // CRASH
+    {96, 120, 127, 127, 127, 100, 64, 80},     // CLANK
+    {127, 127, 127, 127, 127, 100, 64, 127},   // GRIT
+    {104, 120, 127, 127, 127, 127, 127, 64},   // HOP
+    {127, 127, 127, 127, 100, 100, 64, 127},   // ZAP
+    {104, 127, 104, 127, 100, 127, 64, 96},    // BOW
+    {100, 120, 104, 127, 127, 80, 127, 127},   // SHAKE
+};
+void scramble_range(u32 model, u32 slot, opxy::u8* low, opxy::u8* high) {
+    if (model >= kit::models || slot >= 8) return;
+    *low = scramble_low[model][slot];
+    *high = scramble_high[model][slot];
+}
+
 // The key's pad controls: TUNE, -16..15 semitones; DRIVE, 0..15.
 inline void drum_pad(Voice& voice, Shared&, u32, const i32* values) {
     voice.tune = clamp(values[0], -16, 15);
