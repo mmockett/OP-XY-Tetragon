@@ -34,8 +34,9 @@ inline void drum_select(Voice& voice, Shared&, u32, u32 model) { voice.next = mo
 // so a scrambled cabinet stays playable. The pitched specimens keep within
 // about an octave of their defaults (the ball's skin 33 to 86 Hz, the cask
 // 40 to 134 Hz, the stone 110 to 435 Hz); no ring runs for seconds (the
-// glass at most 3 s, the sheet's hang 2.5 s, the drip's basin 2.2 s, the
-// bell 1.2 s, the roar 2 s); the drives stay light (the ball's GRIT at most
+// glass ringing and rubbing at most 1.5 s a time constant, as it ends 84 dB
+// down within ten seconds; the sheet's hang 2.5 s, the drip's basin 2.2 s,
+// the bell 1.2 s, the roar 2 s); the drives stay light (the ball's GRIT at most
 // 2.6 times, the spark's DIST under half); the cicada's body resonates at Q
 // 21 at most and sings with three at most; and the repeats (a cask's cellar,
 // shards, echoes, strokes, glugs, a sheet's roll and thunder) stay short of
@@ -72,7 +73,7 @@ const opxy::u8 scramble_high[kit::models][8] = {
     {127, 127, 127, 127, 127, 127, 127, 127},  // ratchet
     {127, 127, 127, 127, 127, 127, 127, 127},  // pod
     {127, 127, 127, 127, 127, 127, 127, 127},  // match
-    {127, 127, 96, 127, 96, 127, 127, 127},    // glass
+    {127, 127, 56, 127, 48, 127, 127, 127},    // glass
     {80, 127, 127, 127, 110, 127, 127, 127},   // bell jar
     {110, 127, 127, 127, 127, 127, 127, 127},  // chalk
     {127, 127, 127, 127, 100, 127, 127, 127},  // roar
