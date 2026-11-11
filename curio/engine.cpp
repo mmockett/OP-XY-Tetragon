@@ -29,6 +29,59 @@ inline void initialize(Voice& voice, Shared&, u32 owner) {
 inline void start(Voice& voice, Shared&, u32) { voice.pending = 1; }
 inline void destroy(Voice&, Shared&, u32) {}
 inline void drum_select(Voice& voice, Shared&, u32, u32 model) { voice.next = model < kit::models ? model : 0; }
+
+// The ranges the track menu's scramble draws each specimen's controls from,
+// so a scrambled cabinet stays playable. The pitched specimens keep within
+// about an octave of their defaults (the ball's skin 33 to 86 Hz, the cask
+// 40 to 134 Hz, the stone 110 to 435 Hz); no ring runs for seconds (the
+// glass at most 3 s, the sheet's hang 2.5 s, the drip's basin 2.2 s, the
+// bell 1.2 s, the roar 2 s); the drives stay light (the ball's GRIT at most
+// 2.6 times, the spark's DIST under half); the cicada's body resonates at Q
+// 21 at most and sings with three at most; and the repeats (a cask's cellar,
+// shards, echoes, strokes, glugs, a sheet's roll and thunder) stay short of
+// their tops. The level trims (levels.h) hold every control's loudness, so
+// no slot here is narrowed for level alone.
+const opxy::u8 scramble_low[kit::models][8] = {
+    {0, 0, 10, 0, 0, 0, 0, 0},   // ball
+    {0, 0, 0, 0, 0, 0, 0, 0},    // cask
+    {0, 0, 0, 0, 0, 0, 0, 0},    // stone
+    {8, 0, 0, 0, 0, 0, 0, 0},    // drip
+    {0, 0, 0, 0, 0, 0, 0, 0},    // ice
+    {0, 0, 0, 0, 0, 0, 0, 0},    // sheet
+    {0, 0, 0, 0, 0, 0, 0, 0},    // spark
+    {0, 0, 0, 0, 0, 0, 0, 0},    // cork
+    {0, 0, 0, 0, 0, 0, 0, 0},    // cicada
+    {0, 0, 0, 0, 0, 0, 0, 0},    // ratchet
+    {0, 0, 0, 0, 0, 0, 0, 0},    // pod
+    {0, 0, 0, 0, 0, 0, 0, 0},    // match
+    {0, 0, 0, 0, 0, 0, 0, 0},    // glass
+    {0, 0, 0, 0, 0, 0, 0, 0},    // bell jar
+    {0, 0, 0, 0, 0, 0, 0, 0},    // chalk
+    {0, 0, 0, 0, 0, 0, 0, 0},    // roar
+};
+const opxy::u8 scramble_high[kit::models][8] = {
+    {127, 100, 96, 127, 100, 127, 127, 48},    // ball
+    {96, 127, 127, 127, 100, 127, 127, 80},    // cask
+    {84, 127, 127, 110, 127, 127, 127, 90},    // stone
+    {120, 127, 96, 96, 127, 127, 127, 100},    // drip
+    {127, 127, 96, 127, 127, 127, 127, 100},   // ice
+    {127, 100, 127, 104, 90, 127, 127, 80},    // sheet
+    {127, 127, 127, 127, 96, 127, 127, 48},    // spark
+    {127, 127, 127, 127, 127, 80, 127, 96},    // cork
+    {100, 127, 127, 100, 127, 127, 127, 64},   // cicada
+    {127, 127, 127, 127, 127, 127, 127, 127},  // ratchet
+    {127, 127, 127, 127, 127, 127, 127, 127},  // pod
+    {127, 127, 127, 127, 127, 127, 127, 127},  // match
+    {127, 127, 96, 127, 96, 127, 127, 127},    // glass
+    {80, 127, 127, 127, 110, 127, 127, 127},   // bell jar
+    {110, 127, 127, 127, 127, 127, 127, 127},  // chalk
+    {127, 127, 127, 127, 100, 127, 127, 127},  // roar
+};
+void scramble_range(u32 model, u32 slot, opxy::u8* low, opxy::u8* high) {
+    if (model >= kit::models || slot >= 8) return;
+    *low = scramble_low[model][slot];
+    *high = scramble_high[model][slot];
+}
 // TUNE (-16..15 semitones) and VARY (0..15), before every render.
 inline void drum_pad(Voice& voice, Shared&, u32, const i32* values) {
     voice.tune = clamp(values[0], -16, 15);
