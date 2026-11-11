@@ -64,6 +64,57 @@ inline void start(Voice& voice, Shared& shared, u32 owner) {
     voice.pending = 1;
 }
 inline void drum_select(Voice& voice, Shared&, u32, u32 model) { voice.next = model < kit::models ? model : 0; }
+
+// The ranges the track menu's scramble draws each model's controls from, so a
+// scrambled kit stays playable. The body: the kick within 38 to 75 Hz and its
+// punch short of the full 3-octave drop, the tom within 65 to 206 Hz, the
+// snare keeping some wires; the kick's decay at most a 0.57 s time constant,
+// the ride's 2 s and the tine's 2 s (bodies.h). The motion, the same on
+// every model: tilt from 1/8T up (no runs in quarters or eighths, motion.h
+// period), up to 8 frets (10 on the models made for runs: fill, bell, tine,
+// clock, rattle), a restitution of at most 0.81 (about 15 rebounds, not 44),
+// and up to 9 balls (12 on the clap; the shot keeps 3 to 19, its handful
+// being its sound). The level trims (kit.h trim) hold the body controls'
+// loudness, so no slot here is narrowed for level alone.
+const opxy::u8 scramble_low[kit::models][8] = {
+    {0, 0, 0, 0, 32, 0, 0, 0},     // kick
+    {0, 16, 0, 0, 32, 0, 0, 0},    // snare
+    {4, 0, 0, 0, 32, 0, 0, 0},     // tom
+    {0, 0, 0, 0, 32, 0, 0, 0},     // fill
+    {0, 0, 0, 0, 32, 0, 0, 0},     // hand
+    {0, 0, 0, 0, 32, 0, 0, 0},     // rim
+    {0, 0, 0, 0, 32, 0, 0, 0},     // hat
+    {0, 0, 0, 0, 32, 0, 0, 0},     // ride
+    {0, 0, 0, 0, 32, 0, 0, 0},     // bell
+    {0, 0, 0, 0, 32, 0, 0, 0},     // tine
+    {0, 0, 0, 0, 32, 0, 0, 0},     // clock
+    {0, 0, 0, 0, 32, 0, 0, 0},     // block
+    {0, 0, 0, 0, 32, 0, 0, 0},     // clap
+    {0, 0, 0, 0, 32, 0, 0, 24},    // shot
+    {0, 0, 0, 0, 32, 0, 0, 0},     // rattle
+};
+const opxy::u8 scramble_high[kit::models][8] = {
+    {100, 110, 104, 127, 127, 64, 96, 64},   // kick
+    {127, 127, 127, 127, 127, 64, 96, 64},   // snare
+    {100, 127, 110, 127, 127, 64, 96, 64},   // tom
+    {127, 127, 127, 127, 127, 80, 96, 64},   // fill
+    {127, 127, 127, 127, 127, 64, 96, 64},   // hand
+    {127, 127, 127, 127, 127, 64, 96, 64},   // rim
+    {127, 127, 127, 127, 127, 64, 96, 64},   // hat
+    {127, 80, 127, 127, 127, 64, 96, 64},    // ride
+    {127, 127, 127, 127, 127, 80, 96, 64},   // bell
+    {127, 100, 127, 127, 127, 80, 96, 64},   // tine
+    {127, 127, 127, 127, 127, 80, 96, 64},   // clock
+    {127, 127, 127, 127, 127, 64, 96, 64},   // block
+    {127, 127, 127, 127, 127, 64, 96, 80},   // clap
+    {127, 127, 127, 127, 127, 64, 96, 110},  // shot
+    {127, 127, 127, 127, 127, 80, 96, 64},   // rattle
+};
+void scramble_range(u32 model, u32 slot, opxy::u8* low, opxy::u8* high) {
+    if (model >= kit::models || slot >= 8) return;
+    *low = scramble_low[model][slot];
+    *high = scramble_high[model][slot];
+}
 // The key's pad fields: SPACE (-16..15) and FEEL (0..15).
 inline void drum_pad(Voice& voice, Shared&, u32, const i32* values) {
     voice.space = dsp::clamp(values[0], -16, 15);

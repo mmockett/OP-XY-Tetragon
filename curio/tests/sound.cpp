@@ -183,6 +183,29 @@ int main() {
         }
         if (hi15 - lo15 < (hi0 - lo0) + 0.03) { std::printf("FAIL VARY spreads levels by %.3f against %.3f\n", hi15 - lo15, hi0 - lo0); ++failures; }
     }
+    // The track menu's scramble: 40 rolls of every specimen, each control
+    // drawn from its scramble_range as the SDK draws it, all sound, stay
+    // under half scale and end within ten seconds.
+    {
+        opxy::u32 seed = 12345;
+        for (opxy::u32 m = 0; m < kit::models; ++m)
+            for (int roll = 0; roll < 40; ++roll) {
+                opxy::u8 raw[8];
+                for (opxy::u32 s = 0; s < 8; ++s) {
+                    opxy::u8 low = 0, high = 127;
+                    scramble_range(m, s, &low, &high);
+                    if (low > high) { std::printf("FAIL %s's %s scramble range runs backwards\n", kit::model[m].name, kit::model[m].labels[s]); ++failures; }
+                    seed = seed * 1664525u + 1013904223u;
+                    raw[s] = static_cast<opxy::u8>(low + (seed >> 8) % (high - low + 1u));
+                }
+                opxy::i32 values[8];
+                values_of(raw, values);
+                const Take t = hit(m, values);
+                if (!t.bounded) { std::printf("FAIL %s scramble %d above half scale\n", kit::model[m].name, roll); ++failures; }
+                if (t.peak < 0.02) { std::printf("FAIL %s scramble %d is nearly silent (peak %.3f)\n", kit::model[m].name, roll, t.peak); ++failures; }
+                if (t.length >= 10 * 690) { std::printf("FAIL %s scramble %d never finishes\n", kit::model[m].name, roll); ++failures; }
+            }
+    }
     // The pad controls' captions.
     char text[16];
     pad_control_text(0, -16, text);

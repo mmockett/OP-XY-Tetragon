@@ -189,6 +189,28 @@ int main() {
         play(m, r, 0, 0, 16.0, &done);
         CHECK(done, "%s at the longest DECAY never frees its voice", name(m));
     }
+    // ---- the track menu's scramble: 40 rolls of every model, each control drawn
+    // from its scramble_range as the SDK draws it, sound, stay within the peak
+    // and free their voice within 16 s, as the longest DECAY must
+    {
+        unsigned seed = 12345;
+        for (unsigned m = 0; m < models; ++m)
+            for (int roll = 0; roll < 40; ++roll) {
+                unsigned r[8];
+                for (unsigned s = 0; s < 8; ++s) {
+                    opxy::u8 low = 0, high = 127;
+                    syahi::scramble_range(m, s, &low, &high);
+                    CHECK(low <= high, "%s %s's scramble range runs backwards", name(m), label(m, static_cast<int>(s)));
+                    seed = seed * 1664525u + 1013904223u;
+                    r[s] = low + (seed >> 8) % (high - low + 1u);
+                }
+                bool done = false;
+                const double q = peak(play(m, r, 0, 0, 16.0, &done));
+                CHECK(q <= 0.5, "%s scramble %d peaks %.3f", name(m), roll, q);
+                CHECK(q > 0.02, "%s scramble %d is (nearly) silent: %.3f", name(m), roll, q);
+                CHECK(done, "%s scramble %d never frees its voice", name(m), roll);
+            }
+    }
     // ---- HUMAN: hits differ with it, and (on a model without noise) are identical without it
     {
         unsigned r[8];

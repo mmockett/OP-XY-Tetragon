@@ -182,6 +182,29 @@ int main() {
             CHECK(d > 1.0, "model %u slot %u (%s) barely moves the sound: %.2f", m, s, galileo::parameter_name(m, s), d);
         }
     }
+    // The track menu's scramble: 16 rolls of every model, each control drawn
+    // from its scramble_range as the SDK draws it, sound within the ceiling
+    // and free their voice once the run has rung out, within 29 s (a ride's
+    // longest tail).
+    {
+        unsigned seed = 12345;
+        for (unsigned m = 0; m < galileo::kit::models; ++m)
+            for (int roll = 0; roll < 16; ++roll) {
+                unsigned char c[8];
+                for (unsigned s = 0; s < 8; ++s) {
+                    opxy::u8 low = 0, high = 127;
+                    galileo::scramble_range(m, s, &low, &high);
+                    CHECK(low <= high, "model %u slot %u's scramble range runs backwards", m, s);
+                    seed = seed * 1664525u + 1013904223u;
+                    c[s] = static_cast<unsigned char>(low + (seed >> 8) % (high - low + 1u));
+                }
+                const Result r = play(m, c, 0, 0, 0, 20000);
+                CHECK(r.peak <= 0.5, "model %u scramble %d leaves the ceiling (%.3f)", m, roll, r.peak);
+                CHECK(r.peak > 0.02, "model %u scramble %d is (nearly) silent: peak %.3f", m, roll, r.peak);
+                CHECK(r.freed, "model %u scramble %d never frees its voice", m, roll);
+                CHECK(!r.freed || r.freed > r.motion_end, "model %u scramble %d frees its voice before its run ends", m, roll);
+            }
+    }
     // Every model with everything at its top and at its bottom stays bounded.
     for (unsigned m = 0; m < galileo::kit::models; ++m) {
         unsigned char top[8], bottom[8];

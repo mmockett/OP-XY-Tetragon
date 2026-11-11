@@ -35,6 +35,44 @@ inline void initialize(Voice& voice, Shared&, u32) {
 inline void start(Voice& voice, Shared&, u32) { voice.pending = 1; }
 inline void destroy(Voice&, Shared&, u32) {}
 inline void drum_select(Voice& voice, Shared&, u32, u32 model) { voice.next = model < kit::models ? model : 0; }
+
+// The ranges the track menu's scramble draws each model's controls from, so a
+// scrambled kit stays playable (models.hpp's mappings). TUNE stays within
+// about an octave of the model's default (BOOM 33 to 76 Hz, not 30 Hz
+// rumble; METAL 270 Hz to 2 kHz; WIRE up to 530 Hz, so its widest SWEEP
+// starts under 8 kHz); DECAY rings 1.5 to 2.3 s at most, the BAR's 1.4 s
+// (its TUBE lengthens the fundamental up to 2.9 times); the snare keeps its
+// wires and its head; SQUEEZE glides at most half an octave either way and
+// PRESS three quarters of one up; and BOUNCE's roll (at most 18 strikes,
+// the first two 59 ms apart, each gap at most 1.05 times the last) is over
+// within 1.5 s. METAL's WASH and SIZZLE, its heaviest work, stay short of
+// their tops. FORM and SPOT keep their whole travel on every model. The level trims (levels.h) hold every
+// control's loudness, so no slot here is narrowed for level alone.
+const opxy::u8 scramble_low[kit::models][8] = {
+    {10, 8, 0, 0, 0, 0, 0, 0},     // BOOM
+    {0, 0, 24, 0, 0, 0, 0, 16},    // SNARE
+    {10, 0, 0, 32, 0, 0, 0, 0},    // TOM
+    {26, 0, 0, 0, 0, 0, 0, 0},     // TABLA
+    {16, 0, 0, 0, 0, 0, 0, 0},     // BAR
+    {24, 16, 0, 0, 0, 0, 0, 0},    // METAL
+    {8, 0, 0, 0, 0, 0, 0, 0},      // BOUNCE
+    {0, 0, 0, 0, 0, 0, 0, 0},      // WIRE
+};
+const opxy::u8 scramble_high[kit::models][8] = {
+    {92, 110, 100, 127, 127, 127, 127, 100},   // BOOM
+    {127, 127, 120, 127, 127, 127, 127, 127},  // SNARE
+    {102, 110, 100, 96, 127, 127, 127, 100},   // TOM
+    {114, 110, 127, 96, 127, 127, 127, 127},   // TABLA
+    {104, 96, 96, 127, 127, 104, 96, 127},     // BAR
+    {116, 110, 110, 127, 127, 127, 100, 80},   // METAL
+    {120, 127, 96, 96, 127, 127, 127, 96},     // BOUNCE
+    {92, 110, 96, 127, 127, 127, 127, 127},    // WIRE
+};
+void scramble_range(u32 model, u32 slot, opxy::u8* low, opxy::u8* high) {
+    if (model >= kit::models || slot >= 8) return;
+    *low = scramble_low[model][slot];
+    *high = scramble_high[model][slot];
+}
 inline bool finished(const Voice& voice, const Shared&) { return voice.done != 0; }
 
 // HUMAN (4 bits) and GRIT (signed 5 bits), before every render.
