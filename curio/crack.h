@@ -47,6 +47,7 @@ struct Ice {
     i32 hiss_amp, hiss_gain, grain_rate;
     u32 grain_p, hrng;   // the surface draws its own noise
     i32 blast;           // the lake's last half-rate sample
+    i32 hlast;           // the surface's
     i32 drive, undrive;
 
     void snap(i32 g, bool echo_hit) {
@@ -113,16 +114,17 @@ struct Ice {
         // The surface: band noise 2.5..7.5 kHz, broader when warm.
         const i32 lpn = lg2(static_cast<u32>(2500 + sc(5000, c[5]))) + C(0.4) - sc(C(0.8), sheet);   // thick ice is darker
         const i32 q = C(0.6) + sc(C(1.2), c[5]);
-        band(nzk, lpn, q);
-        hiss_gain = band_gain(lpn, q);
+        band_half(nzk, lpn, q);   // the surface runs at half the rate
+        hiss_gain = band_gain(lpn + (1 << 12), q);
         nz = Res();
         hiss_amp = mul(U(0.5), F(1.0) - sc(F(0.6), c[3]));
+        hlast = 0;
         hiss.v = lev(hiss_amp, hiss_gain << 12);   // the band's loudness gain carried in the level
-        hiss.k = decay(static_cast<u32>(mul(25000 + sc(200000, pw(c[4], C(1.3))), F(0.5) + sc(F(0.5), sheet))));   // and rings longer
+        hiss.k = decay(static_cast<u32>(mul(25000 + sc(200000, pw(c[4], C(1.3))), F(0.5) + sc(F(0.5), sheet))) >> 1);   // and rings longer
         // The crunch: micro-cracks in the surface, more and crisper when cold.
         grain.v = 0;
-        grain.k = decay(250);
-        grain_p = per_sample(static_cast<u32>(600 + sc(3400, c[5])));
+        grain.k = decay(125);
+        grain_p = per_sample(static_cast<u32>(1200 + sc(6800, c[5])));   // a half-rate step's chance
         // Shards: one crack to a crackle of eight, each 0.8 of the last.
         shards = static_cast<u32>(c[2] * 7 >> 12);
         shard_amp = full;
@@ -131,7 +133,7 @@ struct Ice {
         next_echo = samples(static_cast<u32>(mul(70000, spread_scale) << 1));
         drive = (1 << 24) + sc(25165824, c[0]);   // Q24: 1 + 1.5 load
         {
-            const i32 th = tanh((drive >> 12) << 16);
+            const i32 th = soft((drive >> 12) << 16);
             undrive = static_cast<i32>((static_cast<u32>(1) << 30) / static_cast<u32>(th >> 14));
         }
         snap(full, false);
@@ -192,12 +194,11 @@ struct Ice {
     __attribute__((noinline)) void drive_pass(const i32* x, i32* out, u32 n) {
         const i32 dr = drive, ud = undrive << 14;
         for (u32 j = 0; j < n; ++j) {
-            // The curve all the way, held at its shoulder (tanh 4) past it:
-            // no branch for the quiet samples' straight foot.
+            // The cubic curve all the way (flat past 1.5): no branch for the
+            // quiet samples' straight foot.
             i32 d = mul(x[j], dr);
-            if (CURIO_UNLIKELY(d > (1 << 23))) d = 1 << 23;
-            if (CURIO_UNLIKELY(d < -(1 << 23))) d = -(1 << 23);
-            out[j] = mul(tanh(d << 7), ud) << 1;
+            d = d > (1 << 22) ? 1 << 22 : d < -(1 << 22) ? -(1 << 22) : d;
+            out[j] = mul(soft(d << 7), ud) << 1;
         }
     }
     // The lake, 150..260 Hz: at half the rate, two samples a step, drawn
@@ -236,53 +237,51 @@ struct Ice {
         body.a = a;
         blip.v = bv;
     }
-    // The surface: noise with a crunch of micro-cracks.
-    __attribute__((noinline)) void hiss_pass(i32* y, u32 n) {
+    // The surface: noise with a crunch of micro-cracks, at half the rate
+    // into hb, then drawn back up halfway between each pair as the lake is;
+    // a span of odd length takes its last sample as a single step.
+    __attribute__((noinline)) void hiss_steps(i32* hb, u32 m) {
         i32 hv = hiss.v, gv = grain.v;
         u32 r = hrng;
         const u32 gp = grain_p;
         const i32 hk = hiss.k, gk = grain.k;
-        i32 y1 = nz.y1, y2 = nz.y2, x1 = nz.x1, x2 = nz.x2;
-        const i32 c = nzk.c, r2 = nzk.r2, b = nzk.b;
-        if (hv <= 4096) return;   // until the next echo
-        // Each micro-crack restarts the crunch, which then dies away; two
-        // samples a turn so the band's states trade places.
-        if (n & 1) {
-            gv = mul(gv, gk);
-            if (CURIO_UNLIKELY(r < gp)) gv = one;
+        i32 y1 = nz.y1, y2 = nz.y2;
+        const i32 c = nzk.c, r2 = nzk.r2, g = nzk.g;
+        // Each micro-crack restarts the crunch, which then dies away. The
+        // band is the resonator driven straight (unity at its peak).
+        for (u32 j = 0; j < m; ++j) {
+            const i32 gd = mul(gv, gk);
+            gv = r < gp ? one : gd;
             hv = mul(hv, hk);
-            const i32 in = mul(noise(r), b);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-            x2 = x1;
-            x1 = in;
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
             y2 = y1;
             y1 = o;
-            *y++ += lev(o, hv + lev(hv, gv));
-        }
-        for (u32 j = 0; j < (n >> 1); ++j) {
-            gv = mul(gv, gk);
-            if (CURIO_UNLIKELY(r < gp)) gv = one;
-            hv = mul(hv, hk);
-            const i32 i0 = mul(noise(r), b);
-            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
-            x2 = i0;
-            y[0] += lev(y2, hv + lev(hv, gv));
-            gv = mul(gv, gk);
-            if (CURIO_UNLIKELY(r < gp)) gv = one;
-            hv = mul(hv, hk);
-            const i32 i1 = mul(noise(r), b);
-            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
-            x1 = i1;
-            y[1] += lev(y1, hv + lev(hv, gv));
-            y += 2;
+            hb[j] = lev(o, hv + lev(hv, gv));
         }
         hiss.v = hv;
         grain.v = gv;
         hrng = r;
         nz.y1 = y1;
         nz.y2 = y2;
-        nz.x1 = x1;
-        nz.x2 = x2;
+    }
+    __attribute__((noinline)) void hiss_pass(i32* y, u32 n) {
+        if (hiss.v <= 4096) { hlast = 0; return; }   // until the next echo
+        i32 hb[frames / 2 + 1];
+        const u32 m = (n + 1) >> 1;
+        hiss_steps(hb, m);
+        i32 last = hlast;
+        for (u32 j = 0; j < (n >> 1); ++j) {
+            const i32 x = hb[j];
+            y[0] += (last >> 1) + (x >> 1);
+            y[1] += x;
+            last = x;
+            y += 2;
+        }
+        if (n & 1) {
+            last = hb[m - 1];
+            y[0] += last;
+        }
+        hlast = last;
     }
     // n samples between events: the chirps (the newest carries a band of
     // noise riding its pitch), the snap and the noise, the band, the drive,
