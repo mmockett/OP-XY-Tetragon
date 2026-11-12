@@ -515,7 +515,10 @@ inline void prepare(Body& b, u32 model, const i32* p) {
              dsp::decay(tau + OCT(0.6)), GQ15(0.6), w0, w1);
         tune(b.mode[2], lf + dsp::log2(static_cast<u32>(GQ16(3.7) - multiply(GQ16(0.4), w))) - 16 * dsp::octave,
              dsp::decay(tau + OCT(0.4)), GQ15(0.35), w0, w1);
-        b.k[0] = 1 + ((static_cast<i32>(p2 >> 16) * 11 + 16384) >> 15);      // teeth a stroke
+        // Teeth a stroke: 1 to 12 along the control, at most 8 (every tooth of
+        // every stroke is a ghost to lay and strike).
+        b.k[0] = 1 + ((static_cast<i32>(p2 >> 16) * 11 + 16384) >> 15);
+        if (b.k[0] > 8) b.k[0] = 8;
         b.g[0] = static_cast<i32>(dsp::udiv(static_cast<u32>(GQ28(1.6)), 256 + ((38 * b.k[0]) >> 0)) << 8);   // 1.6 / (1 + .15 teeth)
         {
             // A stroke drags the pawl over the teeth: 4 ms a tooth, closing up;
