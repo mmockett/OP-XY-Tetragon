@@ -1,0 +1,70 @@
+ball
+ball, 60 ms after a hit
+ball, 250 ms after a hit
+cask
+cask, 60 ms after a hit
+cask, 250 ms after a hit
+stone
+stone, 60 ms after a hit
+stone, 250 ms after a hit
+drip
+drip, 60 ms after a hit
+drip, 250 ms after a hit
+ice
+ice, 60 ms after a hit
+ice, 250 ms after a hit
+sheet
+sheet, 60 ms after a hit
+sheet, 250 ms after a hit
+spark
+spark, 60 ms after a hit
+spark, 250 ms after a hit
+cork
+cork, 60 ms after a hit
+cork, 250 ms after a hit
+cicda
+cicda, 60 ms after a hit
+cicda, 250 ms after a hit
+rtcht
+rtcht, 60 ms after a hit
+rtcht, 250 ms after a hit
+pod
+pod, 60 ms after a hit
+pod, 250 ms after a hit
+mtch
+mtch, 60 ms after a hit
+mtch, 250 ms after a hit
+glass
+glass, 60 ms after a hit
+glass, 250 ms after a hit
+bell
+bell, 60 ms after a hit
+bell, 250 ms after a hit
+chalk
+chalk, 60 ms after a hit
+chalk, 250 ms after a hit
+roar
+roar, 60 ms after a hit
+roar, 250 ms after a hit
+ball, control 1 at 0
+ball, control 1 at 127
+ball, control 2 at 0
+ball, control 2 at 127
+ball, control 3 at 0
+ball, control 3 at 127
+ball, control 4 at 0
+ball, control 4 at 127
+ball, control 5 at 0
+ball, control 5 at 127
+ball, control 6 at 0
+ball, control 6 at 127
+ball, control 7 at 0
+ball, control 7 at 127
+ball, control 8 at 0
+ball, control 8 at 127
+ball, all at 0
+ball, all at 0, 60 ms after a hit
+ball, all at 127
+ball, all at 127, 60 ms after a hit
+ball, Shift, row 1
+ball, Shift, row 2
