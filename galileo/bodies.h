@@ -453,7 +453,8 @@ inline void prepare(Body& b, u32 model, const i32* p) {
     }
     case clap: {   // tone, decay, room, snap
         const i32 lf = pitch(900, GQ16(1.25), p0);
-        b.band[0].tune(lf, OCT(1.15) + multiply(OCT(2.0) - OCT(1.15), p3)); // the cavity between the palms, Q 1.15 .. 2
+        // The cavity between the palms, Q 1.15 .. 2, at half the rate (run_clap).
+        b.band[0].tune(lf + dsp::octave, OCT(1.15) + multiply(OCT(2.0) - OCT(1.15), p3));
         b.env[0].r = decay_ms(10 * 256, 4 * 256, p3);                       // a burst: rises in 0.4 ms
         b.k[2] = decay_ms(16 * 256, 6 * 256, p3);                            // a soft hand's burst
         b.k[3] = decay_ms(7 * 256, 2 * 256, p3);                             // a hard one's
@@ -1403,39 +1404,59 @@ __attribute__((noinline)) inline void run_bell(Body& b, i32* __restrict out, u32
     expand<false>(h, m, b.held, out);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
-// out 2 + hand g (the bursts' own crack over the cavity's ring), through two
-// one-pole high-passes at c.
-__attribute__((noinline)) void clap_mix(i32* __restrict out, const i32* __restrict hand, i32 g28, dsp::Pole& p1,
-                                        dsp::Pole& p2, i32 c, u32 n) {
-    i32 s1 = p1.s, s2 = p2.s;
-    for (u32 i = 0; i < n; ++i) {
-        i32 y = out[i] * 2 + gain(hand[i], g28);
+// The cavity's ring (half-rate samples h, back to the full rate by straight
+// lines) at 2, plus the bursts' own crack (noise under the half-rate burst
+// level eg, the crack's gain in it), through two one-pole high-passes at c.
+__attribute__((noinline)) void clap_mix(i32* __restrict out, const i32* __restrict h, const i32* __restrict eg, i32& last,
+                                        u32& seed, dsp::Pole& p1, dsp::Pole& p2, i32 c, u32 n) {
+    i32 s1 = p1.s, s2 = p2.s, y0 = last;
+    u32 x = seed;
+    const u32 m = n >> 1;
+    for (u32 j = 0; j < m; ++j) {
+        const i32 y1 = h[j], e = eg[j];
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        i32 y = (y0 >> 1) + (y1 >> 1);
+        y = y * 2 + multiply(static_cast<i32>(x) >> 2, e) * 8;
         s1 += multiply(y - s1, c);
         y -= s1;
         s2 += multiply(y - s2, c);
-        out[i] = y - s2;
+        out[2 * j] = y - s2;
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        y = y1 * 2 + multiply(static_cast<i32>(x) >> 2, e) * 8;
+        s1 += multiply(y - s1, c);
+        y -= s1;
+        s2 += multiply(y - s2, c);
+        out[2 * j + 1] = y - s2;
+        y0 = y1;
     }
+    seed = x;
+    last = y0;
     p1.s = s1; p2.s = s2;
 }
+// The cavity (the palms' bursts and the room, through its band, 900 .. 2,140 Hz)
+// at half the rate; the crack over it at the full rate.
 __attribute__((noinline)) inline void run_clap(Body& b, i32* __restrict out, u32 count) {
-    i32 hand[64];
+    i32 h[32], eg[32];
+    const u32 m = count / 2;
     i32 e0 = b.env[0].a, e1 = b.env[1].a, e2 = b.env[2].a;
-    const i32 r0 = b.env[0].r, r1 = b.env[1].r, r2 = b.env[2].r, room = b.g[0];
+    const i32 r0 = multiply(b.env[0].r, b.env[0].r), r1 = multiply(b.env[1].r, b.env[1].r),
+              r2 = multiply(b.env[2].r, b.env[2].r), room = b.g[0], crack = b.g[1];
     u32 x = b.seed;
-    for (u32 i = 0; i < count; ++i) {
+    for (u32 j = 0; j < m; ++j) {
         e0 = multiply(e0, r0);
         e1 = multiply(e1, r1);
         e2 = multiply(e2, r2);
+        const i32 burst = e0 - e1;
+        eg[j] = multiply(burst, crack) << 3;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        const i32 n = static_cast<i32>(x) >> 2;
-        hand[i] = multiply(n, e0 - e1) * 8;
+        const i32 hand = multiply(static_cast<i32>(x) >> 2, burst) * 8;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        out[i] = hand[i] + gain(multiply(static_cast<i32>(x) >> 2, e2) * 8, room);
+        h[j] = hand + gain(multiply(static_cast<i32>(x) >> 2, e2) * 8, room);
     }
     b.seed = x;
     b.env[0].a = e0; b.env[1].a = e1; b.env[2].a = e2;
-    band_run(b.band[0], out, count);
-    clap_mix(out, hand, b.g[1], b.pole[0], b.pole[1], b.pc[0], count);
+    band_run(b.band[0], h, m);
+    clap_mix(out, h, eg, b.held, b.seed, b.pole[0], b.pole[1], b.pc[0], count);
     knee_run(out, count, GQ28(0.6), GQ28(0.3), GQ28(1 / 0.3));
 }
 // The woodblock: its modes and its click, then a soft knee of its own: the
