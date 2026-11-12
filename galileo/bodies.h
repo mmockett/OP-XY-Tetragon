@@ -267,8 +267,8 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         // and low-pass, over noise with a zero at Nyquist), from a dark 1.4 kHz to
         // a bright 4.5 kHz, which keeps the noise out of the head's low end.
         const i32 wires = dsp::mix(q16(1400), q16(4500), p3);
-        b.pc[0] = dsp::pole(wires - OCT(1.0 / 0.59) + dsp::octave);   // at half the rate (run_snare)
-        b.pc[1] = dsp::pole(wires + OCT(1.4) + dsp::octave);
+        b.pc[0] = dsp::pole(wires - OCT(1.0 / 0.59));
+        b.pc[1] = dsp::pole(wires + OCT(1.4));
         prepare_click(b.click[0], 500, 3000);                               // the stick, and the
         b.cg[0] = GQ28(0.2);
         prepare_click(b.click[1], 2600, 3000);                              // crack, through one high-pass
@@ -276,8 +276,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         b.g[0] = GQ28(1.1) - multiply(GQ28(0.45), p1);                       // head
         // The wires, their level matched to the two-pole band's (0.3 dB more at
         // a dark tone, 3 dB at a bright one).
-        // 3 dB down: noise at half the rate puts twice its density in the band.
-        b.g[1] = multiply(multiply(GQ28(1.75), p1), GQ31(1.04 * 0.7071 / 1.5) + multiply(GQ31(0.38 * 0.7071 / 1.5), p3));
+        b.g[1] = multiply(multiply(GQ28(1.75), p1), GQ31(1.04 / 1.5) + multiply(GQ31(0.38 / 1.5), p3));
         b.g[1] += b.g[1] >> 1;
         break;
     }
@@ -1215,11 +1214,11 @@ inline i32 decay_over(i32 r, u32 n) {
     return y;
 }
 // Noise, each sample the mean of two draws (a zero at Nyquist), under an
-// envelope, through a one-pole high-pass at ch and a one-pole low-pass at cl
-// (a broad band), added into out at gain g (Q28, under 2.5): one pass. SWELL:
-// swelling with a swing (0.55 + 0.45 swing, which it overwrites), at half the
-// rate, n half-rate samples written, not added. The gain rides on the
-// envelope's level; the level itself is decayed once, at the end.
+// envelope (swelling with a half-rate swing if SWELL, as
+// 0.55 + 0.45 swing, which it overwrites) through a one-pole high-pass at ch and a one-pole
+// low-pass at cl, a broad band, added into out at gain g (Q28, under 2.5): one
+// pass. The gain rides on the envelope's level; the level itself is decayed
+// once, over the stretch, at the end.
 template <bool SWELL>
 __attribute__((noinline)) void noise_hl_add(Energy& env, u32& seed, i32* __restrict swing, dsp::Pole& hp, dsp::Pole& lp,
                                             i32 ch, i32 cl, i32* __restrict out, i32 g28, u32 n) {
@@ -1227,19 +1226,20 @@ __attribute__((noinline)) void noise_hl_add(Energy& env, u32& seed, i32* __restr
     const i32 r = env.r, r2 = multiply(r, r);
     u32 x = seed;
     if (SWELL) {
-        // At half the rate (n of its samples, each two of the block's), written:
-        // the level first, in place of the swing; then the noise.
-        for (u32 j = 0; j < n; ++j) {
+        // The level each two samples (the swing's rate) first, in place of the
+        // swing; then the noise, two samples a turn.
+        const u32 m = n >> 1;
+        for (u32 j = 0; j < m; ++j) {
             swing[j] = multiply(ag, GQ31(0.55) + multiply(GQ31(0.45), swing[j]));
             ag = multiply(ag, r2);
         }
-        for (u32 j = 0; j < n; ++j) {
+        for (u32 i = 0; i < n; ++i) {
             const i32 x0 = static_cast<i32>(x) >> 3;
             x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-            const i32 v = multiply((static_cast<i32>(x) >> 3) + x0, swing[j]) * 8;
+            const i32 v = multiply((static_cast<i32>(x) >> 3) + x0, swing[i >> 1]) * 8;
             h += multiply(v - h, ch);
             l += multiply(v - h - l, cl);
-            out[j] = l;
+            out[i] += l;
         }
     } else {
         for (u32 i = 0; i < n; ++i) {
@@ -1253,7 +1253,7 @@ __attribute__((noinline)) void noise_hl_add(Energy& env, u32& seed, i32* __restr
         }
     }
     seed = x;
-    const i32 a = multiply(env.a, decay_over(r, SWELL ? 2 * n : n));
+    const i32 a = multiply(env.a, decay_over(r, n));
     if (a < dsp::hush && l < dsp::hush && l > -dsp::hush) h = l = 0;
     env.a = a;
     hp.s = h;
@@ -1314,10 +1314,8 @@ __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u3
     skin_half(b.skin[0], h, count / 2, swing, b.g[0]);   // the head at its level
     expand<false>(h, count / 2, b.held, out);
     if (!idle(b.env[0]) || b.pole[1].s) {
-        // The wires buzz with the head: noise, swelling with the head's swing,
-        // at half the rate (their band is under 6.3 kHz), back by straight lines.
-        noise_hl_add<true>(b.env[0], b.seed, swing, b.pole[0], b.pole[1], b.pc[0], b.pc[1], h, b.g[1], count / 2);
-        expand<true>(h, count / 2, b.pole[2].s, out);
+        // The wires buzz with the head: noise, swelling with the head's swing.
+        noise_hl_add<true>(b.env[0], b.seed, swing, b.pole[0], b.pole[1], b.pc[0], b.pc[1], out, b.g[1], count);
     }
     // The stick's click and the crack: one burst of noise, one high-pass.
     click_pair_add(b.click[0], b.click[1], b.seed, out, count, b.cg[0], b.cg[1]);
