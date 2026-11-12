@@ -909,8 +909,9 @@ inline void display(DisplayState& state, const Input& input, Frame& frame) {
         kit::tune_text(clamp(input.pad[0], -16, 15), tune);
         kit::vary_text(clamp(input.pad[1], 0, 15), vary);
         for (u32 s = 0; s < 2; ++s) {
-            const i32 code = input.pad[2 + s];
-            if (code > 0) signed_text(sends[s], sizeof(sends[s]), (((code > 7 ? 7 : code) - 1) * 100 + 3) / 6, "");
+            // SDK 1.15: 0 follows the track's send (TRK), else the key's percent + 1.
+            const i32 percent = input.pad[2 + s] - 1;
+            if (percent >= 0) signed_text(sends[s], sizeof(sends[s]), percent > 100 ? 100 : percent, "");
             else copy(sends[s], sizeof(sends[s]), "TRK");
         }
         static const char* const shift_titles[2][4] = {{"MACHINE", "CHOKE", "PAN", "LEVEL"}, {"TUNE", "VARY", "FX I", "FX II"}};

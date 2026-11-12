@@ -6,11 +6,11 @@ on:
 permissions:
   contents: read
 env:
-  # The kits' per-key mixer channels (padMix) need the SDK change still in
-  # review, etcetc000/open-xy#399. Once it merges, switch to
-  # OPEN_XY_REPO: etcetc000/open-xy and OPEN_XY_REF: staging.
+  # Per-key sends in 1% steps (SDK 1.15) are in mmockett/open-xy's
+  # sdk/per-key-send-resolution until etcetc000/open-xy merges them; then switch
+  # to OPEN_XY_REPO: etcetc000/open-xy and OPEN_XY_REF: staging.
   OPEN_XY_REPO: mmockett/open-xy
-  OPEN_XY_REF: drum/pad-channel
+  OPEN_XY_REF: sdk/per-key-send-resolution
   KITS: thunder curio galileo syahi
 jobs:
   # Each kit's records, browser preview, drawing checks and host sound and

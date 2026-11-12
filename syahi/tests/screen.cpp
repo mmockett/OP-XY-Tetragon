@@ -208,8 +208,8 @@ int main() {
                         in.level = static_cast<opxy::i8>(-static_cast<int>(v) * 30 / 127);
                         in.pad[0] = static_cast<opxy::i8>(v % 16);
                         in.pad[1] = static_cast<opxy::i8>(static_cast<int>(v % 32) - 16);
-                        in.pad[2] = static_cast<opxy::i8>(v % 8);
-                        in.pad[3] = static_cast<opxy::i8>((v + 3) % 8);
+                        in.pad[2] = static_cast<opxy::i8>(v % 102);          // TRK, then percent + 1
+                        in.pad[3] = static_cast<opxy::i8>((v + 50) % 102);
                         in.choices[1] = static_cast<opxy::u8>(v % 4);
                     }
                     syahi::display(state, in, frame);

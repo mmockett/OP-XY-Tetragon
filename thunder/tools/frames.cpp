@@ -60,8 +60,10 @@ int main() {
         input.level = static_cast<opxy::i8>(level);
         input.pad[0] = static_cast<opxy::i8>(tune);
         input.pad[1] = static_cast<opxy::i8>(drive);
-        input.pad[2] = static_cast<opxy::i8>(fx1);
-        input.pad[3] = static_cast<opxy::i8>(fx2);
+        // Scene lines give each send as its old step (0 TRK, 1..7); the display
+        // takes the percent + 1 (SDK 1.15).
+        input.pad[2] = static_cast<opxy::i8>(fx1 > 0 ? (((fx1 > 7 ? 7 : fx1) - 1) * 100 + 3) / 6 + 1 : 0);
+        input.pad[3] = static_cast<opxy::i8>(fx2 > 0 ? (((fx2 > 7 ? 7 : fx2) - 1) * 100 + 3) / 6 + 1 : 0);
         input.amp.attack = input.amp.decay = input.amp.sustain = input.amp.release = envelope_unavailable;
         input.elapsed = 17;   // 60 frames a second
         thunder::display_reset(state);

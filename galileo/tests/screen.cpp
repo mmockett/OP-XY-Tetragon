@@ -239,7 +239,7 @@ int main() {
         CHECK(!std::strcmp(frame.texts[8].chars, "space"), "the grey SPACE title reads '%s'", frame.texts[8].chars);
         CHECK(!std::strcmp(frame.texts[14].chars, "TRK"), "the grey FX I reads '%s'", frame.texts[14].chars);
         input.line = 1;
-        input.pad[0] = -6; input.pad[1] = 9; input.pad[2] = 0; input.pad[3] = 4;
+        input.pad[0] = -6; input.pad[1] = 9; input.pad[2] = 0; input.pad[3] = 51;   // TRK and 50 (percent + 1, SDK 1.15)
         for (int i = 0; i < 4; ++i) input.shown[i] = static_cast<opxy::u8>(4 + i);
         for (int f = 0; f < 20; ++f) step();
         CHECK(!std::strcmp(frame.texts[4].chars, "-6"), "SPACE reads '%s'", frame.texts[4].chars);

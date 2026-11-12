@@ -841,8 +841,9 @@ inline void display(DisplayState& state, const opxy::draw::Input& input, Frame& 
         number(pan, input.pan, "");
         number(level, input.level, "dB");
         for (u32 k = 0; k < 2; ++k) {
-            const i32 code = input.pad[2 + k];
-            if (code > 0) number(sends[k], ((code > 7 ? 7 : code) - 1) * 100 / 6 + (code == 3 || code == 6 ? 1 : 0), "");
+            // SDK 1.15: 0 follows the track's send (TRK), else the key's percent + 1.
+            const i32 percent = input.pad[2 + k] - 1;
+            if (percent >= 0) number(sends[k], percent > 100 ? 100 : percent, "");
             else copy(sends[k], sizeof(sends[k]), "TRK");
         }
         tune_text(tune_, input.pad[0]);
