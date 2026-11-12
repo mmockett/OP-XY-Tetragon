@@ -398,7 +398,7 @@ struct Cask {
         const i32 hg = echo ? mul(g, F(0.5)) : g;
         for (int m = 0; m < 3; ++m) dsp::strike(hoop[m], hoopk[m], mul(mul(hoop_amp, ha[m]), hg));
         clk.v += mul(U(0.4) + sc(U(2.2), c[2]), echo ? mul(g, F(0.4)) : g);
-        thud.v += mul(sc(U(0.8), c[1]), g);
+        thud.v += mul(sc(U(0.8 * 0.7071), c[1]), g);   // at half the rate its low-passed noise is louder
     }
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
@@ -446,8 +446,8 @@ struct Cask {
         hoop_amp = sc(U(1.2), c[5]);
         clk.k = decay(static_cast<u32>(6000 - sc(5000, c[2])));
         clk_a = pole(lg2(static_cast<u32>(500 + sc(9000, pw(c[2], C(1.5))))));
-        thud.k = decay(40000);
-        thud_a = pole(hz(220));
+        thud.k = decay(20000);   // the thud at half the rate
+        thud_a = pole(hz(220) + (1 << 12));
         hlast = 0;
         strike(full, false);
     }
@@ -504,27 +504,31 @@ struct Cask {
         air.v = v;
         air.a = a;
     }
-    // The knuckle's click and the thud, from one noise.
+    // The knuckle's click, at the full rate while it sounds.
     __attribute__((noinline)) void knock_pass(i32* y, u32 n) {
-        i32 cv = clk.v, tv = thud.v, cl = clk_lp, tl = thud_lp;
-        const i32 ck = clk.k, tk = thud.k, ca = clk_a, ta = thud_a;
+        i32 cv = clk.v, cl = clk_lp;
+        const i32 ck = clk.k, ca = clk_a;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            if (CURIO_LIKELY(cv > 4096 || tv > 4096)) {
-                const i32 x = noise(r);
-                cv = mul(cv, ck);
-                cl += mul(ca, lev(x, cv) - cl);
-                tv = mul(tv, tk);
-                tl += mul(ta, lev(x, tv) - tl);
-            } else {
-                cl -= cl >> 6;
-                tl -= tl >> 6;
-            }
-            y[j] += cl + tl;
+            cv = mul(cv, ck);
+            cl += mul(ca, lev(noise(r), cv) - cl);
+            y[j] += cl;
         }
         clk.v = cv;
-        thud.v = tv;
         clk_lp = cl;
+        rng = r;
+    }
+    // The thud, at half the rate.
+    __attribute__((noinline)) void thud_pass(i32* h, u32 n) {
+        i32 tv = thud.v, tl = thud_lp;
+        const i32 tk = thud.k, ta = thud_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            tv = mul(tv, tk);
+            tl += mul(ta, lev(noise(r), tv) - tl);
+            h[j] += tl;
+        }
+        thud.v = tv;
         thud_lp = tl;
         rng = r;
     }
@@ -539,6 +543,7 @@ struct Cask {
         else air_pass<false>(h, fb, n, am);
         ring_bank(wood, woodk, 4, h, n);
         if (hoop_amp) ring_bank(hoop, hoopk, 3, h, n);
+        if (thud.v > 4096) thud_pass(h, n);
     }
     // The half-rate parts back up to the full rate, each new sample halfway
     // between two.
@@ -571,7 +576,8 @@ struct Cask {
             if (c[7] > 0 && tap < 4) { const u32 d = at[tap] - t0; if (d < e && d >= i) e = d; }
             const u32 he = (e + 1) >> 1;
             if (he > hi) half_span(h + hi, he - hi, vib, am);
-            if (e > i) knock_pass(out + i, e - i);
+            // The click, once under its floor, rests until the next tap.
+            if (e > i && clk.v > 4096) knock_pass(out + i, e - i);
             i = e;
             hi = he;
             if (i >= frames) break;
