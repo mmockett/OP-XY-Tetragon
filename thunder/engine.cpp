@@ -257,7 +257,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     // the model's gain; then DRIVE, if any; then the soft knee, if anything
     // reaches it; and whether anything was loud enough to keep the note going
     const i32 gain = voice.gain, drive = voice.drive;
-    i32 most = 0;
+    i32 most = 0, quiet = quiet_under;
     if (!drive) {
         i32 peak = 0;   // (|y| is exact: y never reaches -2^31)
         for (unsigned i = 0; i < frames; ++i) {
@@ -278,6 +278,9 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
         const i32 g = Q31((1.0 * 2.5) / 32) + drive * Q31((6.0 / 15 * 2.5) / 32);
         const i32 gg = multiply(gain, g);   // the model's gain and DRIVE's in one
         const i32 lim = one >> 11;
+        // (a note ends at the level it would without DRIVE: under -84 dB before
+        // DRIVE's gain, 0.5625 x 32 g its small-signal gain)
+        quiet = multiply(quiet_under * 18, g);
         for (unsigned i = 0; i < frames; ++i) {
             const i32 z = clamp(multiply(x[i], gg), -lim, lim) << 11;
             const i32 y = multiply(z, Q31(0.5625) - multiply(multiply(z, z), Q31(0.1875)));
@@ -287,7 +290,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     }
     // (tools/calibrate.py builds a copy without the lines marked "level:", to
     // measure the peaks the cap, the limiter and the knee take)
-    const bool loud = most >= quiet_under;
+    const bool loud = most >= quiet;
     voice.quiet = loud ? 0 : voice.quiet + 1;
     if (voice.quiet >= quiet_blocks && !voice.waiting) voice.done = 1;
 }
