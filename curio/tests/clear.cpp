@@ -38,7 +38,7 @@ bool box_of(const curio::Frame& f, unsigned n, double* box) {
     if (n < curio::Frame::path_count) {
         l = t = 1e9;
         r = b = -1e9;
-        for (int i = 0; i < static_cast<int>(curio::Frame::point_count); ++i) {
+        for (int i = 0; i < 64; ++i) {
             const double x = f.paths[n].points[i].x / 1024.0, y = f.paths[n].points[i].y / 1024.0;
             l = x < l ? x : l; r = x > r ? x : r; t = y < t ? y : t; b = y > b ? y : b;
         }

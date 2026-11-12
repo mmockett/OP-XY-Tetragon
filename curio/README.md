@@ -1,6 +1,6 @@
 # Curio
 
-![Curio's screen: a cabinet drawer pulled open, a small drum on a felt bed and a ball over it on its release clamp](docs/screen.png)
+![Curio's screen: a pinned cicada, its wings flicking as a closed hat sounds](docs/screen.png)
 
 A Victorian cabinet of curiosities as a drum kit. Each of its sixteen
 specimens is one object from the bench and shelves behind a lecture on sound
@@ -66,7 +66,7 @@ Each key has two rows of four, stacked in the header; press any encoder to
 switch rows. Values read 0 / 50 / 100 across each control's travel, with the
 specimen's design default in brackets; captions in hertz, seconds or counts
 are the engine's own figures. Every control changes its sound across its
-whole travel and moves a part of the screen's drawer.
+whole travel and moves a part of the specimen on screen.
 [docs/sheet-controls-*.png](docs) show every control at 0, 50 and 100 at 1:1.
 
 | Specimen | First row | Second row |
@@ -214,35 +214,51 @@ and no division in any sample loop (`dsp.h`).
 
 ## Screen
 
-The cabinet itself, in the OP-XY's own isometric look: a drawer pulled
-open below two closed ones, a small drum on its felt bed, and the release
-clamp on its stand holding a ball over the head on a fine plumb line. Every
-key's specimen shares the drawer; the brass card holder on its front carries
-the selected specimen's symbol. Each part's grey is its encoder's, as on the
-stock screens: the clamp 323232, the bounce marks 4B4B4B, the drum's head
-and rods 969696, the ball CDCDCD.
+The selected key's specimen alone on black, large, in fine bright outline
+and centred under the header. Its lines are thin, as on stock's Drumline: an
+outline draws 1 px, a line about 1.5 px across, and everything round in life
+is drawn in smooth curves. Every control moves a
+real part of the specimen (the clamp rises with drop, the cask's liquid with
+fill, the stone's felt cords slide to its nodes with ring, the cicada's wings
+open with wing), and a hit makes it do its thing: the ball drops and bounces
+on the dented skin, the mallet swings, the drop falls and the basin ripples,
+the pendulum strikes and the water shivers, the cork pops out at a slant, a spark jumps
+the gap between the brass knobs, the thunder sheet flexes on its chains,
+the match slides along the striker, the bull-roarer flies round its orbit,
+the cicada's wings flick.
 
-| Encoder | First row | Second row |
-| --- | --- | --- |
-| 1 | the clamp rises on its stand, the plumb line longer | a felt damper slides out to the head's rim |
-| 2 | a mark at the top of each bounce, higher and more of them | a crate slides toward the drum |
-| 3 | 4 to 10 rods round the drum | a ring on the head moves from its middle to the rim |
-| 4 | the ball, in five sizes | 0 to 10 grains on the head |
-
-The ball's controls name them (drop, bounce, skin, ball; decay, floor,
-spot, grit); every other specimen's controls move the same parts in their
-places.
-
-- **A hit drops the ball** down the plumb line onto the head. It bounces to
-  each mark, rests on the head while the sound lasts and is back under the
-  clamp a moment after.
 - **A hit's motion lasts as long as its sound**, reckoned from the
   specimen's own decay controls. A drum kit's voices play until their sound
   ends: the drum renderer applies neither the track's amp envelope nor
   note-off, so the screen follows neither.
 - **Only the selected key's notes animate it.**
-- **Nothing enters the header or leaves the screen**, at any setting.
+- **Each object is drawn as it is built and held:** the ball's retort stand with its boss and thumbscrew over
+  a rope-tensioned drum; a cooper's cask with its hoops, spigot and stillage
+  under a cellar's vault; a lithophone bar on felt cords over a sounding
+  box, as large on the screen as the cicada; a swan-neck tap over a deep
+  pedestal basin, the bubble rising through it as a column, the tiled wall
+  rising behind it with the room's echo; a slab of lake ice
+  on sawhorses under a cast-iron weight, frost crystals blooming on it as it
+  gets colder, the ice tongs open on their hook; a Leyden jar
+  wired to a spark gap of brass knobs on glass pillars, a gold-leaf
+  electroscope and an induction coil; a thunder sheet on chains from its
+  beam with a turned handle at its foot; a Bordeaux bottle with its capsule;
+  a cicada pinned in dorsal view with veined
+  wings and six legs; a cranked watchman's rattle; a poppy head in a
+  specimen clip; a matchbox with its tray drawn out, three rows of matches
+  lying in it, heads to the end, and a match on the striker; a cut goblet
+  beside a brass pendulum stand; an electric bell, its magnet and a
+  Leclanché cell under a jar on the pump plate; a slate in a pegged frame; a
+  long carved bull-roarer on its cord from a lashed stick.
+- **Nothing enters the header or leaves the screen.** Every part of every
+  specimen, moving or still, at any setting, stays below the header and on
+  the screen.
 - **At rest nothing moves.**
+
+[docs/sheet-specimens.png](docs/sheet-specimens.png) shows every specimen
+with all its controls at 0, 50 and 100, at its defaults and mid-hit;
+[docs/sheet-screens.png](docs/sheet-screens.png) eight of them mid-hit;
+[docs/sheet-shift.png](docs/sheet-shift.png) both Shift rows.
 
 ## CPU
 
