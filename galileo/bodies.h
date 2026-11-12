@@ -1597,12 +1597,20 @@ __attribute__((noinline)) inline void run_block(Body& b, i32* __restrict out, u3
     run_modes(b, out, count, 3);
     knee_run(out, count, GQ28(0.9), GQ28(0.45), GQ28(1 / 0.45));
 }
-__attribute__((noinline)) void add_eighth(i32* __restrict out, const i32* __restrict in, u32 n) {
-    for (u32 i = 0; i < n; ++i) out[i] += in[i] >> 3;
+// out plus a grain's eighth, through a one-pole high-pass at c, in place.
+__attribute__((noinline)) void high_eighth(dsp::Pole& p, i32 c, i32* __restrict io, const i32* __restrict grain, u32 n) {
+    i32 s = p.s;
+    for (u32 i = 0; i < n; ++i) {
+        const i32 y = io[i] + (grain[i] >> 3);
+        s += multiply(y - s, c);
+        io[i] = y - s;
+    }
+    p.s = s;
 }
 __attribute__((noinline)) inline void run_shaker(Body& b, i32* __restrict out, u32 count) {
     i32 grain[64];
-    i32 e0 = b.env[0].a, e1 = b.env[1].a;
+    // The rustle's level carries its 0.2; its own is decayed once, at the end.
+    i32 e0 = b.env[0].a, e1 = multiply(b.env[1].a, GQ31(0.2));
     const i32 r0 = b.env[0].r, r1 = b.env[1].r;
     u32 x = b.seed;
     for (u32 i = 0; i < count; ++i) {
@@ -1611,14 +1619,14 @@ __attribute__((noinline)) inline void run_shaker(Body& b, i32* __restrict out, u
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         grain[i] = multiply(static_cast<i32>(x) >> 2, e0) * 8;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        out[i] = grain[i] + multiply(multiply(static_cast<i32>(x) >> 2, e1) * 8, GQ31(0.2));
+        out[i] = grain[i] + multiply(static_cast<i32>(x) >> 2, e1) * 8;
     }
     b.seed = x;
-    b.env[0].a = e0; b.env[1].a = e1;
+    b.env[0].a = e0;
+    b.env[1].a = multiply(b.env[1].a, decay_over(r1, count));
     band_run(b.band[0], out, count);
-    add_eighth(out, grain, count);
     modes_add(b.mode, 2, out, count);   // the shell, at its level from the strikes
-    high_run(b.pole[0], b.pc[0], out, count);
+    high_eighth(b.pole[0], b.pc[0], out, grain, count);
     // The loudest grains give up their peak (about 3 dB at the defaults), the
     // pour under them untouched, so the shaker sits level with the kit.
     knee_run(out, count, GQ28(0.16), GQ28(0.13), GQ28(1 / 0.13));
