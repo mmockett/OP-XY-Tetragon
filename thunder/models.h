@@ -317,7 +317,7 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
     const i32 lbase = log16(mix(Q16(1200.0 / 1024), Q16(300.0 / 1024), c[3])) + L(1024) + mix(L(0.35), L(2.0), c[0]) + tune;
     setup_field(v, lbase, mix(Q16(1.0), Q16(0.4), c[4]), log16(mul16(exp16(ltau), Q16(6)) + Q16(0.05)),
                 mix(Q16(0.45), Q16(0.9), nail), 0, true);
-    field_raw(v);   // (its ring swings at half rate, then comes up to the full rate)
+    field_raw(v);   // (its ring comes up to the full rate as it is)
     const i32 lcut = lhp + log16(mix(Q16(1.0), Q16(0.45), c[3])) + mul16(q31_root(nail) >> 15, Q16(0.8));   // a coin's edge rings brighter
     v.k[1] = onepole_k(lcut);
     v.k[2] = onepole_k(lhp - L(1.25));
@@ -466,11 +466,10 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     } else {
         clear(w.exc);
     }
-    // the ring at half rate, swung, and brought to the full rate (at the level
-    // the full rate's held samples gave it)
+    // the ring at half rate, brought to the full rate (at the level the full
+    // rate's held samples gave it)
     if (v.fon) {
         run_field(v, w.exc, w.aux, one);
-        run_swing_half(v, w.aux);
         v.fprev = up_write(w.aux, w.aux, v.fprev);
     } else {
         clear(w.aux);
@@ -502,9 +501,10 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
         v.env[2].step(lift);
         chain_most(v, multiply(U - (U >> 6), lift) << 1, out);
     }
-    // the pickup's roll-off; the hat (quiet after its high-passes) brought up
-    // to the others' working level by it
+    // the pickup's roll-off and the swing; the hat (quiet after its
+    // high-passes) brought up to the others' working level by the roll-off
     flick_rolloff<2>(v, out);
+    run_swing<false>(v, out);
 }
 
 // ============================================================ TOM: toms
@@ -627,8 +627,8 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     const i32 lf0 = mix(L(110), L(650), c[0]) + tune;
     const i32 lt60 = mix(L(4.5), L(0.25), c[1]);
     const i32 tension = mul16(c[4], Q16(0.6));
-    // (its modes all under 2.8 kHz, so the body runs at half rate with its ring)
-    setup_modes(v, lf0, tension, Q16(0.3) + mul16(c[3], Q16(0.7)), lt60 - 2 * octave, Q16(0.6), Q16(0.5), 6, beater_time(c[2]), 0, L(2800.0));
+    // (its four lowest modes, all under 2.8 kHz, so the body runs at half rate with its ring)
+    setup_modes(v, lf0, tension, Q16(0.3) + mul16(c[3], Q16(0.7)), lt60 - 2 * octave, Q16(0.6), Q16(0.5), 4, beater_time(c[2]), 0, L(2800.0));
     v.bend = 1 << 26;
     v.bend_env = one;
     v.bend_k = block_decay(L(0.08));
@@ -643,7 +643,8 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     // the ring's (twice, at half rate): struck near the bell, darker. (Not
     // lifted for what the half-rate filters lose: lifted, SIZE moved the
     // crash too little for the sound checks.)
-    v.k[1] = onepole_k(mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]) + octave);
+    // (and a higher sheet rings brighter: SIZE moves its high-pass 1.2 octaves)
+    v.k[1] = onepole_k(mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]) + mul16(c[0] - Q16(50.0 / 127), Q16(1.2)) + octave);
     v.k[2] = multiply(mix(Q31(0.12), Q31(0.9), c[4]), mix(Q31(0.99), Q31(0.3), c[3]));   // the body's share, less toward the edge
     v.env[0].set(one, block_decay(lt60 + log16(mix(Q16(1.0), Q16(0.12), c[4]))));
     // SWELL: noise into the high modes along (t / peak) e^(1 - t / peak)
@@ -695,6 +696,8 @@ __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     const i32 r = v.k[3];
     v.s[1] = multiply(s1, r);
     v.s[2] = multiply(s2, r) + multiply(s1, one - r);
+    // (past its peak and 50 dB under it, the swell is over: the wash rings on its own)
+    if (v.s[1] < v.s[2] && v.s[2] < (one >> 10)) v.s[1] = v.s[2] = 0;
     i32 sw = multiply(s2, v.k[4]);
     const i32 sws = (multiply(v.s[2], v.k[4]) - sw) >> 6;
     excite(v, w.exc);
@@ -719,16 +722,16 @@ __attribute__((noinline)) inline void block_crash(Voice& v, Work& w, i32* out) {
     i32 damp;
     const i32 ds = v.env[0].step(damp);
     crash_sum(v, body2, ring, damp + ds, ds << 1);   // (the hand's level at each half-rate sample's place)
-    run_swing_half(v, ring);
-    v.s[3] = up_write(ring, out, v.s[3]);
-    add_click(v, out);
+    run_swing<true>(v, ring);
     if (v.c_amount) {
         // what lifts the chain: the sheet's swing at its fundamental, falling away
         i32 lift;
         const i32 ls = v.env[1].step(lift);
         // (its square swings +-lift, so the block's largest is the ramp's larger end)
-        chain_most(v, chain_reach(chain_reach(0, lift), lift + static_cast<i32>(frames - 1) * ls), out);
+        chain_most(v, chain_reach(chain_reach(0, lift), lift + static_cast<i32>(frames - 1) * ls), ring, -1, true);
     }
+    v.s[3] = up_write(ring, out, v.s[3]);
+    add_click(v, out);
 }
 
 // ============================================================ CLANK: cowbell, rim
@@ -1332,11 +1335,7 @@ __attribute__((noinline)) inline void block_shake(Voice& v, Work& w, i32* out) {
     {
         const i32 wob = multiply(sine(v.u[3]), Q31(0.04));
         v.u[3] += v.u[2];
-        const i32 m28 = (1 << 28) + (wob >> 3);
-        for (u32 k = 0; k < v.nmodes; ++k) {
-            Mode& m = v.mode[k];
-            m.f = mode_f(v, k, static_cast<u32>(multiply(static_cast<i32>(m.inc >> 1), m28)) << 4);
-        }
+        retune_modes(v, (1 << 28) + (wob >> 3));
     }
     clear(w.fin);
     w.fin[0] = v.s[0];

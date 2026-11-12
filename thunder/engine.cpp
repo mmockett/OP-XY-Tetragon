@@ -268,6 +268,9 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             peak = a > peak ? a : peak;
         }
         if (levels::limit[voice.model]) limit(voice, output, peak);   // level: limiter
+        // (the knee leaves every sample under it as it is: only a block whose
+        // peak passes it needs the pass; most, an OR of them all, overstates it)
+        if (peak > half_scale - (half_scale >> 2)) knee_block(output);   // level: knee
     } else {
         // DRIVE in the same pass: 0.5625 z (1 - z^2 / 3), z the output at a gain of 1.4..7,
         // held at full scale (which the output alone, at a gain of 1.4 or more, reaches first):
@@ -284,7 +287,6 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     }
     // (tools/calibrate.py builds a copy without the lines marked "level:", to
     // measure the peaks the cap, the limiter and the knee take)
-    if (most > half_scale - (half_scale >> 2)) knee_block(output);   // level: knee
     const bool loud = most >= quiet_under;
     voice.quiet = loud ? 0 : voice.quiet + 1;
     if (voice.quiet >= quiet_blocks && !voice.waiting) voice.done = 1;

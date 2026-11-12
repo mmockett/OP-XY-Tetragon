@@ -21,7 +21,7 @@ struct Mode { i32 lp, bp, f, r, gw; u32 inc; };   // r: its decay over 8 samples
 const u32 field_samples = 512;
 const u32 wide_stride = 128;    // a wide field's four rings
 const u32 small_stride = 256;   // a small field's two rings
-const u32 swing_keep = 38;      // the swing's delay is 5.5..36.4 half-rate samples: it keeps the last 38
+const u32 swing_keep = 76;      // the swing's delay is 11..72.8 samples: it keeps the last 76 (38 at half rate)
 
 struct Voice {
     u32 owner, model, next, pending, done, quiet;
@@ -232,16 +232,18 @@ inline void split_modes(Voice& v, bool quarter_ok = true) {
 inline i32 mode_f(const Voice& v, u32 k, u32 inc) {
     return svf_f(k < v.nquarter ? quarter_inc(inc) : k < v.nhalf ? half_inc(inc) : inc);
 }
+// Every mode's pitch times m28 (Q28): a tier at a time, without a branch a mode.
+__attribute__((noinline)) inline void retune_modes(Voice& v, i32 m28) {
+    u32 k = 0;
+    for (; k < v.nquarter; ++k) v.mode[k].f = svf_f(quarter_inc(static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4));
+    for (; k < v.nhalf; ++k) v.mode[k].f = svf_f(half_inc(static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4));
+    for (; k < v.nmodes; ++k) v.mode[k].f = svf_f(static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4);
+}
 // CAMBER: every mode's pitch rises by bend * env, which falls away each block.
 inline void glide_modes(Voice& v) {
     if (!v.bend || !v.bend_env) return;
     if (v.bend_env < (1 << 21)) v.bend_env = 0;   // settled (under a thousandth of its rise): at its own pitch from now on
-    const i32 m28 = (1 << 28) + multiply(v.bend, v.bend_env);   // 1 + bend env, Q28
-    for (u32 k = 0; k < v.nmodes; ++k) {
-        Mode& m = v.mode[k];
-        const u32 inc = static_cast<u32>(multiply(static_cast<i32>(m.inc >> 1), m28)) << 4;
-        m.f = mode_f(v, k, inc);
-    }
+    retune_modes(v, (1 << 28) + multiply(v.bend, v.bend_env));   // 1 + bend env, Q28
     v.bend_env = multiply(v.bend_env, v.bend_k);
 }
 // Runs the modes over a block of force x, adding their sound to out. Each
@@ -595,12 +597,21 @@ __attribute__((noinline)) inline i32 field_mix2(const i32* r, const i32* x, i32*
 __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
     const bool small = (v.floop & 4u) != 0;
     const u32 lines = small ? 2 : 4, stride = small ? small_stride : wide_stride;
+    i32 most = 0;
+    for (u32 l = 0; l < lines; ++l) most |= absolute(v.flp[l]);
+    // A quiet field (its lines' low-passes all under 2^24) loses on each pass
+    // what 16-bit rings, rounding every value toward zero, once took from it
+    // (half their 2^13 step of a value as large as half the largest): its
+    // tail falls away as theirs did.
+    i32 fg = v.fg;
+    if (most < (1 << 24)) {
+        const i32 l = 13 * octave - log2q(static_cast<u32>(most > 1 ? most : 1));
+        fg = l >= 0 ? 0 : fg - multiply(fg, frac2(l));
+    }
     if (!drive && !v.dpos) {
         // with nothing driving it, stop once it has rung down for longer than
         // its longest line (fixed point would otherwise keep it circling just
         // above zero)
-        i32 most = 0;
-        for (u32 l = 0; l < lines; ++l) most |= absolute(v.flp[l]);
         v.fquiet = most < (1 << 12) ? v.fquiet + 1 : 0;
         if (v.fquiet > stride / half + 1) { v.fon = 0; v.fprev = 0; return; }
     } else {
@@ -628,7 +639,7 @@ __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i3
             pa = pa == 22 ? 0 : pa + 1;
             pb = pb == 40 ? 0 : pb + 1;
         }
-        v.dpos = (v.fdiff <= 1 || !drive) && most < (1 << 11) ? 0u : (pa | pb << 8 | 1u << 16);
+        v.dpos = (v.fdiff <= 1 || !drive) && most < (1 << 16) ? 0u : (pa | pb << 8 | 1u << 16);
         if (!v.dpos) for (u32 i = 0; i < 64; ++i) v.dbuf[i] = 0;
     }
     // each line, read and low-passed
@@ -638,7 +649,7 @@ __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i3
     // mixed, heard and written back
     const bool raw = (v.floop & 8u) != 0;
     if (small) {
-        const i32 g = v.fg;
+        const i32 g = fg;
         if (raw) {
             if (v.floop & 2u) {
                 if (fed) field_mix2<true, true, true>(r, x, out, v.buf, w, g, level, 0);
@@ -652,7 +663,7 @@ __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i3
                           : field_mix2<false, false, false>(r, x, out, v.buf, w, g, level, v.fprev);
         }
     } else {
-        const i32 g = v.fg >> 1;
+        const i32 g = fg >> 1;
         if (raw) {
             if (fed) field_mix<true, true>(r, x, out, v.buf, w, g, level, 0);
             else field_mix<false, true>(r, x, out, v.buf, w, g, level, 0);
@@ -803,11 +814,11 @@ inline void setup_chain(Voice& v, i32 most, i32 links, i32 lrel, i32 lo, i32 hi,
 }
 // The chain's passes (noinline, their state in locals: together they spill).
 // The dice: a slap, 0.4..1 of U / 16, either way, when they fall under the
-// chance; thrown once a half-rate sample, a second slap taking what passes
-// certainty (both: any do).
+// chance; thrown every other half-rate sample (the one between gets none), a
+// second slap taking what passes certainty (both: any do).
 template <bool both>
 __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra, i32* hit) {
-    for (u32 n = 0; n < half; ++n) {
+    for (u32 n = 0; n < half / 2; ++n) {
         seed ^= seed << 13;
         seed ^= seed >> 17;
         seed ^= seed << 5;
@@ -821,12 +832,26 @@ __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra
             const i32 m1 = -static_cast<i32>(static_cast<i32>((seed << 7) >> 1) < extra);
             h += ((a ^ s1) - s1) & m1;
         }
-        *hit++ = h;
+        hit[0] = h;
+        hit[1] = 0;
+        hit += 2;
     }
     return seed;
 }
 // The slaps through the band, at the chain's gain, added to out at the full
-// rate (each half-rate sample, and between two their mean).
+// rate (each half-rate sample, and between two their mean), or (into_half)
+// to a half-rate block.
+__attribute__((noinline)) inline void chain_band_half(const i32* x, i32* out, i32 hk, i32 lk, i32 gain, i32& hs_, i32& lp_) {
+    i32 hs = hs_, lp = lp_;
+    for (u32 n = 0; n < half; ++n) {
+        const i32 xi = *x++;
+        hs += multiply(xi - hs, hk);
+        lp += multiply(xi - hs - lp, lk);
+        *out++ += multiply(lp, gain) << 7;
+    }
+    hs_ = hs;
+    lp_ = lp;
+}
 __attribute__((noinline)) inline i32 chain_band(const i32* x, i32* out, i32 hk, i32 lk, i32 gain, i32& hs_, i32& lp_, i32 prev) {
     i32 hs = hs_, lp = lp_;
     for (u32 n = 0; n < half; ++n) {
@@ -846,7 +871,7 @@ __attribute__((noinline)) inline i32 chain_band(const i32* x, i32* out, i32 hk, 
 // How far the sheet moves this block (its largest |disp|), for a model that
 // knows it without a pass over the block (a ramp's: the larger end).
 inline i32 chain_reach(i32 most, i32 d) { d = d < 0 ? -d : d; return d > most ? d : most; }
-inline void chain_most(Voice& v, i32 most, i32* out, i32 scale = -1);
+inline void chain_most(Voice& v, i32 most, i32* out, i32 scale = -1, bool into_half = false);
 // a block's largest |x| (a value of -2^31 counts as none, as it always has)
 __attribute__((noinline)) inline i32 block_most(const i32* x) {
     i32 most = 0;
@@ -863,7 +888,7 @@ inline void run_chain(Voice& v, const i32* disp, i32* out) {
 }
 // most: how far the sheet moves this block (near U at its loudest); scale
 // (Q31), if given, takes its level that far down and doubles it.
-inline void chain_most(Voice& v, i32 most, i32* out, i32 scale) {
+inline void chain_most(Voice& v, i32 most, i32* out, i32 scale, bool into_half) {
     // How far past their weight the sheet lifts the links this block, 0..U,
     // held by a leaky integrator (x4).
     i32 c = most - v.c_thr;
@@ -873,18 +898,21 @@ inline void chain_most(Voice& v, i32 most, i32* out, i32 scale) {
     if (env1 > (3 << 28)) env1 = 3 << 28;
     v.c_env = env1;
     if (!env0 && !env1 && !v.c_hp.s && !v.c_l1 && !v.c_l2) return;
-    // A slap with probability p * env, each 0.4..1 as hard, through the band.
-    const i32 chance = multiply(v.c_p, (env0 + env1) >> 1) << 2;
+    // A slap with probability p * env a sample, each 0.4..1 as hard, through the band.
+    const i32 m = multiply(v.c_p, (env0 + env1) >> 1);   // (Q29)
     i32 gain = multiply(v.c_amount, env1) << 2;   // Q29 x Q29: of U / 16 hits
     if (scale >= 0) gain = multiply(gain, scale) << 1;
     i32 hs = v.c_hp.s, lp = v.c_l1;
     u32 seed = v.seed ? v.seed : 1u;
-    // the dice at twice the chance; past certainty a second slap takes the rest
-    const i32 chance2 = chance > (one >> 1) ? one : chance << 1;
-    const i32 extra = chance > (one >> 1) ? (chance - (one >> 1)) << 1 : 0;
+    // the dice every fourth sample at four times the chance; past certainty a
+    // second slap takes the rest
+    const i32 c4 = m >= (one >> 4) ? one : m << 4;
+    const i32 extra = m < (one >> 4) ? 0 : m >= (one >> 3) ? one : (m - (one >> 4)) << 4;
     i32 hits[half];
-    seed = extra ? chain_dice<true>(seed, chance2, extra, hits) : chain_dice<false>(seed, chance2, extra, hits);
-    i32 prev = chain_band(hits, out, v.c_hpk, v.c_lpk, gain, hs, lp, v.c_l2);
+    seed = extra ? chain_dice<true>(seed, c4, extra, hits) : chain_dice<false>(seed, c4, extra, hits);
+    i32 prev = 0;
+    if (into_half) chain_band_half(hits, out, v.c_hpk, v.c_lpk, gain, hs, lp);
+    else prev = chain_band(hits, out, v.c_hpk, v.c_lpk, gain, hs, lp, v.c_l2);
     if (!env1 && absolute(hs) + absolute(lp) + absolute(prev) < (1 << 10)) hs = lp = prev = 0;
     v.c_l1 = lp;
     v.c_l2 = prev;
@@ -893,9 +921,9 @@ inline void chain_most(Voice& v, i32 most, i32* out, i32 scale) {
 }
 
 // ------------------------------------------------------------ the swaying sheet
-// The sheet swinging on its chains: a comb whose delay swings 0.25..1.65 ms,
-// run at half the sample rate on the sheet's ring (the strike's click passes
-// it by).
+// The sheet swinging on its chains: a comb whose delay swings 0.25..1.65 ms.
+// CRASH runs it at half the sample rate on its ring (the strike's click
+// passes it by); FLICK at the full rate on the whole hat.
 inline void setup_swing(Voice& v, i32 depth, i32 lrate) {
     v.sw_depth = depth;
     if (!depth) return;
@@ -905,14 +933,16 @@ inline void setup_swing(Voice& v, i32 depth, i32 lrate) {
     v.sw_turn = multiply(q31(depth), Q31(0.65));
     for (u32 i = 0; i < swing_keep; ++i) v.sw_buf[i] = 0;
 }
-// The comb and the turn in one pass (noinline, its state in locals). The
-// delay is 5.5..36.4 half-rate samples, so the pass keeps the last 38 (in
-// order) and works in a straight line: the 38 kept, then the block's own.
+// The comb and the turn in one pass over count samples (noinline, its state
+// in locals). The delay is under keep - 1 samples, so the pass keeps the
+// last keep (in order) and works in a straight line: those kept, then the
+// block's own.
+template <u32 count, u32 keep>
 __attribute__((noinline)) inline void swing_run(i32* kept, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
-    i32 line[swing_keep + half];
-    for (u32 n = 0; n < swing_keep; ++n) line[n] = kept[n];
-    i32* at = line + swing_keep;
-    for (u32 n = 0; n < half; ++n) {
+    i32 line[keep + count];
+    for (u32 n = 0; n < keep; ++n) line[n] = kept[n];
+    i32* at = line + keep;
+    for (u32 n = 0; n < count; ++n) {
         const i32 xi = *x;
         *at = xi;
         const i32* back = at - (d >> 8);
@@ -923,22 +953,25 @@ __attribute__((noinline)) inline void swing_run(i32* kept, i32* x, i32 d, i32 st
         d += step;
         g += gs;
     }
-    for (u32 n = 0; n < swing_keep; ++n) kept[n] = line[half + n];
+    for (u32 n = 0; n < keep; ++n) kept[n] = line[count + n];
 }
-// y: the block's 32 half-rate samples, swung in place.
-inline void run_swing_half(Voice& v, i32* y) {
+// y: the block (at the full rate) or its 32 half-rate samples (at_half), swung in place.
+template <bool at_half>
+inline void run_swing(Voice& v, i32* y) {
     if (!v.sw_depth) return;
-    // The delay (half-rate samples, Q8) at the block's start and end: (0.25 + 1.4 depth swing) ms.
+    // The delay (samples, Q8) at the block's start and end: (0.25 + 1.4 depth swing) ms.
     const i32 depth = v.sw_depth;   // Q16
     const i32 a = (1 << 15) + (sine(v.sw_phase) >> 16);   // 0..65535
     v.sw_phase += v.sw_inc;
     const i32 b = (1 << 15) + (sine(v.sw_phase) >> 16);
-    const i32 d = 1411 + multiply(7902, multiply(depth << 15, a << 15));
-    const i32 d1 = 1411 + multiply(7902, multiply(depth << 15, b << 15));
+    i32 d = 2822 + multiply(15805, multiply(depth << 15, a << 15));
+    i32 d1 = 2822 + multiply(15805, multiply(depth << 15, b << 15));
+    if (at_half) { d >>= 1; d1 >>= 1; }
     // and the sheet turning away as it swings: up to 9 dB quieter at the far end of its swing
     const i32 turn = v.sw_turn;
     const i32 g = one - multiply(turn, a << 15);
-    const i32 gs = ((one - multiply(turn, b << 15)) - g) >> 5;
-    swing_run(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, gs);
+    const i32 g1 = one - multiply(turn, b << 15);
+    if (at_half) swing_run<half, swing_keep / 2>(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, (g1 - g) >> 5);
+    else swing_run<frames, swing_keep>(v.sw_buf, y, d, (d1 - d) >> 6, v.sw_wet, g, (g1 - g) >> 6);
 }
 }
