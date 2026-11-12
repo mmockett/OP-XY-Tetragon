@@ -956,35 +956,41 @@ __attribute__((noinline)) void expand(const i32* __restrict h, u32 m, i32& last,
     }
     last = y0;
 }
-// A click's noise burst, high-passed, added at gain g (Q28).
-__attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
-    i32 e = c.e, h = c.hp.s;
-    const i32 r = c.r, cc = c.c;
-    u32 x = seed;
-    for (u32 i = 0; i < n; ++i) {
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        e = multiply(e, r);
-        const i32 in = multiply(static_cast<i32>(x), e) * 2;
-        h += multiply(in - h, cc);
-        out[i] = dsp::sat_add(out[i], gain(in - h, g28));
-    }
-    seed = x;
-    if (e < 16 && h < 4096 && h > -4096) e = h = 0;
-    c.e = e;
-    c.hp.s = h;
-}
 // r^8: a per-sample decay over 8 samples.
 inline i32 per_eight(i32 r) {
     for (int i = 0; i < 3; ++i) r = multiply(r, r);
     return r;
 }
+// A click's burst ends once its level is under -72 dB of a full strike's.
+const i32 click_floor = 1 << 16;
+// The high-pass's own tail once its burst has ended (no input): -h a sample,
+// h falling by c. Added; h cleared once it is under -96 dB.
+__attribute__((noinline)) void click_tail(i32& hs, i32 c, i32* __restrict out, u32 n) {
+    i32 h = hs;
+    if (h < 4096 && h > -4096) { hs = 0; return; }
+    for (u32 i = 0; i < n; ++i) {
+        h -= multiply(h, c);
+        out[i] = dsp::sat_add(out[i], -h);
+    }
+    hs = h;
+}
+// How many samples of a burst at level e (decaying r8 every 8) are left in n:
+// 8 at a time while it is over the floor; e is left decayed past them.
+inline u32 burst_length(i32& e, i32 r8, u32 n) {
+    u32 k = 0;
+    while (k < n && e >= click_floor) { e = multiply(e, r8); k += 8; }
+    return k;
+}
 // A click under unity gain (g < 1, Q28): the gain rides on the burst's level,
-// so the sample needs no scaling (n a multiple of 8).
+// so the sample needs no scaling (n a multiple of 8). The noise runs only as
+// long as the burst lasts, then the high-pass's tail.
 __attribute__((noinline)) void click_soft_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
     i32 s = multiply(c.e, g28 << 3), h = c.hp.s;
     const i32 r = c.r, cc = c.c;
+    i32 e = c.e;
+    const u32 k = burst_length(e, per_eight(r), n);
     u32 x = seed;
-    for (u32 i = 0; i < n; ++i) {
+    for (u32 i = 0; i < k; ++i) {
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         s = multiply(s, r);
         const i32 in = multiply(static_cast<i32>(x), s) * 2;
@@ -992,12 +998,33 @@ __attribute__((noinline)) void click_soft_run(dsp::Click& c, u32& seed, i32* __r
         out[i] = dsp::sat_add(out[i], in - h);
     }
     seed = x;
-    // Its own level, decayed the same way 8 samples at a time.
-    const i32 r8 = per_eight(r);
-    i32 e = c.e;
-    for (u32 g = 0; g < n; g += 8) e = multiply(e, r8);
-    if (e < 16 && h < 4096 && h > -4096) e = h = 0;
-    c.e = e;
+    c.e = e >= click_floor ? e : 0;
+    if (k < n) click_tail(h, cc, out + k, n - k);
+    c.hp.s = h;
+}
+// A click at gain g (Q28) of 1 or more, the same way.
+__attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
+    i32 e = c.e, h = c.hp.s;
+    const i32 r = c.r, cc = c.c;
+    i32 left = e;
+    const u32 k = burst_length(left, per_eight(r), n);
+    u32 x = seed;
+    for (u32 i = 0; i < k; ++i) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        e = multiply(e, r);
+        const i32 in = multiply(static_cast<i32>(x), e) * 2;
+        h += multiply(in - h, cc);
+        out[i] = dsp::sat_add(out[i], gain(in - h, g28));
+    }
+    seed = x;
+    c.e = left >= click_floor ? left : 0;
+    if (k < n) {
+        // The tail at the gain: the high-pass's state is before it.
+        i32 t[64];
+        for (u32 i = 0; i < n - k; ++i) t[i] = 0;
+        click_tail(h, cc, t, n - k);
+        for (u32 i = 0; i < n - k; ++i) out[k + i] = dsp::sat_add(out[k + i], gain(t[i], g28));
+    }
     c.hp.s = h;
 }
 // Idle, it costs nothing.
@@ -1007,13 +1034,17 @@ inline void click_add(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 
     else click_run(c, seed, out, n, g28);
 }
 // Two clicks on one burst of noise and one high-pass (a's), each at its own
-// width and gain (Q28, under 1), added: n a multiple of 8.
+// width and gain (Q28, under 1), added: n a multiple of 8. The noise runs as
+// long as the longer burst lasts.
 __attribute__((noinline)) void click_pair_run(dsp::Click& a, dsp::Click& b, u32& seed, i32* __restrict out, u32 n,
                                               i32 ga28, i32 gb28) {
     i32 sa = multiply(a.e, ga28 << 3), sb = multiply(b.e, gb28 << 3), h = a.hp.s;
     const i32 ra = a.r, rb = b.r, c = a.c;
+    i32 ea = a.e, eb = b.e;
+    const u32 ka = burst_length(ea, per_eight(ra), n), kb = burst_length(eb, per_eight(rb), n);
+    const u32 k = ka > kb ? ka : kb;
     u32 x = seed;
-    for (u32 i = 0; i < n; ++i) {
+    for (u32 i = 0; i < k; ++i) {
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         sa = multiply(sa, ra);
         sb = multiply(sb, rb);
@@ -1022,13 +1053,9 @@ __attribute__((noinline)) void click_pair_run(dsp::Click& a, dsp::Click& b, u32&
         out[i] = dsp::sat_add(out[i], in - h);
     }
     seed = x;
-    // Their own levels, decayed the same way 8 samples at a time.
-    const i32 ra8 = per_eight(ra), rb8 = per_eight(rb);
-    i32 ea = a.e, eb = b.e;
-    for (u32 g = 0; g < n; g += 8) { ea = multiply(ea, ra8); eb = multiply(eb, rb8); }
-    if (ea < 16 && eb < 16 && h < 4096 && h > -4096) ea = eb = h = 0;
-    a.e = ea;
-    b.e = eb;
+    a.e = ea >= click_floor ? ea : 0;
+    b.e = eb >= click_floor ? eb : 0;
+    if (k < n) click_tail(h, c, out + k, n - k);
     a.hp.s = h;
 }
 inline void click_pair_add(dsp::Click& a, dsp::Click& b, u32& seed, i32* __restrict out, u32 n, i32 ga28, i32 gb28) {
