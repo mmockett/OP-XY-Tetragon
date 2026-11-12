@@ -590,6 +590,7 @@ struct Roar {
     i32 att, attk, throb;
     u32 hum_ph, hum_inc;
     i32 hum_amp;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
@@ -601,28 +602,31 @@ struct Roar {
         lpc = hz(1400) - sc(C(2.2), c[1]) + tune;
         swing = F(0.05) + sc(F(0.4), c[2]);
         q = C(6.0) + sc(C(6.0), 4095 - c[7]);
-        bp_gain = band_gain(lpc, q);
+        // The whole roar is under 11 kHz: it runs at half the rate, two
+        // samples a step, drawn back up once a block.
+        bp_gain = band_gain(lpc + (1 << 12), q);
+        hlast = 0;
         roar = windr = Res();
         len = samples(static_cast<u32>(300000 + sc(2200000, c[4])));
         // It fades over the last 0.1 + 0.2 L of its L seconds.
         fade = samples(static_cast<u32>(100000)) + len / 5;
         len -= fade;
         att = full;
-        attk = decay(static_cast<u32>(20000 + sc(600000, c[3])));
+        attk = decay(static_cast<u32>(20000 + sc(600000, c[3])) >> 1);
         throb = c[5];
         flut_ph = 0;
         // The slat's flutter sits three octaves under its hum, so the two
         // make one pitched drone that follows TUNE.
-        flut_inc = inc(lpc - C(3.0));
+        flut_inc = inc(lpc - C(3.0)) << 1;
         hum_ph = 0;
-        hum_inc = inc(lpc);
+        hum_inc = inc(lpc) << 1;
         hum_amp = U(0.35);
         flut_swing = sc(F(0.3), c[2]);
         buzz_amp = sc(U(0.6), c[6]);
         buzz_lp = 0;
-        buzz_a = pole(hz(1200));
-        band(windk, hz(900), C(0.5));
-        wind_gain = band_gain(hz(900), C(0.5));
+        buzz_a = pole(hz(1200) + (1 << 12));
+        band_half(windk, hz(900), C(0.5));
+        wind_gain = band_gain(hz(900) + (1 << 12), C(0.5));
         wind_amp = sc(U(0.4), c[7]);
     }
     bool waiting() const { return t < len; }
@@ -632,8 +636,8 @@ struct Roar {
         const i32 s = sine(rot);
         const i32 m = mul(swing, s);
         const i32 lp = lpc + lg2(static_cast<u32>((full >> 1) + (m >> 1)) >> 19) - (11 << 12);   // log2(1 + swing sin)
-        band(roark, lp, q);
-        hum_inc = inc(lp);
+        band_half(roark, lp, q);
+        hum_inc = inc(lp) << 1;
         // The pulse: (1 - throb) + throb |sin(pi r t)|^1.5, twice a turn's half.
         const i32 hs = sine(rot >> 1);
         const i32 ah = hs < 0 ? -hs : hs;
@@ -641,20 +645,22 @@ struct Roar {
         const i32 am = full - mul(throb << 19, full - p15);
         const u32 fl = flut_inc + static_cast<u32>(mul(static_cast<i32>(flut_inc), mul(flut_swing, s)));
         const u32 fade_step = 0x7fffffffu / fade;   // the fade's slope, once a block
-        // The block in passes, each with its state in registers, for the sq
-        // samples before the roar has faded; then silence.
+        // The block in passes at half the rate, each with its state in
+        // registers, until the roar has faded; then silence.
         const u32 end = len + fade;
-        const u32 sq = t < end ? (end - t < frames ? end - t : frames) : 0;
-        if (sq) {
-            i32 nb[frames];
-            noise_pass(nb, sq);
-            roar_pass(out, nb, sq);
-            hum_pass(out, sq);
-            if (buzz_amp) buzz_pass(out, sq, fl);
-            if (wind_amp) wind_pass(out, nb, sq);
-            env_pass(out, sq, am, fade_step);
+        if (t < end) {
+            const u32 n = frames / 2;
+            i32 h[frames / 2], nb[frames / 2];
+            noise_pass(nb, n);
+            roar_pass(h, nb, n);
+            hum_pass(h, n);
+            if (buzz_amp) buzz_pass(h, n, fl);
+            if (wind_amp) wind_pass(h, nb, n);
+            env_pass(h, n, am, fade_step);
+            up_onto(h, out, hlast);
+        } else {
+            for (u32 i = 0; i < frames; ++i) out[i] = 0;
         }
-        for (u32 i = sq; i < frames; ++i) out[i] = 0;
         t += frames;
     }
     __attribute__((noinline)) void noise_pass(i32* nb, u32 n) {
@@ -703,10 +709,10 @@ struct Roar {
         const i32 k = attk;
         const u32 l = len, end = len + fade;
         u32 tt = t;
-        for (u32 j = 0; j < n; ++j, ++tt) {
+        for (u32 j = 0; j < n; ++j, tt += 2) {
             a = mul(a, k);
             i32 env = full - a;
-            if (CURIO_UNLIKELY(tt > l)) env = mul(env, static_cast<i32>((end - tt) * fade_step));
+            if (CURIO_UNLIKELY(tt > l)) env = tt >= end ? 0 : mul(env, static_cast<i32>((end - tt) * fade_step));
             y[j] = mul(mul(y[j], am), env);
         }
         att = a;

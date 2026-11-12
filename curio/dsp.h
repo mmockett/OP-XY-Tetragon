@@ -239,6 +239,32 @@ static __attribute__((noinline)) inline void ring_bank(Res* z, const ResK* k, u3
     for (u32 m = 0; m < count; ++m) ring_free(z[m], k[m], y, n);
 }
 
+// Half-rate parts drawn back up to the full rate: each new sample halfway
+// between two (a sample later); last carries the previous block's last
+// half-rate sample. up_into adds into y, up_onto writes it.
+static __attribute__((noinline)) inline void up_into(const i32* h, i32* y, i32& last) {
+    i32 l = last;
+    for (u32 j = 0; j < frames / 2; ++j) {
+        const i32 x = h[j];
+        y[0] += (l >> 1) + (x >> 1);
+        y[1] += x;
+        l = x;
+        y += 2;
+    }
+    last = l;
+}
+static __attribute__((noinline)) inline void up_onto(const i32* h, i32* y, i32& last) {
+    i32 l = last;
+    for (u32 j = 0; j < frames / 2; ++j) {
+        const i32 x = h[j];
+        y[0] = (l >> 1) + (x >> 1);
+        y[1] = x;
+        l = x;
+        y += 2;
+    }
+    last = l;
+}
+
 // A one-pole low-pass's coefficient for a pitch: 1 - exp(-w), Q31.
 inline i32 pole(i32 lp) {
     const u32 i = inc(lp);
