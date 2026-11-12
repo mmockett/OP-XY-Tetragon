@@ -298,7 +298,17 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     i32 sum[opxy::block_frames];
     u32 at = 0, next = 0;
     const u32 n = voice.run.n;
+    const bool tine = voice.model == kit::tine;
     while (at < opxy::block_frames) {
+        // A tine's strike that keeps its set's pitch rings from its 8-sample step
+        // carried back (ring's late), so it needs no stretch of its own: only a
+        // retune waits for the body to reach its step.
+        if (tine)
+            while (next < count && !body::tine_retunes(b, hits[next].v, hits[next].step, n)) {
+                const u32 fine = (hits[next].at - voice.t) & ~7u;
+                body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n, false, fine > at ? fine - at : 0);
+                ++next;
+            }
         u32 until = opxy::block_frames;
         if (next < count && ((hits[next].at - voice.t) & grid) < until) until = (hits[next].at - voice.t) & grid;
         // A cell of ghosts ahead (a clap's, a ratchet's: on the 32-sample grid).

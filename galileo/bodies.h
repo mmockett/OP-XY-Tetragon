@@ -649,6 +649,24 @@ inline const u32* fill_head(Body& b, u32 up, u32 n) {
     }
     return e;
 }
+// A tine strike's scale step (0..14) and pitch (log2 Hz) for its place `step`
+// in a run of n frets: each fret a step further up the scale, the landing at
+// the key's pitch.
+inline i32 tine_pitch(const Body& b, u32 step, u32 n, u32& steps) {
+    steps = static_cast<u32>(b.k[1]) * (n > step ? n - step : 0);
+    while (steps >= 15) steps -= 15;               // three octaves, then round again
+    u32 octaves = 0, degree = steps;
+    while (degree >= 5) { degree -= 5; ++octaves; }
+    return b.k[0] + static_cast<i32>(octaves) * dsp::octave + table::pentatonic[degree];
+}
+inline i32 tine_key(const Body& b, i32 lf) { return lf ^ (b.k[2] << 3) ^ (b.k[3] >> 7); }
+// Whether a tine's next strike (force v, place `step` in a run of n) retunes
+// the set it falls to: only such a strike needs the body run up to its step.
+inline bool tine_retunes(const Body& b, i32 v15, u32 step, u32 n) {
+    if (v15 <= 0) return false;
+    u32 steps;
+    return b.tuned[(b.count + 1) & 1] != tine_key(b, tine_pitch(b, step, n, steps));
+}
 // tune() with the contacts given.
 inline void tine_tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 soft, u32 hard) {
     s.m.tune(dsp::increment(log2_hz), r);
@@ -725,14 +743,11 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     case tine: {
         // Each fret a step further up the scale, the landing at the key's pitch.
         const u32 set = (b.count & 1) * 3;
-        u32 steps = static_cast<u32>(b.k[1]) * (n > step ? n - step : 0);
-        while (steps >= 15) steps -= 15;               // three octaves, then round again
-        u32 octaves = 0, degree = steps;
-        while (degree >= 5) { degree -= 5; ++octaves; }
-        const i32 lf = b.k[0] + static_cast<i32>(octaves) * dsp::octave + table::pentatonic[degree];
+        u32 steps;
+        const i32 lf = tine_pitch(b, step, n, steps);
         const i32 h = b.k[3];
         // Retuning a set only when its pitch moves.
-        const i32 key = lf ^ (b.k[2] << 3) ^ (h >> 7);
+        const i32 key = tine_key(b, lf);
         if (b.tuned[set ? 1 : 0] != key) {
             b.tuned[set ? 1 : 0] = key;
             const u16* c = tine_contact(b, steps, lf);
