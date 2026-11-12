@@ -224,7 +224,7 @@ inline void park(Frame& frame, u32 p) {
 // midpoint of its neighbours: the OP-XY strokes with mitred joins and no mitre
 // limit, so a turn near straight back (a ribbon folding at a bend) draws a spike.
 inline void soften(Path& p) {
-    for (u32 pass = 0; pass < 3; ++pass) {
+    for (u32 pass = 0; pass < 12; ++pass) {   // until none is left, as a rule in one or two
         bool eased = false;
         for (u32 i = 0; i < 64; ++i) {
             const Point& a = p.points[(i + 63) % 64];
