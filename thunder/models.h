@@ -928,6 +928,7 @@ __attribute__((noinline)) inline void block_grit(Voice& v, Work& w, i32* out) {
         v.u[3] = 1;
     } else {
         e1 = multiply(e0, v.k[0]);
+        if (e1 < (1 << 21)) e1 = 0;   // 60 dB under the pour's peak: the last grain has fallen
     }
     v.s[0] = e1;
     v.waiting = t < v.u[1];

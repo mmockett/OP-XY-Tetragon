@@ -72,7 +72,8 @@ struct Voice {
     Svf sv[4];
     OnePole op[6];
     Ramp env[4];
-    i32 sw_buf[swing_keep + 1];
+    i32 sw_prev;              // FLICK's last wet value
+    i32 sw_buf[swing_keep + half];
     i32 buf[field_samples];
 };
 
@@ -896,6 +897,7 @@ inline void chain_most(Voice& v, i32 most, i32* out, i32 scale, bool into_half) 
     const i32 env0 = v.c_env;
     i32 env1 = (c << 4) + multiply(env0 - (c << 4), v.c_rel);   // Q29
     if (env1 > (3 << 28)) env1 = 3 << 28;
+    if (env1 < (1 << 19)) env1 = 0;   // 60 dB under a full lift: the links lie still
     v.c_env = env1;
     if (!env0 && !env1 && !v.c_hp.s && !v.c_l1 && !v.c_l2) return;
     // A slap with probability p * env a sample, each 0.4..1 as hard, through the band.
@@ -931,56 +933,53 @@ inline void setup_swing(Voice& v, i32 depth, i32 lrate) {
     v.sw_phase = v.seed;
     v.sw_wet = multiply(Q31(0.9), q31_root(depth));
     v.sw_turn = multiply(q31(depth), Q31(0.65));
-    for (u32 i = 0; i <= swing_keep; ++i) v.sw_buf[i] = 0;
+    for (u32 i = 0; i < swing_keep; ++i) v.sw_buf[i] = 0;
+    v.sw_prev = 0;
 }
-// The comb and the turn in one pass over count samples (noinline, its state
-// in locals). The delay is under keep - 1 samples, so the pass keeps the
-// last keep (in order) and works in a straight line: those kept, then the
-// block's own.
-template <u32 count, u32 keep>
-__attribute__((noinline)) inline void swing_run(i32* kept, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
-    i32 line[keep + count];
-    for (u32 n = 0; n < keep; ++n) line[n] = kept[n];
-    i32* at = line + keep;
-    for (u32 n = 0; n < count; ++n) {
+// The comb and the turn in one pass over the block's 32 half-rate samples
+// (noinline, its state in locals). The delay is under 37 samples: the line
+// (in the voice) holds the last 38 before the block, then the block's own,
+// and moves the last 38 to its front after it. Each read's place is found a
+// sample ahead, so the load never waits for it.
+__attribute__((noinline)) inline void swing_run(i32* line, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
+    i32* at = line + swing_keep;
+    const i32* back = at - (d >> 8);
+    for (u32 n = 0; n < half; ++n) {
         const i32 xi = *x;
-        *at = xi;
-        const i32* back = at - (d >> 8);
-        const i32 s0 = back[0];
-        const i32 delayed = s0 + multiply(back[-1] - s0, (d & 0xff) << 23);
-        *x++ = multiply(xi + multiply(delayed, wet), g);
-        ++at;
+        *at++ = xi;
+        const i32 s0 = back[0], s1 = back[-1];
+        const i32 f = (d & 0xff) << 23;
         d += step;
+        back = at - (d >> 8);
+        *x++ = multiply(xi + multiply(s0 + multiply(s1 - s0, f), wet), g);
         g += gs;
     }
-    for (u32 n = 0; n < keep; ++n) kept[n] = line[count + n];
+    for (u32 n = 0; n < swing_keep; ++n) line[n] = line[half + n];
 }
 // The comb at half rate on a full-rate block: the delayed path is made from
 // the block's pairs (each pair's mean), and comes back between and on them;
 // the dry path and the turn stay at the full rate.
-__attribute__((noinline)) inline void swing_wet(i32* kept, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
-    const u32 keep = swing_keep;
-    i32 line[keep + half];
-    for (u32 n = 0; n < keep; ++n) line[n] = kept[n];
-    i32* at = line + keep;
-    i32 prev = kept[keep];   // the last wet value
+__attribute__((noinline)) inline void swing_wet(i32* line, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs, i32& prev_) {
+    i32* at = line + swing_keep;
+    const i32* back = at - (d >> 8);
+    i32 prev = prev_;   // the last wet value
     for (u32 n = 0; n < half; ++n) {
         const i32 x0 = x[0], x1 = x[1];
-        *at = (x0 >> 1) + (x1 >> 1);
-        const i32* back = at - (d >> 8);
-        const i32 s0 = back[0];
-        const i32 y = multiply(s0 + multiply(back[-1] - s0, (d & 0xff) << 23), wet);
+        *at++ = (x0 >> 1) + (x1 >> 1);
+        const i32 s0 = back[0], s1 = back[-1];
+        const i32 f = (d & 0xff) << 23;
+        d += step;
+        back = at - (d >> 8);
+        const i32 y = multiply(s0 + multiply(s1 - s0, f), wet);
         x[0] = multiply(x0 + ((prev + y) >> 1), g);
         g += gs;
         x[1] = multiply(x1 + y, g);
         g += gs;
         prev = y;
         x += 2;
-        ++at;
-        d += step;
     }
-    for (u32 n = 0; n < keep; ++n) kept[n] = line[half + n];
-    kept[keep] = prev;
+    prev_ = prev;
+    for (u32 n = 0; n < swing_keep; ++n) line[n] = line[half + n];
 }
 // y: the block (at the full rate, its delayed path at half rate) or its 32
 // half-rate samples (at_half), swung in place.
@@ -1000,7 +999,7 @@ inline void run_swing(Voice& v, i32* y) {
     const i32 g1 = one - multiply(turn, b << 15);
     d >>= 1;   // (in half-rate samples)
     d1 >>= 1;
-    if (at_half) swing_run<half, swing_keep>(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, (g1 - g) >> 5);
-    else swing_wet(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, (g1 - g) >> 6);
+    if (at_half) swing_run(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, (g1 - g) >> 5);
+    else swing_wet(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, (g1 - g) >> 6, v.sw_prev);
 }
 }

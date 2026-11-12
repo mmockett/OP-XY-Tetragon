@@ -99,11 +99,11 @@ inline bool pad_control_text(u32 field, i32 value, char* text) {
     return true;
 }
 
-// A note's sound has ended once its output has stayed under -84 dB for
+// A note's sound has ended once its output has stayed under -72 dB for
 // 45 ms with nothing still to come (a roll, a bounce, a snap, an echo, a
 // jolt, a bow still drawn). Its voice then writes silence without running the
 // sheet, and finished tells the SDK it may free the voice.
-const i32 quiet_under = 1 << 17;
+const i32 quiet_under = 1 << 19;
 const u32 quiet_blocks = 31;
 inline bool finished(const Voice& voice, const Shared&) { return voice.done != 0; }
 
@@ -278,9 +278,9 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
         const i32 g = Q31((1.0 * 2.5) / 32) + drive * Q31((6.0 / 15 * 2.5) / 32);
         const i32 gg = multiply(gain, g);   // the model's gain and DRIVE's in one
         const i32 lim = one >> 11;
-        // (a note ends at the level it would without DRIVE: under -84 dB before
+        // (a note ends at the level it would without DRIVE: under -72 dB before
         // DRIVE's gain, 0.5625 x 32 g its small-signal gain)
-        quiet = multiply(quiet_under * 18, g);
+        quiet = multiply(quiet_under * 18, g);   // (2^19 x 18 < 2^24)
         for (unsigned i = 0; i < frames; ++i) {
             const i32 z = clamp(multiply(x[i], gg), -lim, lim) << 11;
             const i32 y = multiply(z, Q31(0.5625) - multiply(multiply(z, z), Q31(0.1875)));
@@ -293,6 +293,5 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     const bool loud = most >= quiet;
     voice.quiet = loud ? 0 : voice.quiet + 1;
     if (voice.quiet >= quiet_blocks && !voice.waiting) voice.done = 1;
-    if (voice.t >= 64u * 40u) voice.done = 1;   // DIAGNOSTIC (reverted next): every note cut at 40 blocks
 }
 }
