@@ -5,12 +5,11 @@ folder (`thunder`, `curio`, `galileo`, `syahi`). Read README.md and each
 kit's own README first.
 
 All four build against the [Open-XY SDK](https://github.com/etcetc000/open-xy)
-with the per-key mixer channels of
-[etcetc000/open-xy#399](https://github.com/etcetc000/open-xy/pull/399)
-(`padMix`, SDK 1.10): branch `drum/pad-channel` on
-[mmockett/open-xy](https://github.com/mmockett/open-xy) until it merges into
-`staging`. Do not edit the SDK to make a kit work; propose an SDK change
-separately.
+`staging` branch: per-key mixer channels (`padMix`) and per-key sends in 1%
+steps (SDK 1.15). GALILEO also defines `drum_transport`, the optional callback
+that passes a kit the project's tempo (etcetc000/open-xy#443). Without it
+GALILEO learns the beat from its own notes. Do not
+edit the SDK to make a kit work; propose an SDK change separately.
 
 Follow the SDK's [machine API](https://github.com/etcetc000/open-xy/blob/staging/docs/api.md),
 [UX conventions](https://github.com/etcetc000/open-xy/blob/staging/docs/ux.md)
