@@ -37,6 +37,10 @@ jobs:
             echo "$kit: $(wc -l < out/$kit.jsonl) frames for $(wc -l < out/$kit.names) scenes"
           done
           git -C tetragon rev-parse HEAD > out/commit.txt
+      - name: CURIO's extents (tests/clear.cpp)
+        run: |
+          g++ -std=c++11 -O2 -Iopen-xy/sdk/include -Itetragon/curio tetragon/curio/tests/clear.cpp -o clear-curio
+          ./clear-curio | tee out/curio-clear.txt || true
       - uses: actions/upload-artifact@v4
         with:
           name: frames

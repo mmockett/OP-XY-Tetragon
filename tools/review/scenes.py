@@ -82,7 +82,7 @@ def galileo():
     models = [(m[0].lower(), list(catalog.key(m[0])[1])) for m in catalog.MODELS]
 
     def line(m, c, hit, shift):
-        s = [f"scene s", f"model {m}", "slots " + " ".join(map(str, c)), "pad 0 0 0 0", "row 1"]
+        s = [f"scene s", f"model {m}", "slots " + " ".join(map(str, c)), "pad 0 0 0 0", "row 0"]
         if shift:
             s.append(f"shift 1 {shift - 1}")
         s.append("run 0.1 60")
