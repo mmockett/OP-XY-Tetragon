@@ -293,5 +293,6 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     const bool loud = most >= quiet;
     voice.quiet = loud ? 0 : voice.quiet + 1;
     if (voice.quiet >= quiet_blocks && !voice.waiting) voice.done = 1;
+    if (voice.t >= 64u * 40u) voice.done = 1;   // DIAGNOSTIC (reverted next): every note cut at 40 blocks
 }
 }

@@ -141,7 +141,7 @@ inline void setup_slap(Voice& v, const i32* c, i32 tune) {
     const i32 lbend = bend_log(v.bend), ltc = beater_contact(c[2], lf0 + lbend);
     const i32 amp = beater_lift(v, lf0, ltc, lbend, lt0, Q16(0.6), 8, 0);
     // (never quite equal lines, and a smeared input: a crisp ring, not a boing)
-    setup_field(v, lf0 + L(3.5), Q16(0.45) + mul16(65535 - tension, Q16(0.55)), lt0 + log16(mix(Q16(1.5), Q16(8.0) - 1, power16(c[7], Q16(0.6))) >> 3) + L(8.0),
+    setup_field(v, lf0 + L(3.5), Q16(0.45) + mul16(65535 - tension, Q16(0.55)), lt0 + log16(mix(Q16(1.5), Q16(11.0), power16(c[7], Q16(0.6))) >> 3) + L(8.0),
                 Q16(0.4) + mul16(c[2], Q16(0.5)), 1, true);   // (four lines: METAL is the sheet ringing on)
     v.flevel = multiply(Q31(0.9), q31_root(c[7]));    // 1.8 sqrt(METAL), Q31 x 2
     if (!c[7]) v.fon = 0;
@@ -1047,7 +1047,7 @@ __attribute__((noinline)) inline void block_bounce(Voice& v, Work& w, i32* out) 
 // far corner, a tap arrives as a falling chirp, then its echoes off the edges.
 inline void setup_zap(Voice& v, const i32* c, i32 tune) {
     v.k[0] = mix(L(1400), L(6000), c[0]) + tune;      // the top
-    const i32 ltau = mix(L(0.8), L(0.03), c[1]);
+    const i32 ltau = mix(L(1.1), L(0.03), c[1]);
     const i32 lsweep = mix(L(0.015), L(0.3), c[2]);
     v.u[0] = 1 + static_cast<u32>((c[3] * 5 + 32768) >> 16);   // the chirp and ECHOS
     v.k[1] = mix(L(4), L(120), c[4]);                 // DEPTH: the fall, log2
