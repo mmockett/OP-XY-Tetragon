@@ -951,8 +951,8 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
         v.ramp = 0x80000000u;
         r[0] = one;
     } else {
-        u32 ramp = v.ramp, step = v.ramp_step, next = 0;
-        for (u32 n = 0; n < 64; ++n) {
+        u32 ramp = v.ramp, step = v.ramp_step, next = 0, n = 0;
+        for (; n < 64; ++n) {
             if (next < strikes.count && strikes.at[next] == n) {
                 ramp_at[next] = n ? r[n - 1] : (v.ramp >= 0x80000000u ? one : (one >> 1) - (sine(v.ramp + 0x40000000u) >> 1));
                 ramp = 0;
@@ -960,7 +960,10 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
             }
             ramp = ramp + step < ramp || ramp + step > 0x80000000u ? 0x80000000u : ramp + step;
             r[n] = ramp >= 0x80000000u ? one : (one >> 1) - (sine(ramp + 0x40000000u) >> 1);
+            // Done, with no strike to come this block: the rest is one.
+            if (ramp >= 0x80000000u && next >= strikes.count) break;
         }
+        for (++n; n < 64; ++n) r[n] = one;
         v.ramp = ramp;
     }
     const bool ramping = r[0] < one || strikes.count;
@@ -1084,10 +1087,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
         v.qs[2] = qs[18];
     }
     const Spec& s = v.spec;
-    // METAL: its head tilted (and its wash, in the wash's pass).
     const bool metal = v.tilt != 0;
-    if (metal) head_up_tilted(h, out, v.head_last);
-    else head_up(h, out, v.head_last);
     // The wash, the noise and the rattle, a sample at a time.
     // The burst runs on 2 blocks after it falls quiet, for its band to settle
     // (a fraction of a millisecond). A ring on the lowest mode then rings out
@@ -1096,6 +1096,9 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
     const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < 2u);
     const bool ringing = !noisy && s.noise > 0 && s.noise_ring && v.noise_quiet < 40u;
     const bool rattling = s.wires > 0 && !metal;   // the snare's wires
+    // METAL: its head tilted (and its wash, in the wash's pass).
+    if (metal) head_up_tilted(h, out, v.head_last);
+    else head_up(h, out, v.head_last);
     // The wash and the noise add to the head; the snare's wires then follow all of it.
     if (metal_wash) {
         wash_envelopes(v, strikes);
