@@ -10,8 +10,10 @@ on:
 permissions:
   contents: read
 env:
+  # As Kit checks: the kits declare SDK 1.15 (per-key sends in 1% steps), on this
+  # branch until etcetc000/open-xy#518 merges; then etcetc000/open-xy staging.
   OPEN_XY_REPO: mmockett/open-xy
-  OPEN_XY_REF: drum/pad-channel
+  OPEN_XY_REF: sdk/per-key-send-resolution
 jobs:
   frames:
     runs-on: ubuntu-latest
