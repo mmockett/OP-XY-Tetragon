@@ -106,6 +106,40 @@ def main():
     crush_hp = [0x7fffffff - power(0x7fffffff - 7323000, 1 + 2 * (g - 9)) for g in range(10, 16)]
     parts += ["// GRIT +10..+15 (index 0..5): the 24 Hz high-pass over a hold of 3..13 samples, Q31.",
               "const i32 crush_hp[6] = {" + ", ".join(map(str, crush_hp)) + "};"]
+    # METAL's wash at half the rate, while GRIT crushes (+10 and up): its
+    # inputs' gain that keeps the band's level, at pitches 100 * 2^(i / 2) Hz.
+    # From the impulse responses' energy on white noise of the same spread a
+    # sample: full rate (Chamberlin high-pass at twice the pitch, 900..3000 Hz,
+    # one-pole low-pass at ten times, 5..12 kHz, the tilt), and half rate (the
+    # same retuned, each half-sample's step heard between), Q14.
+    def wash_energy(pitch, half):
+        fh = min(3000.0, max(900.0, 2 * pitch))
+        fl = min(12000.0, max(5000.0, 10 * pitch))
+        f = 2 * math.sin(math.pi * min(fh, 8000.0) / SR * (2 if half else 1))
+        d = 2 * 0.5 / 0.7071
+        c = 1 - math.exp(-2 * math.pi * fl / SR)
+        if half:
+            c = 1 - (1 - c) ** 2
+        low = band = lp = last = 0.0
+        ys = []
+        for n in range(8192):
+            x = 1.0 if n == 0 else 0.0
+            low += f * band
+            high = x - low - d * band
+            band += f * high
+            lp += (high - lp) * c
+            ys.append(lp if half else (lp + last) / 2)
+            last = lp
+        e = sum(y * y for y in ys)
+        if not half:
+            return e
+        e1 = sum(ys[k] * ys[k + 1] for k in range(len(ys) - 1))
+        return (e + (e + e1) / 2) / 2
+    wash_half = [int(round(math.sqrt(wash_energy(100 * 2 ** (i / 2), False) / wash_energy(100 * 2 ** (i / 2), True)) * 16384))
+                 for i in range(10)]
+    parts += ["// METAL's wash at half the rate (GRIT +10 and up): its inputs' gain that keeps",
+              "// the band's level, Q14, at pitches 100 * 2^(i / 2) Hz (tools/make_tables.py).",
+              "const i32 wash_half[10] = {" + ", ".join(map(str, wash_half)) + "};"]
     parts += ["}", "}", ""]
     (HERE / "tables.h").write_text("\n".join(parts))
     print("wrote", HERE / "tables.h")

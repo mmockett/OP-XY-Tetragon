@@ -87,6 +87,9 @@ struct Core {
     // (Q31); SIZZLE's gain on the wires' drive (Q28 x 2^-8) and the last
     // block's swing, which the wires follow.
     i32 wash_gain, wash_in, sizzle_k, swing;
+    // METAL's wash at half the rate (while GRIT crushes): its high-pass's f,
+    // its low-pass's coefficient and its inputs' gain (Q31).
+    i32 wash_f2, wash_c2, wash_half;
     // The modes that run at a quarter of the rate (bit k for mode k, bit 8 the
     // body and the air; set at the note's start), and the quarter-rate bus's
     // last three samples.
@@ -302,6 +305,16 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     // headroom; a lower wash scales its inputs instead.
     v.wash_gain = wash_gain > (1 << 27) ? wash_gain : 1 << 27;
     v.wash_in = wash_gain > (1 << 27) ? one : wash_gain << 4;
+    if (v.model == metal) {
+        // At half the rate (GRIT +10 and up): the band retuned, and the inputs'
+        // gain that keeps its level (tables::wash_half, by the band's pitch).
+        v.wash_f2 = sine_fine(increment_cold(clamp(pitch + lg(2), lg(900), lg(3000))));
+        v.wash_c2 = one - multiply(one - v.wash_c, one - v.wash_c);
+        const i32 x = clamp(pitch - lg(100), 0, 9 * (octave / 2) - 1);
+        const u32 i = static_cast<u32>(x) >> 15;
+        const i32 f = x & 0x7fff;
+        v.wash_half = (tables::wash_half[i] + (((tables::wash_half[i + 1] - tables::wash_half[i]) * f) >> 15)) << 17;
+    }
     // METAL's SIZZLE: the rivets' noise as a half-rate band, n - n[-2], whose
     // level is the old band-pass chain's at 0.819 of its gain (tools: a
     // float model of both; the band is 3 dB fuller at 1 to 3 kHz).
@@ -531,8 +544,8 @@ __attribute__((noinline)) static void head_up_tilted(const i32* __restrict h, i3
 }
 // METAL's wires (SIZZLE) in one pass: the block's swing (mean |out|, before
 // the rivets), which the next block's drive follows; and the rivets' buzz,
-// half-rate noise through n - n[-2] (a band around 5.5 kHz) at the drive m,
-// stepped through the block, each half-sample's step heard between. z holds
+// half-rate noise (each draw's two halves) through n - n[-2] (a band around
+// 5.5 kHz) at the drive m, stepped through the block, each half-sample's step heard between. z holds
 // the last two half-rate noise values and the last half-sample.
 struct Rivets { i32 n1, n2, last; u32 seed; };
 __attribute__((noinline)) static i32 rivets(Rivets& z, i32* __restrict out, i32 m, i32 step) {
@@ -543,10 +556,12 @@ __attribute__((noinline)) static i32 rivets(Rivets& z, i32* __restrict out, i32 
         i32* o = out + 4 * i;
         const i32 o0 = o[0], o1 = o[1], o2 = o[2], o3 = o[3];
         sum += (absolute(o0) >> 6) + (absolute(o1) >> 6) + (absolute(o2) >> 6) + (absolute(o3) >> 6);
-        const i32 x0 = noise(seed) >> 1;
+        // One draw for the two: its top and bottom halves.
+        const i32 r = noise(seed);
+        const i32 x0 = r >> 1;
         const i32 y0 = multiply(x0 - a, m);
         m += step;
-        const i32 x1 = noise(seed) >> 1;
+        const i32 x1 = static_cast<i32>(static_cast<u32>(r) << 16) >> 1;
         const i32 y1 = multiply(x1 - b, m);
         m += step;
         a = x0;
@@ -611,16 +626,21 @@ struct Wash {
     u32 ph[4], inc[4];
 };
 // The two square-wave products, +e or -e by the two phases' top bits.
-__attribute__((noinline)) static void wash_squares(const Wash& w, i32* __restrict x, i32 e4, i32 e5) {
+// (count samples, each stepping the phases `step` samples: 64 and 1, or 32 and 2.)
+__attribute__((noinline)) static void wash_squares(const Wash& w, i32* __restrict x, i32 e4, i32 e5, u32 count, u32 step) {
     u32 p0 = w.ph[0], p2 = w.ph[1], p3 = w.ph[2], p6 = w.ph[3];
-    const u32 i0 = w.inc[0], i2 = w.inc[1], i3 = w.inc[2], i6 = w.inc[3];
-    for (u32 n = 0; n < 64; ++n) {
+    const u32 i0 = w.inc[0] * step, i2 = w.inc[1] * step, i3 = w.inc[2] * step, i6 = w.inc[3] * step;
+    for (u32 n = 0; n < count; ++n) {
         p0 += i0; p2 += i2; p3 += i3; p6 += i6;
         const i32 m4 = static_cast<i32>(p0 ^ p2) >> 31, m5 = static_cast<i32>(p3 ^ p6) >> 31;
         x[n] = ((e4 ^ m4) - m4) + ((e5 ^ m5) - m5);
     }
 }
-// METAL's tilt on the wash's output.
+// METAL's tilt on the wash's output. With `half` (while GRIT crushes, which
+// holds each output sample for 3 to 13 samples) at half the rate, each
+// half-sample's step heard between: the band retuned, its inputs scaled to
+// keep its level.
+template <bool half>
 __attribute__((noinline)) static void wash_pass(Core& v, const Wash& w, i32* __restrict out) {
     const i32* end = v.pair;
     // The wash pairs' envelopes at the block's middle: they move slowly.
@@ -635,22 +655,33 @@ __attribute__((noinline)) static void wash_pass(Core& v, const Wash& w, i32* __r
     // One noise for the hiss and the sine pairs' spray, at their summed power
     // (a pair of unit sines' product has RMS 1/2; the noise, RMS 1.155 of its gain).
     const i32 parts[5] = {e[0] >> 1, e[1] >> 1, e[2] >> 1, e[3] >> 1, multiply(hiss, q31(1.155 / 2)) << 1};
-    const i32 in = v.wash_in;
+    const i32 in = half ? multiply(v.wash_in, v.wash_half) : v.wash_in;
     const i32 spray = multiply(multiply(root_sum_squares(parts, 5), q31(1 / 1.155)), in);
     const i32 e4 = multiply(e[4] >> 1, in), e5 = multiply(e[5] >> 1, in);
     i32 x[64];
-    wash_squares(w, x, e4, e5);
+    wash_squares(w, x, e4, e5, half ? 32 : 64, half ? 2 : 1);
     u32 seed = v.seed;
     Chamberlin high = v.xh;
+    if (half) high.f = v.wash_f2;
     i32 low = v.wash_low, last = v.tilt_last;
-    const i32 c = v.wash_c, gain = v.wash_gain;
-    for (u32 n = 0; n < 64; ++n) {
-        low = opxy::q31::add(low, multiply(high.highpass(opxy::q31::add(x[n], multiply(noise(seed), spray) << 1)) - low, c));
-        // The tilt: the mean of this sample and the last.
-        out[n] += multiply((low >> 1) + (last >> 1), gain) << 3;
-        last = low;
+    const i32 c = half ? v.wash_c2 : v.wash_c, gain = v.wash_gain;
+    if (!half) {
+        for (u32 n = 0; n < 64; ++n) {
+            low = opxy::q31::add(low, multiply(high.highpass(opxy::q31::add(x[n], multiply(noise(seed), spray) << 1)) - low, c));
+            // The tilt: the mean of this sample and the last.
+            out[n] += multiply((low >> 1) + (last >> 1), gain) << 3;
+            last = low;
+        }
+    } else {
+        for (u32 i = 0; i < 32; ++i) {
+            low = opxy::q31::add(low, multiply(high.highpass(opxy::q31::add(x[i], multiply(noise(seed), spray) << 1)) - low, c));
+            out[2 * i] += multiply((low >> 1) + (last >> 1), gain) << 3;
+            out[2 * i + 1] += multiply(low, gain) << 3;
+            last = low;
+        }
     }
     v.seed = seed;
+    high.f = v.xh.f;
     v.xh = high;
     v.wash_low = low;
     v.tilt_last = last;
@@ -900,7 +931,8 @@ __attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, 
     v.live_bits = bits;
     return lives;
 }
-static inline void render_core(Core& v, Scratch& scratch, i32* out) {
+// crushed: GRIT holds the output (+10 and up), so METAL's wash runs at half the rate.
+static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed) {
     Strikes strikes;
     schedule(v, strikes);
     // The struck energy and the glide at the block's end.
@@ -1066,7 +1098,8 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     // The wash and the noise add to the head; the snare's wires then follow all of it.
     if (metal_wash) {
         wash_envelopes(v, strikes);
-        wash_pass(v, wash, out);
+        if (crushed) wash_pass<true>(v, wash, out);
+        else wash_pass<false>(v, wash, out);
     }
     if (noisy) noise_pass(v, strikes, out);
     else if (ringing) ring_tail(v, out);

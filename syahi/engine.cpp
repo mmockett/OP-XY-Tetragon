@@ -356,7 +356,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
         }
     }
     i32 out[64];   // render_core's head_up writes it whole
-    render_core(voice.core, shared.scratch, out);
+    render_core(voice.core, shared.scratch, out, voice.grit > 9);
     finish(voice, out, output);
     if (voice.quiet >= quiet_blocks && voice.core.next_event < 0) voice.done = 1;
 }
