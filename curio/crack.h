@@ -117,7 +117,7 @@ struct Ice {
         band_half(nzk, lpn, q);   // the surface runs at half the rate
         hiss_gain = band_gain(lpn + (1 << 12), q);
         nz = Res();
-        hiss_amp = mul(U(0.5), F(1.0) - sc(F(0.6), c[3]));
+        hiss_amp = mul(U(0.5 * 1.19), F(1.0) - sc(F(0.6), c[3]));   // 1.5 dB for what the half rate loses over 11 kHz
         hlast = 0;
         hiss.v = lev(hiss_amp, hiss_gain << 12);   // the band's loudness gain carried in the level
         hiss.k = decay(static_cast<u32>(mul(25000 + sc(200000, pw(c[4], C(1.3))), F(0.5) + sc(F(0.5), sheet))) >> 1);   // and rings longer
@@ -409,9 +409,10 @@ struct Sheet {
         if (sum < (1 << 21)) sum = 1 << 21;
         const i32 normq = static_cast<i32>(((static_cast<u32>(1) << 31) / static_cast<u32>(sum >> 9)) << 12);   // Q28
         // At half level: the sheet's loudest blows and shakes ring far over unity.
-        // (At half the rate the blow's low-passed noise is sqrt 2 louder and
-        // drives the modes half as often: their ring keeps its level.)
-        for (u32 m = 0; m < modes; ++m) gain[m] = mul(lev(amp[m], normq), modek[m].s) >> 1;
+        // (At half the rate a mode's peak is half as tall over the same
+        // bandwidth and the noise twice as dense: 1.5 times the drive keeps
+        // its ring's level, measured on a model of one mode.)
+        for (u32 m = 0; m < modes; ++m) gain[m] = mul(mul(lev(amp[m], normq), modek[m].s) >> 1, F(0.75)) << 1;
         // The blow: an impulse and 20 ms of noise, louder for an iron rod.
         burst.v = U(0.2) + sc(U(2.0), c[6]);
         // The beater's blow: a felt mallet's is dull, an iron rod's bright.
