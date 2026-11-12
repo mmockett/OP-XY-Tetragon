@@ -519,10 +519,12 @@ struct Pod {
         late_env.k = decay(250000);
         late_k64 = late_env.k;
         for (int i = 0; i < 6; ++i) late_k64 = mul(late_k64, late_k64);
-        late_end = samples(static_cast<u32>(60000 + sc(500000, c[1]) + sc(300000, c[7])));
+        // They straggle on up to 0.3 s past the shake (one draw a sample
+        // decides seeds and stragglers alike, so under the shake they hide).
+        late_end = samples(static_cast<u32>(160000 + sc(500000, c[1]) + sc(300000, c[7])));
         late_norm = sc(U(1.4), c[7]);
     }
-    bool waiting() const { return false; }
+    bool waiting() const { return late_p && t < late_end; }
     // The block in passes, each with its state in registers; the noise is
     // drawn in the same order as ever.
     // The shake's envelope and the tilt's pulse.
