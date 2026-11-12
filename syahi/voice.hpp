@@ -416,13 +416,14 @@ __attribute__((noinline)) static void run_half(Partial& a, i32* __restrict h, co
     advance(a, 2 * count);
 }
 // The half-rate head back at the full rate, each half-sample's step heard
-// between (the last block's last half-sample is `last`), added into out.
+// between (the last block's last half-sample is `last`). The block's first
+// writer: it sets out, and the passes after it add.
 __attribute__((noinline)) static void head_up(const i32* __restrict h, i32* __restrict out, i32& last) {
     i32 prev = last;
     for (u32 i = 0; i < 32; ++i) {
         const i32 y = h[i];
-        out[2 * i] += (prev >> 1) + (y >> 1);
-        out[2 * i + 1] += y;
+        out[2 * i] = (prev >> 1) + (y >> 1);
+        out[2 * i + 1] = y;
         prev = y;
     }
     last = prev;

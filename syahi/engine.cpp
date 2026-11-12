@@ -197,6 +197,9 @@ inline i32 round_off(i32 y, const Knee& k) {
 // A sound has ended once it has stayed under the floor for 90 ms with no strike to come.
 const i32 quiet_floor = 1 << 15;
 const u32 quiet_blocks = 62;
+// The whole block under the floor (64, as finish_crush counts it) or not (0),
+// from its loudest sample: every |y| < the floor exactly when the peak is.
+static inline u32 quiet_block(i32 most) { return most < quiet_floor ? 64u : 0u; }
 
 // The block out: the model's gain to the working level, GRIT, a 24 Hz
 // high-pass, the hit's level and the model's soft knee; whether it is silent.
@@ -215,7 +218,6 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
     const i32 gain = f.gain, level = f.level, knee_at = f.knee.knee;
     i32 hp = f.hp, low = f.low;
     const i32 soft = f.soft, drive = f.drive, makeup = f.makeup;
-    u32 under = 0;
     i32 most = 0;
     for (u32 n = 0; n < 64; ++n) {
         i32 y = shl_clamp(multiply(out[n], gain), 7);
@@ -230,7 +232,6 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
         output[n] = y;
         const i32 a = absolute(y);
         most = a > most ? a : most;
-        under += static_cast<u32>(y + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);   // |y| < the floor
     }
     // The knee, past the loop (rare: a hit's loudest moments), so the pass
     // stays a hardware loop. Past the knee is far above the quiet floor.
@@ -239,14 +240,13 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
             if (output[n] > knee_at || output[n] < -knee_at) output[n] = round_off(output[n], f.knee);
     f.hp = hp;
     f.low = low;
-    return under;
+    return quiet_block(most);
 }
 // Without GRIT the two gains are one (gain x level x 2^10, as Q22 under a
 // 9-bit shift) and the 24 Hz high-pass runs on the output's scale.
 __attribute__((noinline)) static u32 finish_clean(Finish& f, const i32* __restrict out, i32* __restrict output) {
     const i32 k = multiply(f.gain, f.level) << 1, knee_at = f.knee.knee;
     i32 hp = f.hp;
-    u32 under = 0;
     i32 most = 0;
     for (u32 n = 0; n < 64; ++n) {
         const i32 x = shl_clamp(multiply(out[n], k), 9);
@@ -255,13 +255,12 @@ __attribute__((noinline)) static u32 finish_clean(Finish& f, const i32* __restri
         output[n] = y;
         const i32 a = absolute(y);
         most = a > most ? a : most;
-        under += static_cast<u32>(y + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);
     }
     if (most > knee_at)
         for (u32 n = 0; n < 64; ++n)
             if (output[n] > knee_at || output[n] < -knee_at) output[n] = round_off(output[n], f.knee);
     f.hp = hp;
-    return under;
+    return quiet_block(most);
 }
 // GRIT past +9: the whole output chain runs once a hold (the rate it
 // crushes to) and its result holds, so a hold of 3 to 13 samples costs one
@@ -344,8 +343,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             set_up(voice);
         }
     }
-    i32 out[64];
-    for (u32 n = 0; n < 64; ++n) out[n] = 0;
+    i32 out[64];   // render_core's head_up writes it whole
     render_core(voice.core, shared.scratch, out);
     finish(voice, out, output);
     if (voice.quiet >= quiet_blocks && voice.core.next_event < 0) voice.done = 1;
