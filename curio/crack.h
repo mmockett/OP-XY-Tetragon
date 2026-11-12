@@ -385,12 +385,14 @@ struct Sheet {
     // The thunder.
     Env thunder, thatt;
     i32 th_lp, th_a;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
         t = 0;
+        hlast = 0;
         const i32 lpb = hz(130) - sc(C(1.6), c[0]) + tune;
         const i32 th = 150000 + sc(3200000, pw(c[3], C(1.6)));
         const i32 dex = -C(0.6) + sc(C(0.5), c[5]);
@@ -403,10 +405,10 @@ struct Sheet {
         for (int m = 0; m < 12; ++m) {
             const i32 lr = lg2(table::sheet_ratio[m]) - (12 << 12);
             const i32 lp = lpb + lr;
-            if (lp > 56300) break;   // 14 kHz
+            if (lp > 54400) break;   // 10 kHz: the modes ring at half the rate
             const u32 t60 = ex2(lg2(static_cast<u32>(th)) + (lr * (dex >> 2) >> 10));
-            incs[m] = inc(lp);
-            dsp::tune(modek[m], incs[m], decay60(t60 < 30000 ? 30000 : t60));
+            incs[m] = inc(lp + (1 << 12));   // a half-rate step's
+            dsp::tune(modek[m], incs[m], decay60((t60 < 30000 ? 30000 : t60) >> 1));
             // amplitude rel^aex exp(-rel / roll), Q28
             const i32 rel = static_cast<i32>(table::sheet_ratio[m]);                  // Q12
             const i32 e = rel * static_cast<i32>(inv_roll) >> 12;                     // rel / roll, Q12
@@ -424,13 +426,14 @@ struct Sheet {
         if (sum < (1 << 21)) sum = 1 << 21;
         const i32 normq = static_cast<i32>(((static_cast<u32>(1) << 31) / static_cast<u32>(sum >> 9)) << 12);   // Q28
         // At half level: the sheet's loudest blows and shakes ring far over unity.
-        for (u32 m = 0; m < modes; ++m) gain[m] = mul(lev(amp[m], normq), modek[m].s) >> 1;
+        // (sin w is a half-rate step's: the noise's drive keeps its level with 1/sqrt 2 more.)
+        for (u32 m = 0; m < modes; ++m) gain[m] = mul(mul(lev(amp[m], normq), modek[m].s) >> 1, F(0.7071));
         // The blow: an impulse and 20 ms of noise, louder for an iron rod.
         burst.v = U(0.2) + sc(U(2.0), c[6]);
         // The beater's blow: a felt mallet's is dull, an iron rod's bright.
         burst_lp = 0;
-        burst_a = pole(hz(300) + sc(C(5.5), c[6]));
-        burst.k = decay(2000);
+        burst_a = pole(hz(300) + sc(C(5.5), c[6]) + (1 << 12));   // at half the rate
+        burst.k = decay(1000);
         brng = 0x2545f491u;
         // The blow rings each mode from its own phase (the prototype's), so
         // they don't all peak together and the low cluster beats as it did.
@@ -470,8 +473,8 @@ struct Sheet {
         follow_a = full - pow64(full - pole(hz(40)));
         slow_a = full - pow64(full - pole(hz(6)));
         sum = 0;
-        band(ratk, hz(4200), C(0.9));
-        rat_gain = band_gain(hz(4200), C(0.9));
+        band_half(ratk, hz(4200), C(0.9));
+        rat_gain = band_gain(hz(4200) + (1 << 12), C(0.9));
         rat_amp = U(0.15) + sc(U(1.1), c[2]);
         rat = Res();
         // The cascade: the ringing feeds a hiss of the sheet's high modes.
@@ -483,12 +486,14 @@ struct Sheet {
         clank_a = pole(hz(3000));
         ph61 = phth = 0;
         inc_th = static_cast<u32>(97392 * 5) + static_cast<u32>(sc(97392 * 3, c[4]));
-        thunder.v = sc(U(0.45 * 8), c[4]);
-        thunder.k = decay(static_cast<u32>(250000 + sc(600000, c[4])));
+        // The thunder at half the rate: its low-passed noise a third louder
+        // there, so 1/sqrt 2 of the level.
+        thunder.v = sc(U(0.45 * 8 * 0.7071), c[4]);
+        thunder.k = decay(static_cast<u32>(250000 + sc(600000, c[4])) >> 1);
         thatt.v = thunder.v;
-        thatt.k = mul(thunder.k, decay(40000));
+        thatt.k = mul(thunder.k, decay(20000));
         th_lp = 0;
-        th_a = pole(hz(160));
+        th_a = pole(hz(160) + (1 << 12));
     }
     bool waiting() const { return lump < lumps; }
     // The block in passes, each with its state held in registers, the same
@@ -569,34 +574,53 @@ struct Sheet {
     }
     // The beater's clank and the block's level; and the noise the rattle
     // and the thunder share, drawn after the clank's as before.
-    template <bool clanking> __attribute__((noinline)) void clank_pass(i32* yb, i32* nb, u32 n) {
-        i32 cv = clank.v, lp = clank_lp, s = sum;
+    __attribute__((noinline)) void clank_pass(i32* yb, u32 n) {
+        i32 cv = clank.v, lp = clank_lp;
         const i32 k = clank.k, a = clank_a;
         u32 r = rng;
         for (u32 j = 0; j < n; ++j) {
-            i32 y = yb[j];
-            if (clanking && cv > 4096) {
-                // The beater's own clank on the iron, brighter and louder for a rod.
-                cv = mul(cv, k);
-                const i32 ck = lev(noise(r), cv);
-                lp += mul(a, ck - lp);
-                y += ck - lp;
-            }
-            s += (y < 0 ? -y : y) >> 6;
-            yb[j] = y;
-            nb[j] = noise(r);
+            // The beater's own clank on the iron, brighter and louder for a rod.
+            cv = mul(cv, k);
+            const i32 ck = lev(noise(r), cv);
+            lp += mul(a, ck - lp);
+            yb[j] += ck - lp;
         }
         clank.v = cv;
         clank_lp = lp;
+        rng = r;
+    }
+    // The half-rate whole's level for the followers, and the noise the
+    // rattle and the thunder share.
+    __attribute__((noinline)) void level_pass(const i32* h, i32* nb) {
+        i32 s = sum;
+        u32 r = rng;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            const i32 y = h[j];
+            s += (y < 0 ? -y : y) >> 5;
+            nb[j] = noise(r);
+        }
         sum = s;
         rng = r;
+    }
+    // The half-rate whole back up to the full rate, each new sample halfway
+    // between two (a sample later).
+    __attribute__((noinline)) void up_pass(const i32* h, i32* y) {
+        i32 last = hlast;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            const i32 x = h[j];
+            y[0] = (last >> 1) + (x >> 1);
+            y[1] = x;
+            last = x;
+            y += 2;
+        }
+        hlast = last;
     }
     // The frame's rattle and the cascade share one band of noise (two
     // samples a turn, so the states trade places).
     __attribute__((noinline)) void rattle_pass(const i32* nb, i32* yb, i32 renv) {
         i32 y1 = rat.y1, y2 = rat.y2, x1 = rat.x1, x2 = rat.x2;
         const i32 c = ratk.c, r2 = ratk.r2, b = ratk.b;
-        for (u32 j = 0; j < frames / 2; ++j) {
+        for (u32 j = 0; j < frames / 4; ++j) {
             const i32 i0 = mul(nb[0], b);
             y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
             x2 = i0;
@@ -617,7 +641,7 @@ struct Sheet {
     __attribute__((noinline)) void thunder_pass(const i32* nb, i32* yb, i32 throb) {
         i32 tv = thunder.v, ta = thatt.v, lp = th_lp;
         const i32 tk = thunder.k, tak = thatt.k, a = th_a;
-        for (u32 j = 0; j < frames; ++j) {
+        for (u32 j = 0; j < frames / 2; ++j) {
             if (CURIO_LIKELY(tv > 4096)) {
                 tv = mul(tv, tk);
                 ta = mul(ta, tak);
@@ -647,26 +671,31 @@ struct Sheet {
             on[m] = e > 8192 || burst.v > 4096;
             if (!on[m]) mode[m].y1 = mode[m].y2 = 0;
         }
-        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        // The modes, the blow, the rattle and the thunder run at half the
+        // rate (two samples a step) into h, drawn up to the full rate at the
+        // end; the clank stays at the full rate.
+        const u32 half = frames / 2;
+        i32 h[frames / 2];
+        for (u32 i = 0; i < half; ++i) h[i] = 0;
         // First the blow, split at the shakes and the roll's strokes,
-        i32 xb[frames];
-        u32 strike_i[16];
+        i32 xb[frames / 2];
+        u32 strike_i[16], clank_i[16];
         i32 strike_a[16];
         u32 strikes = 0;
         bool blow = false;
         for (u32 i = 0;;) {
-            u32 e = frames;
+            u32 e = half;
             if (lump < lumps) {
                 const u32 d = lump_at[lump] - t;
-                if (d < frames && d >= i) e = d;
+                if (d < frames && (d >> 1) >= i) e = d >> 1;
             }
             if (e > i && blow_pass(xb + i, e - i)) blow = true;
             i = e;
-            if (i >= frames) break;
-            while (lump < lumps && t + i == lump_at[lump]) {
+            if (i >= half) break;
+            while (lump < lumps && lump_at[lump] - t < frames && (lump_at[lump] - t) >> 1 == i) {
                 const i32 a = lump_amp[lump];
                 if (a >= 0) burst.v += a;
-                else if (strikes < 16) { strike_i[strikes] = i; strike_a[strikes] = a; ++strikes; }
+                else if (strikes < 16) { strike_i[strikes] = i; clank_i[strikes] = lump_at[lump] - t; strike_a[strikes] = a; ++strikes; }
                 ++lump;
             }
         }
@@ -678,17 +707,17 @@ struct Sheet {
             if (on[m]) { live[n++] = m; continue; }
             u32 i = 0;
             for (u32 s = 0; s <= strikes; ++s) {
-                const u32 end = s < strikes ? strike_i[s] : frames;
-                if (blow && end > i) ring_rest(mode[m], modek[m], gain[m], xb + i, out + i, end - i);
+                const u32 end = s < strikes ? strike_i[s] : half;
+                if (blow && end > i) ring_rest(mode[m], modek[m], gain[m], xb + i, h + i, end - i);
                 i = end;
                 if (s < strikes) dsp::strike(mode[m], modek[m], mul(amp[m], -strike_a[s] << 3) << ROLL);
             }
         }
         for (u32 s = 0, i = 0; s <= strikes; ++s) {
-            const u32 end = s < strikes ? strike_i[s] : frames;
+            const u32 end = s < strikes ? strike_i[s] : half;
             if (end > i) {
-                if (blow) ring_lives<true>(live, n, xb + i, out + i, end - i);
-                else ring_lives<false>(live, n, xb + i, out + i, end - i);
+                if (blow) ring_lives<true>(live, n, xb + i, h + i, end - i);
+                else ring_lives<false>(live, n, xb + i, h + i, end - i);
             }
             i = end;
             // A roll's stroke strikes the modes outright.
@@ -698,22 +727,22 @@ struct Sheet {
                     dsp::strike(mode[m], modek[m], mul(amp[m], -strike_a[s] << 3) << ROLL);
                 }
         }
-        // then the clank, the rattle and the thunder.
-        i32 nb[frames];
+        // then the rattle and the thunder,
+        i32 nb[frames / 2];
+        level_pass(h, nb);
+        rattle_pass(nb, h, renv);
+        if (thunder.v > 4096) thunder_pass(nb, h, throb);
+        up_pass(h, out);
+        // and the clank at the full rate, split at the roll's strokes.
         for (u32 s = 0, i = 0;;) {
-            const u32 end = s < strikes ? strike_i[s] : frames;
-            if (end > i) {
-                // The clank, once under its floor, stays there until the next stroke.
-                if (clank.v > 4096) clank_pass<true>(out + i, nb + i, end - i);
-                else clank_pass<false>(out + i, nb + i, end - i);
-            }
+            const u32 end = s < strikes ? clank_i[s] : frames;
+            // The clank, once under its floor, stays there until the next stroke.
+            if (end > i && clank.v > 4096) clank_pass(out + i, end - i);
             i = end;
             if (s >= strikes) break;
-            while (s < strikes && strike_i[s] == i) clank.v += mul(-strike_a[s++], F(0.5));
+            while (s < strikes && clank_i[s] == i) clank.v += mul(-strike_a[s++], F(0.5));
         }
         t += frames;
-        rattle_pass(nb, out, renv);
-        if (thunder.v > 4096) thunder_pass(nb, out, throb);
     }
 };
 
