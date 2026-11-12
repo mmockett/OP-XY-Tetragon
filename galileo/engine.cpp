@@ -203,36 +203,23 @@ __attribute__((noinline)) void begin_note(Voice& voice, Shared& shared, opxy::Pa
     for (u32 b = 0; b < voice.run.m; ++b) motion::begin(voice.cursor[b], voice.run, b, jitter(voice, feel.lax));
 }
 
-// The block's impacts, gathered into the grid's cells (2^shift samples each):
-// returns which cells hold one (bit k: cell k).
-__attribute__((noinline)) u32 gather(Voice& voice, Cell* cells, u32 shift) {
+// The block's impacts, in time order: a sort of a few.
+__attribute__((noinline)) u32 gather(Voice& voice, motion::Impact* hits) {
     const u32 end = voice.t + opxy::block_frames;
     const u32 lax = motion::feel(voice.feel).lax;
-    u32 used = 0;
+    u32 count = 0;
     for (u32 b = 0; b < voice.run.m; ++b) {
         motion::Cursor& c = voice.cursor[b];
-        while (!c.done && c.next < end) {
-            const motion::Impact hit = motion::take(c, voice.run, b, jitter(voice, lax));
-            const u32 at = hit.at > voice.t ? hit.at - voice.t : 0;
-            const u32 k = at >> shift;
-            Cell& cell = cells[k];
-            if (!(used & (1u << k))) {
-                used |= 1u << k;
-                cell.v = cell.top = hit.v;
-                cell.fine = at & ~7u;
-                cell.step = hit.step;
-            } else {
-                cell.v = dsp::together(cell.v, hit.v);
-                if (hit.v > cell.top) {
-                    cell.top = hit.v;
-                    cell.fine = at & ~7u;
-                    cell.step = hit.step;
-                }
-            }
+        while (!c.done && c.next < end && count < max_impacts) {
+            motion::Impact hit = motion::take(c, voice.run, b, jitter(voice, lax));
+            if (hit.at < voice.t) hit.at = voice.t;
+            u32 i = count++;
+            while (i && hits[i - 1].at > hit.at) { hits[i] = hits[i - 1]; --i; }
+            hits[i] = hit;
             if (c.done && voice.balls) --voice.balls;
         }
     }
-    return used;
+    return count;
 }
 
 // The kit's soft ceiling: straight to 0.42 of full scale (1.5 dB under the
@@ -302,18 +289,15 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     // at most two stretches however many balls land in it, and each stretch
     // runs the body's parts once. (Struck modes keep their 8-sample phase; a
     // fill strikes on 16.)
-    const u32 cell = body::step_of(voice.model);
-    const u32 shift = cell == 32 ? 5 : 4;
-    const u32 grid = ~(cell - 1);
-    Cell cells[cells_max];
-    u32 used = gather(voice, cells, shift);
+    const u32 grid = ~(body::step_of(voice.model) - 1);
+    motion::Impact hits[max_impacts];
+    const u32 count = gather(voice, hits);
     i32 sum[opxy::block_frames];
-    u32 at = 0, k = 0;
+    u32 at = 0, next = 0;
     const u32 n = voice.run.n;
-    const u32 count = opxy::block_frames >> shift;
     while (at < opxy::block_frames) {
-        while (k < count && !(used & (1u << k))) ++k;
-        u32 until = k < count ? k << shift : opxy::block_frames;
+        u32 until = opxy::block_frames;
+        if (next < count && ((hits[next].at - voice.t) & grid) < until) until = (hits[next].at - voice.t) & grid;
         // A cell of ghosts ahead (a clap's, a ratchet's: on the 32-sample grid).
         const u32 ghost = body::ghost_due(b);
         if (ghost != 0xffffffffu && at + ghost < until) until = at + ghost;
@@ -322,12 +306,12 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             at = until;
         }
         if (at >= opxy::block_frames) break;
-        // The cell's balls strike as one, its modes from the strongest's 8-sample
-        // step, so they ring in the same phase as they would on that finer grid.
-        if (k < count && (k << shift) == at) {
-            const Cell& c = cells[k];
-            body::strike(b, c.v, 0, c.step, n, false, c.fine > at ? c.fine - at : 0);
-            used &= ~(1u << k);
+        // Each strikes its modes from its 8-sample step, so they ring in the
+        // same phase as they would on that finer grid.
+        while (next < count && ((hits[next].at - voice.t) & grid) <= at) {
+            const u32 fine = (hits[next].at - voice.t) & ~7u;
+            body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n, false, fine > at ? fine - at : 0);
+            ++next;
         }
         // Ghosts due within this stretch of the grid strike now.
         if (body::ghost_due(b) == 0) body::strike_ghosts(b, n);
