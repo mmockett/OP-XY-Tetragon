@@ -141,14 +141,14 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
         // Dispersion: a mode r times the lowest bends r^(1.6 spring) as far.
         if (bend > 0) {
             const i32 lb = log_bend + ((s.spring >> 2) * (above >> 2) >> 12);
-            m.bend = static_cast<i32>(exp2i(clamp(lb, 0, 20 * octave)));
+            m.bend = static_cast<i32>(exp2i_cold(clamp(lb, 0, 20 * octave)));
         } else {
             m.bend = 0;
         }
         if (s.beat > 0) {
             // cos(pi beat t (1 + 0.15 k)): the twin's beat, a little faster on higher modes.
             const i32 hz = log2u(static_cast<u32>(s.beat)) - 16 * octave - octave + log2_1p(q16(0.15) * static_cast<i32>(k));
-            m.beat_inc = exp2i(hz + increment_per_hz + 6 * octave);
+            m.beat_inc = exp2i_cold(hz + increment_per_hz + 6 * octave);
         } else {
             m.beat_inc = 0;
             m.beat_phase = 0;
@@ -163,7 +163,7 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     if (form_raw > 100 && v.model != metal && v.model != bar) {
         const i32 depth = static_cast<i32>(form_raw > 112 ? 12 : form_raw - 100);   // fades in from 100 to 112
         u32 hz[head_modes];
-        for (u32 k = 0; k < head_modes; ++k) hz[k] = exp2i(clamp(v.part[k].rest, 0, 15 * octave));
+        for (u32 k = 0; k < head_modes; ++k) hz[k] = exp2i_cold(clamp(v.part[k].rest, 0, 15 * octave));
         for (u32 k = 1; k < head_modes; ++k) {
             u32 nearest = 50;
             for (u32 j = 0; j < head_modes; ++j) {
@@ -212,7 +212,7 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     {
         const i32 flow = clamp(s.decay + lg(0.3), lg(0.04), lg(0.15));
         v.pair_flow = one - per_block(flow);
-        v.wash_lift = exp2q(flow - s.decay < 0 ? flow - s.decay : 0);
+        v.wash_lift = exp2q_cold(flow - s.decay < 0 ? flow - s.decay : 0);
     }
     // The body: one resonance under the head.
     Partial& b = v.part[body_mode];
@@ -227,8 +227,8 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     air.rest = lg(48);
     air.weight = multiply(multiply(s.air >> 4, q31(1.1 / 2)) << 1, v.velocity);
     const i32 air_log = log2u(static_cast<u32>(s.air_cycles)) - 16 * octave + lg(44100.0 / 48.0);
-    v.air_length = exp2i(air_log);
-    v.air_step = exp2i(31 * octave - air_log);
+    v.air_length = exp2i_cold(air_log);
+    v.air_step = exp2i_cold(31 * octave - air_log);
     v.count_trim = -multiply(log2u(s.count), q31(0.25));
     // METAL: the wash takes over from the modes as WASH rises; together they
     // keep one level (1 / (1 + 4 WASH^2)), so WASH changes the colour, not the loudness.
@@ -244,13 +244,13 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     v.glide_decay = per_block(s.glide_time + lg(6.9078));
     v.swell_decay = per_block(lg(0.18 * 6.9078));
     // The contact's raised cosine.
-    v.ramp_step = exp2i(clamp(31 * octave - (s.contact + lg(44100)), 0, 31 * octave - 1));
+    v.ramp_step = exp2i_cold(clamp(31 * octave - (s.contact + lg(44100)), 0, 31 * octave - 1));
     // Noise: its band, cascaded twice, and the two lowest modes' rings.
     v.cn.set(s.noise_q, s.noise_tone < lg(9000) ? s.noise_tone : lg(9000));
     v.r0.set(q_drum, v.part[0].rest);
     v.nd = one - one_pole(s.noise_length);
     v.nd_tail = one - one_pole(s.noise_length + s.tail);
-    v.nstep = static_cast<i32>(exp2i(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
+    v.nstep = static_cast<i32>(exp2i_cold(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
     // The rattle.
     v.cwb.set(q_wires, s.wire_tone + octave);   // (the buzz runs at half rate)
     // The follower (0.6 ms), the buzz's rise (0.3 ms) and its fall over WIRE's
@@ -852,7 +852,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
 namespace syahi {
 inline void Chamberlin::set(QClass q, i32 log2_hz) {
     // sin(pi fc / fs): half the phase increment, as a phase.
-    f = sine_fine(increment(log2_hz < lg(8000) ? log2_hz : lg(8000)) >> 1);
+    f = sine_fine(increment_cold(log2_hz < lg(8000) ? log2_hz : lg(8000)) >> 1);
     damping = tables::svf_k[q];
 }
 }

@@ -64,9 +64,14 @@ static inline i32 exp2q(i32 x) {
 }
 // A phase increment for a pitch in log2 Hz (Q16), capped at 30 octaves of phase.
 static inline u32 increment(i32 log2_hz) { return exp2i(clamp(log2_hz + increment_per_hz, 0, 31 * octave - 1)); }
+// The same three, out of line, for a note's setup: it runs once a note from a
+// cold instruction cache (the module runs from SDRAM), so its code is kept small.
+__attribute__((noinline)) static inline u32 exp2i_cold(i32 x) { return exp2i(x); }
+__attribute__((noinline)) static inline i32 exp2q_cold(i32 x) { return exp2q(x); }
+__attribute__((noinline)) static inline u32 increment_cold(i32 log2_hz) { return increment(log2_hz); }
 
 // The per-block multiplier for a ring that falls 60 dB in 2^(log2_seconds) seconds.
-static inline i32 per_block(i32 log2_seconds) {
+__attribute__((noinline)) static inline i32 per_block(i32 log2_seconds) {
     // 64 samples fall 9.966 * 64 / (44100 T) octaves: its log2 is this constant less log2 T.
     constexpr i32 base = lg(9.965784 * 64.0 / 44100.0);
     const i32 drop = static_cast<i32>(exp2i(clamp(base - log2_seconds + 16 * octave, 0, 30 * octave)));   // octaves, Q16
@@ -74,7 +79,7 @@ static inline i32 per_block(i32 log2_seconds) {
 }
 // The per-sample multiplier for a one-pole that settles in 2^(log2_seconds) s
 // (its time constant), as 1 - e^(-1 / (fs tau)), Q31.
-static inline i32 one_pole(i32 log2_seconds) {
+__attribute__((noinline)) static inline i32 one_pole(i32 log2_seconds) {
     constexpr i32 base = lg(1.0 / 44100.0);
     const i32 x = static_cast<i32>(exp2i(clamp(base - log2_seconds + 16 * octave, 0, 20 * octave)));   // 1 / (fs tau), Q16
     // 1 - e^-x = 1 - 2^(-x / ln 2)
@@ -183,8 +188,8 @@ static inline i32 svf_highpass(Svf& s, const SvfCoefficients& c, i32 x) {
 }
 
 namespace syahi {
-// log2 of a positive integer, Q16 (a value of 0 counts as 1).
-static inline i32 log2u(u32 v) {
+// log2 of a positive integer, Q16 (a value of 0 counts as 1). Setup only: out of line.
+__attribute__((noinline)) static inline i32 log2u(u32 v) {
     if (!v) return 0;
     // Normalise in five steps: shift the top set bit to bit 31.
     i32 whole = 31;
@@ -218,8 +223,8 @@ static inline i32 shl(i32 value, u32 shift) {
 }
 
 namespace syahi {
-// The integer square root.
-static inline u32 isqrt(u32 x) {
+// The integer square root (setup and once a block: out of line).
+__attribute__((noinline)) static inline u32 isqrt(u32 x) {
     u32 root = 0;
     for (u32 bit = 1u << 30; bit; bit >>= 2) {
         if (x >= root + bit) { x -= root + bit; root = (root >> 1) + bit; }

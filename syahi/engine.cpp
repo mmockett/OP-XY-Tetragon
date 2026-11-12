@@ -118,7 +118,7 @@ inline i32 level_of(u32 model, const u32* raw) {
         if (v < 0) cut += v;
         else if (v > lift) lift = v;
     }
-    return static_cast<i32>(exp2i(clamp(levels::gain[model] + cut + lift + 28 * octave, 0, 31 * octave - 1)));
+    return static_cast<i32>(exp2i_cold(clamp(levels::gain[model] + cut + lift + 28 * octave, 0, 31 * octave - 1)));
 }
 
 inline void set_up(Voice& voice) {
@@ -128,7 +128,7 @@ inline void set_up(Voice& voice) {
     setup(voice.core, c, voice.raw[4], voice.pitch_offset);
     // The head sounds as velocity^1.3.
     const i32 v = voice.core.velocity;
-    const i32 v13 = v >= one ? one : exp2q(multiply(log2u(static_cast<u32>(v)) - 31 * octave, q31(0.65)) * 2);
+    const i32 v13 = v >= one ? one : exp2q_cold(multiply(log2u(static_cast<u32>(v)) - 31 * octave, q31(0.65)) * 2);
     voice.core.head_gain = multiply(multiply(voice.core.spec.head, v13), voice.core.wash_trim);
     voice.level = level_of(voice.core.model, voice.raw);
 }
@@ -151,7 +151,7 @@ inline void begin_note(Voice& voice, Shared& shared) {
     for (u32 k = 0; k < partials; ++k) {
         Partial& m = core.part[k];
         m.phase = start_phase(k);
-        m.inc = increment(k < head_modes ? lifted(m, one, 0) : m.rest);
+        m.inc = increment_cold(k < head_modes ? lifted(m, one, 0) : m.rest);
     }
     core.part[body_mode].phase = core.part[air_mode].phase = 0;
     core.glide_left = core.swell_left = one;
