@@ -140,16 +140,19 @@ inline void widths(i32 h, u32& w0, u32& w1) {
     w1 = (samples_q8 * 13) >> 4;           // * 0.65 (1.25 - 0.6)
 }
 
-// The grid impacts strike on (samples, a whole number of skin grains). A
-// tine's and a fill's strikes retune what may still ring (a set of modes,
-// the next head up), so where they land sets how it carries on: a tine keeps
-// the 8-sample grid, a fill (its heads need whole grains) 16.
-const u32 step = 32, tine_step = 8, fill_step = 16;
+// The grid impacts strike on (samples, a whole number of skin grains): the
+// block, so a body runs each part once a block however busy the run. A
+// strike's modes still ring from its 8-sample step (ring's late); its skin,
+// noise and click start up to 1.45 ms early. A tine's and a fill's strikes
+// retune what may still ring (a set of modes, the next head up), so where they
+// land sets how it carries on: a tine keeps the 8-sample grid, a fill (its
+// heads need whole grains) 16.
+const u32 step = 64, tine_step = 8, fill_step = 16;
 inline u32 step_of(u32 model) { return model == kit::tine ? tine_step : model == kit::fill ? fill_step : step; }
 // A pending strike the body schedules itself: a clap's reflections, a ratchet's teeth.
-// They gather on the grid ahead, a word a 32-sample cell, 64 cells (46 ms) round
-// a ring: the cell's force (Q15, the ghosts' together), its strongest
-// one's force, and that one's 8-sample step in the cell (bits 30..31).
+// They gather on the grid ahead, a word a block, 64 blocks (93 ms) round a
+// ring: the block's force (Q15, the ghosts' together), its strongest one's
+// force (its top 14 bits), and that one's 8-sample step in the block (bits 29..31).
 const u32 later_cells = 64;
 
 struct Body {
@@ -570,7 +573,7 @@ inline void add_ghost(Body& b, u32 at, i32 v) {
     // Never a lap round the ring or more ahead (a ghost is at most 44 ms off).
     if (at - b.now >= (later_cells - 1) * step) at = b.now + (later_cells - 1) * step - 1;
     u32& w = b.later[(at / step) % later_cells];
-    const i32 had = static_cast<i32>(w & 0x7fffu), top = static_cast<i32>((w >> 15) & 0x7fffu);
+    const i32 had = static_cast<i32>(w & 0x7fffu), top = static_cast<i32>((w >> 15) & 0x3fffu) << 1;
     if (!had) {
         // At most 24 cells waiting, as the slots once held at most 32 ghosts:
         // past that a ghost is lost (a ratchet struck hard by a big handful).
@@ -578,7 +581,7 @@ inline void add_ghost(Body& b, u32 at, i32 v) {
         ++b.due;
     }
     const u32 fine = (at % step) >> 3;
-    w = v > top ? static_cast<u32>(dsp::together(had, v)) | static_cast<u32>(v) << 15 | fine << 30
+    w = v > top ? static_cast<u32>(dsp::together(had, v)) | static_cast<u32>(v >> 1) << 15 | fine << 29
                 : static_cast<u32>(dsp::together(had, v)) | (w & ~0x7fffu);
 }
 // Samples from b.now (a cell's start) to the next cell holding a ghost, if it is
@@ -587,7 +590,7 @@ inline u32 ghost_due(const Body& b) {
     if (!b.due) return 0xffffffffu;
     const u32 c = b.now / step;
     if (b.later[c % later_cells]) return 0;
-    if (b.later[(c + 1) % later_cells]) return step;
+    if (b.later[(c + 1) % later_cells]) return step - b.now % step;
     return 0xffffffffu;
 }
 // How hard a stroke reads: its force, 12% more or less at random, so no two
@@ -806,7 +809,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
 __attribute__((noinline)) void strike_ghosts(Body& b, u32 n) {
     u32& w = b.later[(b.now / step) % later_cells];
     const i32 v = static_cast<i32>(w & 0x7fffu);
-    const u32 late = (w >> 30) << 3;
+    const u32 late = (w >> 29) << 3;
     w = 0;
     if (!v) return;
     --b.due;

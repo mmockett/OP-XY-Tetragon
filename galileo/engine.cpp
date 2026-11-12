@@ -289,10 +289,9 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             voice.gain = trimmed_gain(voice.model, p);
             break;
         }
-    // Impacts and ghosts strike on a 32-sample grid (0.73 ms): a block splits into
-    // at most two stretches however many balls land in it, and each stretch
-    // runs the body's parts once. (Struck modes keep their 8-sample phase; a
-    // tine strikes on the 8-sample grid, a fill on 16.)
+    // Impacts and ghosts strike at the block's start (body::step): the body runs
+    // the block in one stretch however many balls land in it. (Struck modes keep
+    // their 8-sample phase; a tine strikes on the 8-sample grid, a fill on 16.)
     const u32 grid = ~(body::step_of(voice.model) - 1);
     motion::Impact hits[max_impacts];
     const u32 count = gather(voice, hits);
