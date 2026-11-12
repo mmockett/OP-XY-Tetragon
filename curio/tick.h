@@ -48,6 +48,7 @@ struct Cicada {
     u32 fall_q, fall_rq, amp_q, amp_rq;
     i32 chirp, len;
     i32 wlast;   // the wing's last half-rate sample
+    i32 swarm_lp;   // the swarm shell's pitch for the next block
 
     __attribute__((noinline)) void tune_shell(int s, i32 lp) {
         // A train that doesn't fall keeps its shell's tuning from rib to rib.
@@ -85,7 +86,10 @@ struct Cicada {
         // The train falls up to 1.2 octaves by its last rib: fall_k[who] is
         // 1.2 chirp k / (n - 1), carried from rib to rib without a division.
         const i32 fall = n > 1 ? static_cast<i32>(fall_k[who]) : sc(C(0.6), chirp);
-        tune_shell(s, lcf[s] - fall);
+        // The main cicada retunes its shell rib by rib; the swarm's shared
+        // shell takes the latest swarm rib's pitch once a block.
+        if (s) swarm_lp = lcf[1] - fall;
+        else tune_shell(0, lcf[0] - fall);
         const i32 a = mul(full - static_cast<i32>(amp_k[who] << 8), F(0.8) + sc(F(0.2), draw(rng)));   // 0.45 k / n
         // The next rib's quotients: q + x / d, the remainders carried.
         fall_k[who] += fall_q;
@@ -133,6 +137,7 @@ struct Cicada {
         tuned[0] = tuned[1] = -(1 << 30);   // nothing yet
         tune_shell(0, lcf[0]);
         tune_shell(1, lcf[1]);
+        swarm_lp = lcf[1];
         // The tail: 12..412 ms.
         const i32 tl = 12000 + sc(400000, pw(c[4], C(1.7)));
         env[0].v = env[1].v = 0;
@@ -214,6 +219,7 @@ struct Cicada {
             band_gain_now = static_cast<i32>(ex2(((56431 + lq9 - lp) >> 1) + (16 << 12)));
             last_pos = pos;
         }
+        if (cicadas > 1) tune_shell(1, swarm_lp);
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
         const u32 t0 = t;
         for (u32 i = 0;;) {
