@@ -439,8 +439,5 @@ const i32 svf[q_classes][fc_steps][3] = {
         {33048668, 261607145, 2070833789}, {33048668, 261607145, 2070833789}, {33048668, 261607145, 2070833789}, {33048668, 261607145, 2070833789},
     },
 };
-// METAL's SIZZLE through the wash's band: the input level (Q14) that keeps the
-// rivets' level, at pitches 100 * 2^(i / 2) Hz (tools/make_tables.py).
-const i32 sizzle_in[10] = {263237, 263237, 263237, 263237, 263237, 251325, 220671, 196088, 190811, 190811};
 }
 }
