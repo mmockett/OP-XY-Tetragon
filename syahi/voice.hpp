@@ -618,6 +618,22 @@ __attribute__((noinline)) static void noise_run(NoiseRun& z, i32* __restrict out
     z.seed = seed;
     z.f1 = f1;
 }
+// The ring on the lowest mode once the burst is quiet: no input, so it only
+// rings out. It ends the run-on once both its states are under the floor.
+__attribute__((noinline)) static void ring_tail(Core& v, i32* __restrict o) {
+    Chamberlin& g = v.r0;
+    i32 lo = g.low, bd = g.band;
+    const i32 f = g.f, dm = g.damping, rg = v.spec.noise_ring;
+    for (u32 n = 0; n < 64; ++n) {
+        lo = opxy::q31::add(lo, multiply(f, bd) * 2);
+        const i32 hi = -lo - multiply(dm, bd) * 2;
+        bd = opxy::q31::add(bd, multiply(f, hi) * 2);
+        o[n] += multiply(multiply(dm, bd) * 2, rg) << 1;
+    }
+    g.low = lo;
+    g.band = bd;
+    v.noise_quiet = absolute(lo) < silent && absolute(bd) < silent ? 40u : v.noise_quiet + 1;
+}
 __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes, i32* __restrict out) {
     const Spec& s = v.spec;
     const i32 gain = multiply(v.velocity, q31(1.732 / 2));
@@ -898,9 +914,11 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         v.drive = drive;
     }
     // The wash, the noise and the rattle, a sample at a time.
-    // The burst runs on 4 blocks after it falls quiet for its band to settle,
-    // 40 when it also rings a mode (a narrow resonance takes that long).
-    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < (s.noise_ring ? 40u : 4u));
+    // The burst runs on 4 blocks after it falls quiet, for its band to settle.
+    // A ring on the lowest mode then rings out alone, with nothing more in,
+    // for at most 36 blocks more or until it is under the floor.
+    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < 4u);
+    const bool ringing = !noisy && s.noise > 0 && s.noise_ring && v.noise_quiet < 40u;
     const bool rattling = s.wires > 0 && !metal;   // the snare's wires
     // The wash and the noise add to the head; the snare's wires then follow all of it.
     if (metal_wash || sizzling) {
@@ -909,6 +927,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         else wash_pass<false>(v, wash, out, 0, 0);
     }
     if (noisy) noise_pass(v, strikes, out);
+    else if (ringing) ring_tail(v, out);
     if (rattling) rattle_pass(v, out);
 }
 }
