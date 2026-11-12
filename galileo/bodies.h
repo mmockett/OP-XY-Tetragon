@@ -171,6 +171,7 @@ struct Body {
     u32 ready;         // model, p and the coefficients prepare() set hold
     u32 due;           // the earliest ghost's time, or 0xffffffff for none
     i32 tuned[2];      // a tine set's pitch as last tuned (log2 Hz), so a repeat isn't tuned again
+    i32 held;          // the skins' last half-rate sample (expand)
 };
 
 // The hat's and the ride's square banks (ratios to the base, Q28), and a
@@ -530,6 +531,7 @@ inline void clear_state(Body& b) {
     for (u32 i = 0; i < 8; ++i) b.sq[i] = 0;
     for (u32 i = 0; i < ghosts; ++i) b.ghost[i].at = b.ghost[i].v = 0;
     b.tuned[0] = b.tuned[1] = 0;
+    b.held = 0;
 }
 
 // ----------------------------------------------------------------- strike --
@@ -775,24 +777,29 @@ inline i32 sine_of(u32 x) {
     const i32 lo = t[0];
     return lo + multiply(t[1] - lo, static_cast<i32>((x << 9) >> 1));
 }
-// One partial over n samples (n a whole number of grains): its increment at
-// each grain's edge (inc[0] at the start, scaled by ratio when given; SWEEP
-// when they move), its level decaying by r16 a grain, heard at gain g (Q28,
-// 0 for none). Writes out, or adds to it (ADD); swing gets |sine| (SWING).
+// A skin runs at half the rate: its partials are all under about 3 kHz, swept
+// or not, so a grain is 8 of its samples, each two of the block's, and the
+// sum comes back to the full rate by straight lines between them (expand).
+const u32 hgrain = grain / 2;
+// One partial over m half-rate samples (m a whole number of half grains): its
+// increment at each grain's edge (inc[0] at the start, full-rate, scaled by
+// ratio when given; SWEEP when they move), its level decaying by r16 a
+// grain, heard at gain g (Q28, 0 for none). Writes out, or adds to it (ADD);
+// swing gets |sine| (SWING).
 template <bool ADD, bool SWING, bool SWEEP>
 __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, const u32* __restrict inc, i32 ratio28,
-                                           i32 g28, i32* __restrict out, i32* __restrict swing, u32 n) {
+                                           i32 g28, i32* __restrict out, i32* __restrict swing, u32 m) {
     u32 p = phase;
     i32 a = level;
-    u32 now = ratio28 ? times(inc[0], ratio28) : inc[0];
-    for (u32 g = 0; g < n; g += grain) {
-        const u32 next = SWEEP ? (ratio28 ? times(inc[g / grain + 1], ratio28) : inc[g / grain + 1]) : now;
-        const i32 step = static_cast<i32>(next - now) >> 4;
+    u32 now = (ratio28 ? times(inc[0], ratio28) : inc[0]) << 1;
+    for (u32 g = 0; g < m; g += hgrain) {
+        const u32 next = SWEEP ? (ratio28 ? times(inc[g / hgrain + 1], ratio28) : inc[g / hgrain + 1]) << 1 : now;
+        const i32 step = static_cast<i32>(next - now) >> 3;
         const i32 end = multiply(a, r16);
         i32 l = g28 ? gain(a, g28) : a;
-        const i32 dl = ((g28 ? gain(end, g28) : end) - l) >> 4;
+        const i32 dl = ((g28 ? gain(end, g28) : end) - l) >> 3;
         i32* __restrict o = out + g;
-        for (u32 i = 0; i < grain; ++i) {
+        for (u32 i = 0; i < hgrain; ++i) {
             if (SWEEP) now += static_cast<u32>(step);
             p += now;
             l += dl;
@@ -810,16 +817,17 @@ __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, cons
 }
 template <bool ADD, bool SWING>
 inline void partial(bool sweep, u32& phase, i32& level, i32 r, const u32* inc, i32 ratio28, i32 g28, i32* out, i32* swing,
-                    u32 n) {
-    if (sweep) partial_run<ADD, SWING, true>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, n);
-    else partial_run<ADD, SWING, false>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, n);
+                    u32 m) {
+    if (sweep) partial_run<ADD, SWING, true>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, m);
+    else partial_run<ADD, SWING, false>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, m);
 }
-// A skin: writes n samples (a whole number of grains), or adds them (add), at
-// gain g (Q28) if given. swing, if given, gets |sine| of the fundamental (Q31)
-// for the snare's wires. A partial that has died away only keeps its phase.
-inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swing = 0, i32 g28 = 0, bool add = false) {
+// A skin at half the rate: writes m samples (a whole number of half grains),
+// or adds them (add), at gain g (Q28) if given. swing, if given, gets |sine|
+// of the fundamental (Q31), at the half rate too, for the snare's wires. A
+// partial that has died away only keeps its phase.
+inline void skin_half(Skin& k, i32* __restrict out, u32 m, i32* __restrict swing = 0, i32 g28 = 0, bool add = false) {
     u32 inc[64 / grain + 1];
-    const u32 grains = n / grain;
+    const u32 grains = m / hgrain;
     i32 s = k.s;
     if (s > 4194304 && k.sweep_inc) {                       // sweeping (above 0.002)
         const i32 sr16 = per_grain(k.sr);
@@ -835,13 +843,13 @@ inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swin
         for (u32 g = 0; g <= grains; ++g) inc[g] = k.inc;
     }
     if (!k.parts) {
-        if (!add) for (u32 i = 0; i < n; ++i) out[i] = 0;
+        if (!add) for (u32 i = 0; i < m; ++i) out[i] = 0;
         return;
     }
     const bool sweeping = k.s != 0;
-    if (swing) partial<false, true>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, swing, n);
-    else if (add) partial<true, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, n);
-    else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, n);
+    if (swing) partial<false, true>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, swing, m);
+    else if (add) partial<true, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, m);
+    else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, m);
     for (u32 part = 1; part < k.parts; ++part) {
         if (k.e[part].a < 4096) {                           // under -95 dBFS
             k.e[part].a = 0;
@@ -853,8 +861,28 @@ inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swin
             k.ph[part] = p;
             continue;
         }
-        partial<true, false>(sweeping, k.ph[part], k.e[part].a, k.e[part].r, inc, k.ratio[part], g28, out, 0, n);
+        partial<true, false>(sweeping, k.ph[part], k.e[part].a, k.e[part].r, inc, k.ratio[part], g28, out, 0, m);
     }
+}
+// m half-rate samples h back to the full rate: each one, after the midpoint
+// between it and the one before (last, kept across stretches). Written, or
+// added (ADD).
+template <bool ADD>
+__attribute__((noinline)) void expand(const i32* __restrict h, u32 m, i32& last, i32* __restrict out) {
+    i32 y0 = last;
+    for (u32 i = 0; i < m; ++i) {
+        const i32 y = h[i];
+        const i32 mid = (y0 >> 1) + (y >> 1);
+        if (ADD) {
+            out[2 * i] += mid;
+            out[2 * i + 1] += y;
+        } else {
+            out[2 * i] = mid;
+            out[2 * i + 1] = y;
+        }
+        y0 = y;
+    }
+    last = y0;
 }
 // A click's noise burst, high-passed, added at gain g (Q28).
 __attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
@@ -1019,15 +1047,21 @@ inline void band_high_add(dsp::Band& f, dsp::Pole& p, i32 c, i32* __restrict io,
     band_run(f, io, n);
     high_add(p, c, io, out, g28, n);
 }
-// Noise under an envelope, swelling with a swing (Q31) as 0.55 + 0.45 swing, written.
+// Noise under an envelope, swelling with a swing (Q31, at half the rate: one for
+// each two samples) as 0.55 + 0.45 swing, written.
 __attribute__((noinline)) void noise_env_swell(Energy& env, u32& seed, const i32* __restrict swing, i32* __restrict out, u32 n) {
     i32 a = env.a;
     const i32 r = env.r;
     u32 x = seed;
-    for (u32 i = 0; i < n; ++i) {
+    const u32 m = n >> 1;
+    for (u32 j = 0; j < m; ++j) {
+        const i32 swell = GQ31(0.55) + multiply(GQ31(0.45), swing[j]);
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         a = multiply(a, r);
-        out[i] = multiply(multiply(static_cast<i32>(x) >> 2, a) * 8, GQ31(0.55) + multiply(GQ31(0.45), swing[i]));
+        out[2 * j] = multiply(multiply(static_cast<i32>(x) >> 2, a) * 8, swell);
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        a = multiply(a, r);
+        out[2 * j + 1] = multiply(multiply(static_cast<i32>(x) >> 2, a) * 8, swell);
     }
     env.a = a;
     seed = x;
@@ -1073,15 +1107,18 @@ inline void knee_run(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
 }
 
 __attribute__((noinline)) inline void run_kick(Body& b, i32* __restrict out, u32 count) {
-    skin_block(b.skin[0], out, count);
+    i32 h[32];
+    skin_half(b.skin[0], h, count / 2);
+    expand<false>(h, count / 2, b.held, out);
     modes_add(b.mode, 2, out, count);   // at the attack's level, from their strikes
     const i32 drive = b.k[0], makeup = b.k[1];
     for (u32 i = 0; i < count; ++i) out[i] = multiply(dsp::tanh(gain(out[i], drive)), makeup);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u32 count) {
-    i32 swing[64];
-    skin_block(b.skin[0], out, count, swing, b.g[0]);   // the head at its level
+    i32 h[32], swing[32];
+    skin_half(b.skin[0], h, count / 2, swing, b.g[0]);   // the head at its level
+    expand<false>(h, count / 2, b.held, out);
     if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
         // The wires buzz with the head: noise, swelling with the head's swing.
         noise_band_add(b.env[0], b.seed, swing, b.band[0], b.pole[0], b.pc[0], out, b.g[1], count);
@@ -1091,12 +1128,16 @@ __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u3
     knee_run(out, count, GQ28(1.2), GQ28(0.6), GQ28(1 / 0.6));
 }
 __attribute__((noinline)) inline void run_skins(Body& b, i32* __restrict out, u32 count) {   // tom, fill
-    skin_block(b.skin[0], out, count);
-    if (b.model == kit::fill) skin_block(b.skin[1], out, count, 0, 0, true);
+    i32 h[32];
+    skin_half(b.skin[0], h, count / 2);
+    if (b.model == kit::fill) skin_half(b.skin[1], h, count / 2, 0, 0, true);
+    expand<false>(h, count / 2, b.held, out);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_hand(Body& b, i32* __restrict out, u32 count) {
-    skin_block(b.skin[0], out, count, 0, b.g[0]);
+    i32 h[32];
+    skin_half(b.skin[0], h, count / 2, 0, b.g[0]);
+    expand<false>(h, count / 2, b.held, out);
     if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
         i32 sl[64];
         noise_env(b.env[0], b.seed, sl, count);
@@ -1118,11 +1159,9 @@ __attribute__((noinline)) inline void run_modes(Body& b, i32* __restrict out, u3
     // The shell, at its level, added (silent at 0, but ringing on).
     if (b.model == kit::rim || b.model == kit::ratchet) {
         const i32 level = b.g[b.model == kit::ratchet ? 1 : 0];
-        if (level) skin_block(b.skin[0], out, count, 0, level, true);
-        else {
-            i32 unheard[64];
-            skin_block(b.skin[0], unheard, count);
-        }
+        i32 h[32];
+        skin_half(b.skin[0], h, count / 2, 0, level);
+        if (level) expand<true>(h, count / 2, b.held, out);
     }
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
