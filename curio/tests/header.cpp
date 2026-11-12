@@ -58,25 +58,26 @@ int main() {
     expect("PAN", frame.header[2], "100");
     expect("LEVEL", frame.header[3], "0dB");
     // Shift's second row: TUNE, VARY and the key's own sends.
-    show(3, 1, true, 0, 0, 0, -5, 8, 0, 4);
+    // A send is 0 (TRK) or its percent + 1 (SDK 1.15).
+    show(3, 1, true, 0, 0, 0, -5, 8, 0, 51);
     expect("TUNE", frame.header[0], "-5st");
     expect("VARY", frame.header[1], "8");
     expect("FX I", frame.header[2], "TRK");
     expect("FX II", frame.header[3], "50");
     expect("the second row's title", frame.texts[0].chars, "tune");
-    show(3, 1, true, 0, 0, 0, 15, 0, 7, 1);
+    show(3, 1, true, 0, 0, 0, 15, 0, 101, 1);
     expect("TUNE", frame.header[0], "+15st");
     expect("VARY", frame.header[1], "0");
     expect("FX I", frame.header[2], "100");
     expect("FX II", frame.header[3], "0");
     // Both Shift rows at once, stacked as the pages: the edited row bright
     // (titles 0..3, values 4..7), the other grey (titles 8..11, values 12..15).
-    show(3, 1, true, -40, -6, 2, -5, 8, 0, 4);
+    show(3, 1, true, -40, -6, 2, -5, 8, 0, 51);
     expect("the grey first-row title", frame.texts[9].chars, "choke");
     expect("the grey CHOKE", frame.texts[13].chars, "2");
     expect("the grey PAN", frame.texts[14].chars, "-40");
     expect("the grey LEVEL", frame.texts[15].chars, "-6dB");
-    show(3, 0, true, -40, -6, 2, -5, 8, 0, 4);
+    show(3, 0, true, -40, -6, 2, -5, 8, 0, 51);
     expect("the grey second-row title", frame.texts[8].chars, "tune");
     expect("the grey TUNE", frame.texts[12].chars, "-5st");
     expect("the grey VARY", frame.texts[13].chars, "8");

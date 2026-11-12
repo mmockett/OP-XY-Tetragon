@@ -23,8 +23,10 @@ int main() {
         for (int i = 0; i < 4; ++i) in.shown[i] = static_cast<opxy::u8>(v[10] * 4 + i);
         in.pad[0] = static_cast<opxy::i8>(v[11]);
         in.pad[1] = static_cast<opxy::i8>(v[12]);
-        in.pad[2] = static_cast<opxy::i8>(v[13]);
-        in.pad[3] = static_cast<opxy::i8>(v[14]);
+        // Scene lines give each send as its old step (0 TRK, 1..7); the display
+        // takes the percent + 1 (SDK 1.15).
+        in.pad[2] = static_cast<opxy::i8>(v[13] > 0 ? (((v[13] > 7 ? 7 : v[13]) - 1) * 100 + 3) / 6 + 1 : 0);
+        in.pad[3] = static_cast<opxy::i8>(v[14] > 0 ? (((v[14] > 7 ? 7 : v[14]) - 1) * 100 + 3) / 6 + 1 : 0);
         in.pan = static_cast<opxy::i8>(v[15]);
         in.level = static_cast<opxy::i8>(v[16]);
         in.choices[0] = static_cast<opxy::u8>(v[0] / 4);

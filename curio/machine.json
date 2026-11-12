@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sdk": "1.10",
+  "sdk": "1.15",
   "kind": "drum",
   "description": "A Victorian cabinet of curiosities as a drum kit: sixteen specimens in four drawers, each key its own, with TUNE and VARY.",
   "presetDefaults": {
