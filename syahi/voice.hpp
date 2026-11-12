@@ -210,14 +210,14 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
             if (k == 0 && s.tube > 0) weight += multiply(weight, s.tube) + multiply(weight, s.tube >> 1);
             v.part[k].weight = weight;
         }
-        // A mode the strike leaves 30 dB under the strongest is masked by it
+        // A mode the strike leaves 24 dB under the strongest is masked by it
         // and isn't played. METAL's wash reads only its modes' phases and
         // struck energy, which a silent mode keeps, so METAL drops them too.
         {
             i32 strongest = 0;
             for (u32 k = 0; k < head_modes; ++k) strongest = absolute(v.part[k].weight) > strongest ? absolute(v.part[k].weight) : strongest;
             for (u32 k = 0; k < head_modes; ++k)
-                if (absolute(v.part[k].weight) < strongest >> 5) v.part[k].weight = 0;
+                if (absolute(v.part[k].weight) < strongest >> 4) v.part[k].weight = 0;
         }
     }
     // The wash's pairs ring as long as their two modes on average: the
