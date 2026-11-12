@@ -1012,6 +1012,7 @@ struct Cork {
     i32 fz_hp, fz_a, fz_amp;
     Env fizz;
     bool popped;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
@@ -1019,6 +1020,7 @@ struct Cork {
         rng = x.seed | 1u;
         t = 0;
         popped = false;
+        hlast = 0;
         pre = samples(static_cast<u32>(sc(50000, c[5])));
         const i32 lpf = lg2(static_cast<u32>(350 + sc(900, c[0]))) + tune;
         // The squeak: 2.2 to 3.7 kHz over the twist.
@@ -1033,11 +1035,13 @@ struct Cork {
         // The pop: the neck's note, bent up from 0.7 of itself.
         pop.ph = 0;
         pop.v = pop.a = 0;
-        pop.inc = inc(lpf);
+        // The pop, the bottle's body and the glugs run at half the rate (two
+        // samples a step); the squeak, the thock and the fizz at the full rate.
+        pop.inc = inc(lpf) << 1;
         const i32 tp = 18000 + sc(60000, c[3]);
         pop_fall = full;
-        popk_fall = decay(static_cast<u32>(3000 + sc(6000, 4095 - c[1])));
-        pop_k0 = decay(static_cast<u32>(tp));
+        popk_fall = decay(static_cast<u32>(1500 + sc(3000, 4095 - c[1])));
+        pop_k0 = decay(static_cast<u32>(tp) >> 1);
         body.ph = 0;
         body.v = body.a = 0;
         body.inc = pop.inc >> 1;
@@ -1050,7 +1054,7 @@ struct Cork {
         glug_at = pre + samples(60000);
         gl.ph = 0;
         gl.v = gl.a = 0;
-        gl_inc = static_cast<u32>(mul(static_cast<i32>(pop.inc), F(0.6)));
+        gl_inc = static_cast<u32>(mul(static_cast<i32>(pop.inc), F(0.6)));   // a half-rate step's, as the pop's
         gl_amp = sc(U(0.4), c[7]);
         // The fizz: sparse clicks through a bright resonance.
         fizz_p = per_sample(static_cast<u32>(150 + sc(3000, c[6])));
@@ -1133,7 +1137,7 @@ struct Cork {
         const i32 vk = gl.vk, ak = gl.ak;
         for (u32 j = 0; j < n; ++j) {
             if (CURIO_LIKELY(v > 4096)) {
-                rise += 190;   // 8 / 44100 each sample, Q20
+                rise += 380;   // 8 / 44100 each sample, Q20, two a step
                 ph += in + static_cast<u32>(mul(static_cast<i32>(in), rise << 11));
                 v = mul(v, vk);
                 a = mul(a, ak);   // the attack runs out on its own
@@ -1164,20 +1168,22 @@ struct Cork {
         fz.y2 = y2;
         fz_hp = hp;
     }
-    // n samples between events.
+    // n half-rate steps between events: the pop, the body and a glug.
+    __attribute__((noinline)) void half_span(i32* h, u32 n) {
+        if (popped) {
+            pop_pass(h, n);
+            tone_at(body, h, n);
+        }
+        if (gl.v > 4096) glug_pass(h, n);
+    }
+    // n samples between events: the squeak, the thock and the fizz.
     __attribute__((noinline)) void span(i32* y, u32 n) {
         i32 cb[frames];
-        for (u32 j = 0; j < n; ++j) y[j] = 0;
         if (t < pre) squeak_pass(y, n);
-        if (popped) {
-            pop_pass(y, n);
-            tone_at(body, y, n);
-        }
         const bool th = popped && thock.v > 4096, fz_on = fizz.v > 4096;
         if (th && fz_on) noise_pass<true, true>(y, cb, n);
         else if (th) noise_pass<true, false>(y, cb, n);
         else if (fz_on) noise_pass<false, true>(y, cb, n);
-        if (gl.v > 4096) glug_pass(y, n);
         if (fz_on) fizz_pass(y, cb, n);
     }
     // The pop, or a glug, at t.
@@ -1186,33 +1192,41 @@ struct Cork {
             popped = true;
             pop_fall = full;
             const i32 g = U(0.6) + sc(U(0.6), c[1]);
-            pop.hit(g, pop_k0, decay(600));
-            body.hit(sc(U(0.5), c[3]), decay(static_cast<u32>(mul(18000 + sc(60000, c[3]), F(0.75)) << 1)), decay(600));
+            pop.hit(g, pop_k0, decay(300));
+            body.hit(sc(U(0.5), c[3]), decay(static_cast<u32>(mul(18000 + sc(60000, c[3]), F(0.75)))), decay(300));
             thock.v = U(0.1) + sc(U(2.4), c[4]);
         }
         if (glug < glugs && t == glug_at) {
             gl.v = gl.a = 0;
             gl.ph = 0;
-            gl.hit(gl_amp, decay(20000), decay(400));
+            gl.hit(gl_amp, decay(10000), decay(200));
             gl_rise = 0;
             ++glug;
             glug_at += samples(70000);
         }
     }
     void run(i32* out) {
+        i32 h[frames / 2];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
         const u32 t0 = t;
-        for (u32 i = 0;;) {
+        for (u32 i = 0, hi = 0;;) {
             t = t0 + i;
             events();
             // The next event in this block: the pop, or a glug.
             u32 e = frames;
             if (!popped) { const u32 d = pre - t0; if (d < e) e = d; }
             if (glug < glugs) { const u32 d = glug_at - t0; if (d < e && d > i) e = d; }
-            span(out + i, e - i);
+            const u32 he = (e + 1) >> 1;
+            if (he > hi) half_span(h + hi, he - hi);
+            if (e > i) span(out + i, e - i);
             i = e;
+            hi = he;
             if (i >= frames) break;
         }
+        up_into(h, out, hlast);
         t = t0 + frames;
     }
+};
 };
 }
