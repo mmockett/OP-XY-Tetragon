@@ -802,7 +802,7 @@ struct Spark {
         // The ozone tail, swelling in as the cracks go on.
         const i32 lpo = lpc + 563;   // 1.1
         band(ozk, lpo, C(1.1));
-        ozgain = band_gain(lpo, C(1.1));
+        ozgain = gn(ozk.g, band_gain(lpo, C(1.1)));   // driven straight: unity at its peak, unit RMS
         oz = Res();
         const i32 to = 22000 + sc(480000, pw(c[3], C(2.0)));
         to_k = decay(static_cast<u32>(to));
@@ -894,49 +894,57 @@ struct Spark {
         snap.v = v;
         snap_lp = lp;
     }
-    // Ozone, swelling in as the cracks go on.
-    __attribute__((noinline)) void ozone_pass(i32* y, u32 tt, u32 n) {
+    // Ozone, swelling in as the cracks go on, then dying away.
+    template <bool rising> __attribute__((noinline)) void ozone_run(i32* y, u32 n) {
         u32 r = orng;
-        i32 lv = oz_level, y1 = oz.y1, y2 = oz.y2, x1 = oz.x1, x2 = oz.x2;
-        const i32 ramp = oz_ramp, k = to_k, c = ozk.c, r2 = ozk.r2, b = ozk.b, g = ozgain;
-        const u32 last = end;
-        for (u32 j = 0; j < n; ++j, ++tt) {
-            if (CURIO_UNLIKELY(tt <= last)) lv += ramp;
+        i32 lv = oz_level, y1 = oz.y1, y2 = oz.y2;
+        const i32 ramp = oz_ramp, k = to_k, c = ozk.c, r2 = ozk.r2, g = ozgain;
+        for (u32 j = 0; j < n; ++j) {
+            if (rising) lv += ramp;
             else lv = mul(lv, k);
-            const i32 in = mul(noise(r), b);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-            x2 = x1;
-            x1 = in;
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
             y2 = y1;
             y1 = o;
-            y[j] += lev(gn(o, g), lv);
+            y[j] += lev(o, lv);
         }
         orng = r;
         oz_level = lv;
         oz.y1 = y1;
         oz.y2 = y2;
-        oz.x1 = x1;
-        oz.x2 = x2;
     }
-    // The arc's mains buzz, from half way through the cracks.
-    __attribute__((noinline)) void arc_pass(i32* y, u32 tt, u32 n) {
+    void ozone_pass(i32* y, u32 tt, u32 n) {
+        // It rises through the last crack (tt <= end), then falls.
+        const u32 up = tt <= end ? (end - tt + 1 < n ? end - tt + 1 : n) : 0;
+        if (up) ozone_run<true>(y, up);
+        if (n > up) ozone_run<false>(y + up, n - up);
+    }
+    // The arc's mains buzz, from half way through the cracks, dying away
+    // after the last.
+    template <bool falling> __attribute__((noinline)) void arc_run(i32* y, u32 n) {
         u32 ph = ph120;
         i32 lp = arc_lp, v = arc.v;
         const i32 a = arc_a, k = arc.k;
-        const u32 last = end;
-        for (u32 j = 0; j < n; ++j, ++tt) {
-            if (CURIO_LIKELY(tt * 2 > last)) {
-                ph += 11687059u;   // 120 Hz
-                const i32 sq = static_cast<i32>(ph) >= 0 ? one >> 1 : -(one >> 1);
-                const i32 hum = sq + (sine(ph * 2) >> 3);
-                lp += mul(a, hum - lp);
-                if (CURIO_LIKELY(tt > last)) v = mul(v, k);
-                y[j] += lev(lp, v);
-            }
+        for (u32 j = 0; j < n; ++j) {
+            ph += 11687059u;   // 120 Hz
+            const i32 sq = static_cast<i32>(ph) >= 0 ? one >> 1 : -(one >> 1);
+            const i32 hum = sq + (sine(ph * 2) >> 3);
+            lp += mul(a, hum - lp);
+            if (falling) v = mul(v, k);
+            y[j] += lev(lp, v);
         }
         ph120 = ph;
         arc_lp = lp;
         arc.v = v;
+    }
+    void arc_pass(i32* y, u32 tt, u32 n) {
+        const u32 last = end;
+        // The first sample past half the cracks, and the first past the last.
+        const u32 s0 = last / 2 + 1, s1 = last + 1;
+        const u32 j0 = tt >= s0 ? 0 : (s0 - tt < n ? s0 - tt : n);
+        const u32 j1 = tt >= s1 ? 0 : (s1 - tt < n ? s1 - tt : n);
+        if (j1 > j0) arc_run<false>(y + j0, j1 - j0);
+        const u32 jf = j1 > j0 ? j1 : j0;
+        if (n > jf) arc_run<true>(y + jf, n - jf);
     }
     // The jar's body.
     __attribute__((noinline)) void body_pass(i32* y, u32 n) {
@@ -945,14 +953,12 @@ struct Spark {
         i32 v = body.v, a = body.a;
         const i32 vk = body.vk, ak = body.ak;
         for (u32 j = 0; j < n; ++j) {
-            if (CURIO_LIKELY(v)) {
-                ph += in;
-                v = mul(v, vk);
-                a = mul(a, ak);   // the attack runs out on its own
-                y[j] += mul(v - a, sine(ph));
-                if (CURIO_UNLIKELY(v < 4096)) v = 0;
-            }
+            ph += in;
+            v = mul(v, vk);
+            a = mul(a, ak);   // the attack runs out on its own
+            y[j] += mul(v - a, sine(ph));
         }
+        if (v < 4096) v = 0;   // checked a span at a time
         body.ph = ph;
         body.v = v;
         body.a = a;
