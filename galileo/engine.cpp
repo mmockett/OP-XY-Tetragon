@@ -323,8 +323,8 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     if (voice.quiet >= quiet_blocks) voice.done = 1;
 }
 }
-// Diagnostic only (reverted): the golden bench's profile builds take the snare at 127.
+// Diagnostic only (reverted): the golden bench's profile builds take the tine at 127.
 #undef GOLDEN_HEAVY_MODEL
-#define GOLDEN_HEAVY_MODEL 1
+#define GOLDEN_HEAVY_MODEL 9
 #undef GOLDEN_HEAVY_LEVEL
 #define GOLDEN_HEAVY_LEVEL 2
