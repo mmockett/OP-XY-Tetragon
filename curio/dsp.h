@@ -270,6 +270,16 @@ constexpr i32 F(double x) { return static_cast<i32>(x >= 1.0 ? 2147483647.0 : x 
 constexpr i32 U(double x) { return static_cast<i32>(x * 268435456.0); }                                // Q28
 constexpr i32 C(double x) { return static_cast<i32>(x * 4096.0); }                                     // Q12
 
+// A cheaper soft clip than tanh for the sample loops: x - 4 x^3 / 27 up to
+// 1.5, where it reaches 1 flat, and 1 past it (x Q28, output Q28). Two
+// multiplies and a clamp, no table and no branch.
+inline i32 soft(i32 x) {
+    const i32 m = U(1.5);
+    x = x > m ? m : x < -m ? -m : x;
+    const i32 x2 = mul(x, x) << 3;                     // Q28
+    return x - (mul(mul(x2, x), F(4.0 / 27.0)) << 3);
+}
+
 // What a specimen reads at a strike: its eight controls (Q12, VARY's moves
 // included), the key's pitch offset (TUNE and VARY, Q12 octaves) and a seed.
 struct Ctx {
@@ -293,6 +303,11 @@ static __attribute__((noinline)) inline void band(ResK& k, i32 lp, i32 q) {
     // r = exp(-pi f / (q 44100)): a time constant of q / (pi f).
     const u32 tau_us = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875);   // log2(1e6 / pi) = 18.28
     tune(k, inc(lp), decay(tau_us));
+}
+// The same for a resonator stepped at half the rate (two samples a step).
+static __attribute__((noinline)) inline void band_half(ResK& k, i32 lp, i32 q) {
+    const u32 tau_us = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875 - (1 << 12));
+    tune(k, inc(lp + (1 << 12)), decay(tau_us));
 }
 }
 }
