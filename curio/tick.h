@@ -607,30 +607,25 @@ struct Pod {
     // The swish of the shake: its level (with the band's gain) glided
     // across the block from its two ends.
     __attribute__((noinline)) void swish_pass(i32* y, const i32* eb, const i32* bb) {
-        i32 y1 = sw.y1, y2 = sw.y2, x1 = sw.x1, x2 = sw.x2;
+        i32 y1 = sw.y1, y2 = sw.y2;
         u32 r = srng;
-        const i32 c = swk.c, r2 = swk.r2, b = swk.b, g = sw_gain, amp = sw_amp;
-        const i32 l0 = gn(lev(amp, (eb[0] >> 3) + (bb[0] >> 1)), g);
-        const i32 l1 = gn(lev(amp, (eb[frames - 1] >> 3) + (bb[frames - 1] >> 1)), g);
+        // The band driven straight (unity at its peak), its loudness gain in the level.
+        const i32 c = swk.c, r2 = swk.r2, g = swk.g, sg = sw_gain, amp = sw_amp;
+        const i32 l0 = gn(lev(amp, (eb[0] >> 3) + (bb[0] >> 1)), sg);
+        const i32 l1 = gn(lev(amp, (eb[frames - 1] >> 3) + (bb[frames - 1] >> 1)), sg);
         const i32 dl = (l1 - l0) >> 6;
         i32 l = l0;
         for (u32 j = 0; j < frames; j += 2) {   // two samples a turn: the states trade places
-            const i32 i0 = mul(noise(r), b);
-            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
-            x2 = i0;
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
             y[j] += lev(y2, l);
             l += dl;
-            const i32 i1 = mul(noise(r), b);
-            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
-            x1 = i1;
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + mul(noise(r), g);
             y[j + 1] += lev(y1, l);
             l += dl;
         }
         srng = r;
         sw.y1 = y1;
         sw.y2 = y2;
-        sw.x1 = x1;
-        sw.x2 = x2;
     }
     // Scatter: stragglers after 50 ms, ringing their own resonance.
     __attribute__((noinline)) void late_pass(i32* y, const i32* lb) {

@@ -203,6 +203,16 @@ struct Ice {
             out[j] += mul(soft(d << 7), ud) << 1;
         }
     }
+    // The snap through the load: driven into a plain clip where the curve
+    // would flatten (spiky noise, so the clip's edge is lost in it).
+    __attribute__((noinline)) void clip_pass(const i32* x, i32* out) {
+        const i32 dr = drive, ud = undrive << 14, m = U(1.0) >> 7;
+        for (u32 j = 0; j < frames; ++j) {
+            i32 d = mul(x[j], dr);
+            d = d > m ? m : d < -m ? -m : d;
+            out[j] += mul(d << 7, ud) << 1;
+        }
+    }
     // The lake, 150..260 Hz, with a blip of pitch.
     __attribute__((noinline)) void body_pass(i32* y, u32 n) {
         u32 ph = body.ph;
@@ -318,7 +328,7 @@ struct Ice {
         }
         drive_pass(xh, h, frames / 2);
         up_onto(h, out, hlast);
-        if (cracking) drive_pass(xc, out, frames);
+        if (cracking) clip_pass(xc, out);
         t = t0 + frames;
     }
 };
