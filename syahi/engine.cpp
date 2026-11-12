@@ -155,11 +155,18 @@ inline void begin_note(Voice& voice, Shared& shared) {
     }
     core.part[body_mode].phase = core.part[air_mode].phase = 0;
     // A mode that can't rise past 1.5 kHz (struck at full energy, and any
-    // upward glide) runs at a quarter of the rate for the whole note.
-    core.quarter = 0;
+    // upward glide) runs at a quarter of the rate for the whole note, as do
+    // the body and the air (bit 8), when at least two partials do: one alone
+    // costs less at the half rate than bringing the quarter rate up.
+    u32 quarter = 0, count = 0;
     const i32 rise = core.spec.glide > 0 ? core.spec.glide : 0;
     for (u32 k = 0; k < head_modes; ++k)
-        if (core.part[k].rest + core.part[k].bend + rise < lg(1500)) core.quarter |= 1u << k;
+        if (core.part[k].weight && core.part[k].rest + core.part[k].bend + rise < lg(1500)) {
+            quarter |= 1u << k;
+            ++count;
+        }
+    count += (core.part[body_mode].weight != 0) + (core.part[air_mode].weight != 0);
+    core.quarter = count >= 2 ? quarter | 1u << 8 : 0;
     core.glide_left = core.swell_left = one;
     core.ramp = 0x80000000u;
     core.next_event = 0;

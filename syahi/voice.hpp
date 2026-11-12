@@ -86,8 +86,9 @@ struct Core {
     // (Q31); SIZZLE's gain on the wires' drive (Q28 x 2^-8) and the last
     // block's swing, which the wires follow.
     i32 wash_gain, wash_in, sizzle_k, swing;
-    // The modes that run at a quarter of the rate (bit k for mode k; set at
-    // the note's start), and the quarter-rate bus's last three samples.
+    // The modes that run at a quarter of the rate (bit k for mode k, bit 8 the
+    // body and the air; set at the note's start), and the quarter-rate bus's
+    // last three samples.
     u32 quarter;
     i32 qs[3];
     // The head's plan reaches one block ahead (1) or not (0), and the modes it runs (bit k).
@@ -1013,9 +1014,11 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         b.dg = (b.a - v.body_rise - b.g) >> 6;
         if (absolute(b.a) < silent && absolute(b.g) < silent) {
             skip(b, 64);
-        } else {
+        } else if (v.quarter >> 8 & 1u) {
             run_quarter<false>(b, q, r, 0, 16);
             quartered = true;
+        } else {
+            run_half<false>(b, h, r, 0, 32);
         }
     }
     Partial& air = v.part[air_mode];
@@ -1027,8 +1030,12 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         air.inc = increment(air.rest);
         air.dinc = 0;
         air.dg = (g_end - air.g) >> 6;
-        run_quarter<false>(air, q, r, 0, 16);
-        quartered = true;
+        if (v.quarter >> 8 & 1u) {
+            run_quarter<false>(air, q, r, 0, 16);
+            quartered = true;
+        } else {
+            run_half<false>(air, h, r, 0, 32);
+        }
     }
     v.air_time += 64;
     if (quartered) {
