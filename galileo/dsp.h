@@ -168,6 +168,9 @@ inline i32 noise(u32& seed) {
 // Noise at unit amplitude (2^28).
 inline i32 noise_unit(u32& seed) { return noise(seed) >> 3; }
 
+// Under this (units 2^28: -96 dB of a full strike) a part has rung out and stops.
+const i32 hush = 1 << 12;
+
 // A decaying amplitude that strikes add energy to: a = sqrt(a^2 + v^2), held
 // under a cap. a is in units of 2^28; r the per-sample decay.
 struct Energy {

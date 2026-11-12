@@ -70,7 +70,7 @@ struct Skin {
         const i32 sv = GQ31(0.4) + multiply(GQ31(0.6), tone15 << 16);
         if (sv > s) s = sv;
     }
-    bool quiet() const { return e[0].a < 64 && (parts < 2 || e[1].a < 64) && (parts < 3 || e[2].a < 64); }
+    bool quiet() const { return e[0].a < dsp::hush && (parts < 2 || e[1].a < dsp::hush) && (parts < 3 || e[2].a < dsp::hush); }
 };
 // Sets a skin: base log2 Hz, the sweep's depth (Q16 ratio of the base), its
 // time constant's decay, the partials' ratios (Q28), decays and shares (Q15).
@@ -914,8 +914,13 @@ inline void skin_half(Skin& k, i32* __restrict out, u32 m, i32* __restrict swing
         k.s = 0;
         for (u32 g = 0; g <= grains; ++g) inc[g] = k.inc;
     }
-    if (!k.parts) {
+    if (!k.parts || k.quiet()) {
+        // Silent (every partial under -96 dB): nothing to add; the phases move on.
         if (!add) for (u32 i = 0; i < m; ++i) out[i] = 0;
+        for (u32 part = 0; part < k.parts; ++part) {
+            k.e[part].a = 0;
+            k.ph[part] += (part ? times(k.inc, k.ratio[part]) : k.inc) * (2 * m);
+        }
         return;
     }
     const bool sweeping = k.s != 0;
@@ -923,7 +928,7 @@ inline void skin_half(Skin& k, i32* __restrict out, u32 m, i32* __restrict swing
     else if (add) partial<true, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, m);
     else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, m);
     for (u32 part = 1; part < k.parts; ++part) {
-        if (k.e[part].a < 4096) {                           // under -95 dBFS
+        if (k.e[part].a < dsp::hush) {                      // under -96 dB of a full strike
             k.e[part].a = 0;
             u32 p = k.ph[part];
             for (u32 g = 0; g < grains; ++g) {
@@ -1085,7 +1090,7 @@ inline void modes_add(Struck* m, u32 count, i32* __restrict out, u32 n) {
         dsp::Mode& o = m[k].m;
         if (!o.y1 && !o.y2) continue;
         modes_one(o, out, n);
-        if (o.y1 < 256 && o.y1 > -256 && o.y2 < 256 && o.y2 > -256) o.y1 = o.y2 = 0;
+        if (o.y1 < dsp::hush && o.y1 > -dsp::hush && o.y2 < dsp::hush && o.y2 > -dsp::hush) o.y1 = o.y2 = 0;
     }
 }
 // Noise under an envelope (noise std about 1.15 units), written.
@@ -1130,7 +1135,7 @@ __attribute__((noinline)) void low_run(dsp::Pole& p, i32 c, i32* __restrict io, 
 __attribute__((noinline)) void add_gain(i32* __restrict out, const i32* __restrict in, i32 g28, u32 n) {
     for (u32 i = 0; i < n; ++i) out[i] += gain(in[i], g28);
 }
-inline bool idle(const Energy& e) { return e.a < 64; }
+inline bool idle(const Energy& e) { return e.a < dsp::hush; }
 // A one-pole high-pass of in, added into out at gain g (Q28).
 __attribute__((noinline)) void high_add(dsp::Pole& p, i32 c, const i32* __restrict in, i32* __restrict out, i32 g28, u32 n) {
     i32 h = p.s;
@@ -1165,7 +1170,7 @@ __attribute__((noinline)) void noise_ring_add(Energy& env, u32& seed, dsp::Band&
     }
     seed = x;
     env.a = a;
-    if (a < 64 && y1 < 4096 && y1 > -4096 && y2 < 4096 && y2 > -4096) y1 = y2 = 0;
+    if (a < dsp::hush && y1 < dsp::hush && y1 > -dsp::hush && y2 < dsp::hush && y2 > -dsp::hush) y1 = y2 = 0;
     f.y1 = y1;
     f.y2 = y2;
 }
@@ -1219,7 +1224,7 @@ __attribute__((noinline)) void noise_hl_add(Energy& env, u32& seed, i32* __restr
     }
     seed = x;
     const i32 a = multiply(env.a, decay_over(r, n));
-    if (a < 64 && l < 4096 && l > -4096) h = l = 0;
+    if (a < dsp::hush && l < dsp::hush && l > -dsp::hush) h = l = 0;
     env.a = a;
     hp.s = h;
     lp.s = l;
@@ -1372,10 +1377,10 @@ __attribute__((noinline)) void hat_finish(dsp::Pole& p1, dsp::Pole& p2, i32 c, d
     p1.s = s1; p2.s = s2; z.s = last;
 }
 __attribute__((noinline)) inline void run_hat(Body& b, i32* __restrict out, u32 count) {
-    if (idle(b.env[0]) && !b.band[0].y1 && !b.band[0].y2 && !b.pole[2].s) {
+    if (idle(b.env[0]) && !b.band[0].y1 && !b.band[0].y2 && b.pole[2].s < dsp::hush && b.pole[2].s > -dsp::hush) {
         for (u32 i = 0; i < count; ++i) out[i] = 0;
         for (u32 k = 0; k < 6; ++k) b.sq[k] += b.sqi[k] * count;
-        b.pole[0].s = 0;
+        b.pole[0].s = b.pole[1].s = b.pole[2].s = 0;
         click_add(b.click[0], b.seed, out, count, b.cg[0]);
         return;
     }
@@ -1383,6 +1388,9 @@ __attribute__((noinline)) inline void run_hat(Body& b, i32* __restrict out, u32 
     bank6(b.sq, b.sqi, src, count);
     hat_mix(b.env[0], b.seed, b.g[0], b.g[1], src, count);
     band_run(b.band[0], src, count);
+    if (idle(b.env[0]) && b.band[0].y1 < dsp::hush && b.band[0].y1 > -dsp::hush && b.band[0].y2 < dsp::hush &&
+        b.band[0].y2 > -dsp::hush)
+        b.band[0].reset();
     // Two high-passes, then a zero at Nyquist, no pole: the hiss and the bank's
     // aliases darkened above 10 kHz.
     hat_finish(b.pole[1], b.pole[2], b.pc[1], b.pole[0], src, out, count);
@@ -1419,6 +1427,9 @@ __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32
         band_run(b.band[0], sh, m);
         high_run(b.pole[0], b.pc[0], sh, m);
         expand<false>(sh, m, b.held, out);
+        if (idle(b.env[0]) && b.band[0].y1 < dsp::hush && b.band[0].y1 > -dsp::hush && b.band[0].y2 < dsp::hush &&
+            b.band[0].y2 > -dsp::hush)
+            b.band[0].reset();
     } else {
         for (u32 k = 0; k < 8; ++k) b.sq[k] += b.sqi[k] * count;
         for (u32 i = 0; i < count; ++i) out[i] = 0;
@@ -1508,7 +1519,7 @@ __attribute__((noinline)) inline void run_bell(Body& b, i32* __restrict out, u32
     const u32 m = count / 2;
     for (u32 i = 0; i < m; ++i) h[i] = 0;
     for (u32 w = 0; w < 2; ++w) {
-        if (b.env[2 * w].a < 64 && b.env[2 * w + 1].a < 64) continue;
+        if (b.env[2 * w].a < dsp::hush && b.env[2 * w + 1].a < dsp::hush) continue;
         const u32 inc = static_cast<u32>(w ? b.k[1] : b.k[0]);
         if (!pure) bell_run<2>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, h, m);
         else if (!clang) bell_run<1>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, h, m);
