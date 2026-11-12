@@ -667,6 +667,13 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
             }
             corner[j].y = y * u;
         }
+        // And no facet deeper than its V can be without its point turning
+        // sharper than 150 degrees: about 3.3 times its narrower half.
+        for (i32 j = 1; j < 2 * n; j += 2) {
+            const i32 a = corner[j].x - corner[j - 1].x, b = corner[j + 1].x - corner[j].x;
+            const i32 d = (a < b ? a : b) > u ? (a < b ? a : b) : u;
+            if (corner[j].y > 30 * u + d * 10 / 3) corner[j].y = 30 * u + d * 10 / 3;
+        }
         resample(corner, 2 * n + 1, pts);
         band(frame.paths[3], pts, u / 2);
         show_path(frame, m, 3, 165 * u, (base - h) * u, 6);

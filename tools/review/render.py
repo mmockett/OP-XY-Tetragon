@@ -78,10 +78,14 @@ def svg(fragment, frame):
 def shoot(page, png, w, h, scale, work):
     f = work / (png.stem + ".html")
     f.write_text(page)
-    subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--allow-file-access-from-files",
-                    f"--user-data-dir={work}/profile", f"--force-device-scale-factor={scale}", f"--window-size={w},{h}",
-                    "--virtual-time-budget=2000", f"--screenshot={png}", f.as_uri()],
-                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    for attempt in range(3):   # Chrome is now and then killed on a busy Mac: try again
+        r = subprocess.run([CHROME, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--allow-file-access-from-files",
+                            f"--user-data-dir={work}/profile", f"--force-device-scale-factor={scale}", f"--window-size={w},{h}",
+                            "--virtual-time-budget=2000", f"--screenshot={png}", f.as_uri()],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if r.returncode == 0:
+            return
+    raise RuntimeError(f"Chrome could not draw {png.name}")
 
 
 def main():
