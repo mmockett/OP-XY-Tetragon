@@ -1,6 +1,6 @@
 # THUNDER
 
-![THUNDER's screen: a broad iron thunder sheet hung under a slim beam, struck by a felt mallet, a chain lying across its face](docs/screen.png)
+![THUNDER's screen: a broad iron thunder sheet hung in its gallows frame, struck by a felt mallet, a chain lying across its face](docs/screen.png)
 
 One theatre thunder sheet, played every way a stagehand would, as a drum kit.
 Each of the 24 keys holds one of twelve ways of playing the sheet: struck
@@ -95,7 +95,7 @@ centroid and the time to fall 40 dB.
 | BEATER | BOOM SLAP TOM CRASH CLANK | `0` `50` `100` | Felt, then wood, then a steel rod: how long the mallet stays on the sheet (6 ms to 0.08 ms, and a felt never longer than one cycle of the note), so how many of its modes it reaches, and its knock on the head, from a felt thud (on BOOM and TOM, 300 to 700 Hz) to a ringing click. The drum keeps its weight across the travel, within half a LU at the defaults: a felt thud is as loud as a steel strike. A tom's centroid moves 223, 373, 406 Hz. On screen the head turns from a wrapped felt ball to a wooden barrel to a bare steel rod. |
 | SPOT | BOOM SLAP TOM CRASH CLANK FLICK HOP BOW | `0` `50` `100` (BOW: the mode, `1` to `5`) | Where it is struck, from dead centre (odd modes only, a round thump) to near a corner (every mode, clangorous). On BOW, which of the sheet's modes sings. On screen the mallet, flicker, ball or bow moves. |
 | TENSION | BOOM SLAP FLICK TOM CRASH HOP BOW SHAKE | `0` `50` `100` | Plate to membrane: a slack sheet's modes spread into metal, a taut one's crowd into a drum. On CRASH it brings the drum-like body up under the wash (centroid 7.8, 7.6, 7.3 kHz); on SLAP it tightens the head, half an octave up, with less sag. On FLICK it moves the sizzle's six modes. On screen the turnbuckles screw in and the sheet's buckled edges flatten. |
-| CAMBER | BOOM TOM | `0` `50` `100` | How far a hit's pitch sags as the sheet relaxes, up to 3.5 times on BOOM: a kick's drop, from physics, not an envelope. On screen the sheet curves under its straight batten. |
+| CAMBER | BOOM TOM | `0` `50` `100` | How far a hit's pitch sags as the sheet relaxes, up to 3.5 times on BOOM: a kick's drop, from physics, not an envelope. On screen the sheet curves under its straight beam. |
 | GLIDE | BOOM | `6ms` `29ms` `0.14s` | How long the sag takes. On screen the rigging sandbag grows. |
 | CHAIN | all | `0` `50` `100` | Links lying on the sheet, from none to full snare wires on anything: they slap when the sheet lifts them, more of them, longer. The links ring a band topped at 6 to 7 kHz: a rattle, not a fizz. A kick with CHAIN 50 has its centroid move from 78 Hz to 5.4 kHz; on SLAP more wires buzz louder and longer. On screen links leave the cleat on the left post and lie across the sheet's face. |
 | LINKS | SLAP | `0` `50` `100` | The wires from tight and bright (a short, high buzz) to long and loose (lower, and rattling on). On screen the links grow. |
@@ -279,16 +279,20 @@ Euler-Bernoulli theory, and everything else from the sheet's physics.
 
 ![Every model at its defaults and 30 ms after a hit, at 1:1](docs/controls-1x.png)
 
-The iron sheet is the screen: about two thirds of its width, hung close under
-a slim oak beam whose posts stand at the screen's edges. The sheet is clipped
-to a batten strapped to the beam by three C-clips; a hem folded under its top
-shows as a band with five rivets along it, one more on each side,
-and a rolled lip runs along its foot as a bead. A felt damper on a lever hangs beside
-its top left corner; wire stays run from grommets in its lower corners through
-open turnbuckles to eye bolts on the posts; a rigging sandbag hangs from a snap
-hook under its foot; a chain hangs from a cleat on the left post. The frame is
-one grey, its oak filled dark grey (#181818) and its iron fittings a step
-lighter (#262626), as GALILEO's are; everything else is drawn in two greys, unfilled.
+The iron sheet is the screen: about two thirds of its width, hung in a
+gallows frame that stands whole inside it: an oak beam on two posts, iron
+knee plates bolted across its inside corners, the posts on chamfered feet on
+the stage floor, the oak's grain drawn a step dimmer. The sheet is clamped to
+the beam by three C-clips; a hem folded under its top shows as a band with
+five rivets along it, one more on each side, and a rolled lip runs along its
+foot as a bead. A felt damper on a counterweighted lever hangs beside its top
+left corner; wire stays run from grommets in its lower corners through open
+turnbuckles to eye bolts on the posts; a rigging sandbag hangs from a snap
+hook under its foot; a chain hangs from a horn cleat on the left post. The
+frame is one grey, its oak filled dark grey (#181818) and its iron fittings a
+step lighter (#262626), as GALILEO's are; the clips, the damper and the
+sandbag are filled too, so they stand in front of what they cover; everything
+else is drawn in greys no dimmer than #7A7A7A at rest, unfilled.
 Every line is 1 px wide as drawn and a wire about 1.5 px across, after stock
 Drumline's fine look: the outlines, drawn at twice their size, take palette
 entries at half the width, and the chain's links and the beads, drawn large,

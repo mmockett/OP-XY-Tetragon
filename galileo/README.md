@@ -304,7 +304,7 @@ ellipses.
 
 The screen uses 209 of its 512 nodes and two reshaping outlines (a drum's
 head or the ratchet's tongue; the ratchet's gear, a cowbell's mouth or the
-cabasa's front chain) in 58 KB of artwork, 239 elements. Ticks engraved together share one outline, and a drum's six
+cabasa's front chain) in 58 KB of artwork, 243 elements. Ticks engraved together share one outline, and a drum's six
 lugs and rods are one. While a run plays at 60 frames a second, about 8
 nodes change a frame on average and 19 at the peak (16 frets at 1/64, 24
 balls and full bounce); at rest, none. Every outline follows the OP-XY's
