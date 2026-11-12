@@ -1089,10 +1089,11 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
     if (metal) head_up_tilted(h, out, v.head_last);
     else head_up(h, out, v.head_last);
     // The wash, the noise and the rattle, a sample at a time.
-    // The burst runs on 4 blocks after it falls quiet, for its band to settle.
-    // A ring on the lowest mode then rings out alone, with nothing more in,
-    // for at most 36 blocks more or until it is under the floor.
-    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < 4u);
+    // The burst runs on 2 blocks after it falls quiet, for its band to settle
+    // (a fraction of a millisecond). A ring on the lowest mode then rings out
+    // alone, with nothing more in, for at most 38 blocks more or until it is
+    // under the floor.
+    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < 2u);
     const bool ringing = !noisy && s.noise > 0 && s.noise_ring && v.noise_quiet < 40u;
     const bool rattling = s.wires > 0 && !metal;   // the snare's wires
     // The wash and the noise add to the head; the snare's wires then follow all of it.
