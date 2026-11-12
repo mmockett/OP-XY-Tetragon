@@ -516,9 +516,10 @@ inline void prepare(Body& b, u32 model, const i32* p) {
              dsp::decay(tau + OCT(0.4)), GQ15(0.35), w0, w1);
         // Teeth a stroke: 1 to 12 along the control, at most 8 (every tooth of
         // every stroke is a ghost to lay and strike).
+        // Their level, 1.6 / (1 + .15 teeth), from the count along the control.
         b.k[0] = 1 + ((static_cast<i32>(p2 >> 16) * 11 + 16384) >> 15);
+        b.g[0] = static_cast<i32>(dsp::udiv(static_cast<u32>(GQ28(1.6)), 256 + ((38 * b.k[0]) >> 0)) << 8);
         if (b.k[0] > 8) b.k[0] = 8;
-        b.g[0] = static_cast<i32>(dsp::udiv(static_cast<u32>(GQ28(1.6)), 256 + ((38 * b.k[0]) >> 0)) << 8);   // 1.6 / (1 + .15 teeth)
         {
             // A stroke drags the pawl over the teeth: 4 ms a tooth, closing up;
             // each tooth a little harder. Laid out once: when and how hard.
@@ -579,9 +580,9 @@ inline void add_ghost(Body& b, u32 at, i32 v) {
     u32& w = b.later[(at / step) % later_cells];
     const i32 had = static_cast<i32>(w & 0x7fffu), top = static_cast<i32>((w >> 15) & 0x3fffu) << 1;
     if (!had) {
-        // At most 24 cells waiting, as the slots once held at most 32 ghosts:
+        // At most 12 blocks waiting (as the slots once held at most 32 ghosts):
         // past that a ghost is lost (a ratchet struck hard by a big handful).
-        if (b.due >= 24) return;
+        if (b.due >= 12) return;
         ++b.due;
     }
     const u32 fine = (at % step) >> 3;
@@ -1610,8 +1611,9 @@ __attribute__((noinline)) inline void run_clap(Body& b, i32* __restrict out, u32
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         const i32 hand = multiply(static_cast<i32>(x) >> 2, burst) * 8;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        // 3 dB down: noise at half the rate puts twice its density in the band.
-        h[j] = multiply(hand + gain(multiply(static_cast<i32>(x) >> 2, e2) * 8, room), GQ31(0.7071));
+        // 1.5 dB down: noise at half the rate puts twice its density in the band
+        // (the crack, drawn apart, gives back the rest).
+        h[j] = multiply(hand + gain(multiply(static_cast<i32>(x) >> 2, e2) * 8, room), GQ31(0.84));
     }
     b.seed = x;
     b.env[0].a = e0; b.env[1].a = e1; b.env[2].a = e2;
