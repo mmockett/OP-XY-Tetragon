@@ -273,9 +273,12 @@ struct Cicada {
     // The sizzle, driven into a soft clip: denser and less peaky, so a hat
     // carries its loudness under the kit's ceiling.
     __attribute__((noinline)) void sizzle_pass(i32* y, u32 n) {
-        i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2, x1 = hi.x1, x2 = hi.x2;
+        i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2;
         u32 r = srng;
-        const i32 ek = env[0].k, c = hik.c, r2 = hik.r2, b = dsp::lo(gn(hik.b >> 1, band_gain_now), F(0.4999)) << 1, sl = sizzle_level;   // the band's gain at its input (under 1 below 12.6 kHz)
+        // The band driven straight (unity at its peak), its loudness gain and
+        // the sizzle's level taken at its input, Q28.
+        const i32 gq = dsp::lo(lev(gn(hik.g >> 3, band_gain_now), sizzle_level), U(7.9));
+        const i32 ek = env[0].k, c = hik.c, r2 = hik.r2;
         if (ev <= 4096) {   // under its floor until the next click: only the envelope moves
             for (u32 j = 0; j < n; ++j) ev = mul(ev, ek);
             env[0].v = ev;
@@ -283,23 +286,15 @@ struct Cicada {
         }
         for (u32 j = 0; j < n; ++j) {
             ev = mul(ev, ek);
-            if (CURIO_LIKELY(ev > 4096)) {
-                const i32 in = mul(noise(r), b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                const i32 sz = lev(lev(o, ev), sl);
-                y[j] += soft(sz << 1) >> 1;   // flat from 0.75
-            }
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + lev(noise(r), gq);
+            y2 = y1;
+            y1 = o;
+            y[j] += soft(lev(o, ev) << 1) >> 1;   // flat from 0.75
         }
         env[0].v = ev;
         srng = r;
         hi.y1 = y1;
         hi.y2 = y2;
-        hi.x1 = x1;
-        hi.x2 = x2;
     }
     // The wing's flick.
     __attribute__((noinline)) void wing_pass(i32* y) {
