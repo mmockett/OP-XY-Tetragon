@@ -396,6 +396,17 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 tau = ms(static_cast<u32>(dsp::mix(250 * 256, 2450 * 256, p1)));
         b.k[2] = tau;
         b.k[3] = p3;
+        // What every strike's set shares: its modes' decays and the contact's
+        // widths; each scale step's contacts are worked out once a note (tine_contact).
+        b.pc[0] = dsp::decay(tau);
+        b.pc[1] = dsp::decay(tau + OCT(0.3));
+        b.pc[2] = dsp::decay(tau + OCT(0.12));
+        {
+            u32 w0, w1;
+            widths(p3, w0, w1);
+            b.pc[3] = static_cast<i32>(w0 | w1 << 16);
+        }
+        b.used = 0;
         prepare_click(b.click[0], 300, 3000);
         b.cg[0] = multiply(GQ28(0.12), p3);
         break;
@@ -566,6 +577,31 @@ inline void strike_modes(Body& b, u32 count, i32 v15, i32 vp, i32 tone15, u32 la
     for (u32 i = 0; i < count; ++i) ring(b.mode[i], tone15, a, late, g28);
 }
 
+// A tine's contacts (Q15, soft and hard, for its three modes) at scale step
+// `steps` (0..14) of its key, worked out at the step's first strike in a note
+// and kept, so a run over the same frets divides only once a step. Kept in
+// the ghost slots a tine has no use for; b.used marks the steps done.
+inline const u16* tine_contact(Body& b, u32 steps, i32 lf) {
+    u16* c = reinterpret_cast<u16*>(b.ghost) + steps * 6;
+    if (!(b.used & (1u << steps))) {
+        b.used |= 1u << steps;
+        const u32 w = static_cast<u32>(b.pc[3]), w0 = w & 0xffffu, w1 = w >> 16;
+        const i32 at[3] = {lf, lf + OCT(2.756), lf + OCT(5.404)};
+        for (u32 k = 0; k < 3; ++k) {
+            if (k == 2 && at[k] >= dsp::log2_cap_hz) { c[4] = c[5] = 0; continue; }   // no glint there
+            const u32 inc = dsp::increment(at[k]);
+            c[2 * k] = static_cast<u16>(dsp::contact(inc, w0));
+            c[2 * k + 1] = static_cast<u16>(dsp::contact(inc, w1));
+        }
+    }
+    return c;
+}
+// tune() with the contacts given.
+inline void tine_tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 soft, u32 hard) {
+    s.m.tune(dsp::increment(log2_hz), r);
+    s.soft = dsp::m15(share, static_cast<i32>(soft));
+    s.hard = dsp::m15(share, static_cast<i32>(hard));
+}
 // An impact at sample b.now + late (the struck modes ring from then on, the
 // rest strikes at b.now); ghost: a strike the body scheduled itself.
 inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = false, u32 late = 0) {
@@ -639,20 +675,18 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         while (degree >= 5) { degree -= 5; ++octaves; }
         const i32 lf = b.k[0] + static_cast<i32>(octaves) * dsp::octave + table::pentatonic[degree];
         const i32 h = b.k[3];
-        // Tuning a set costs divisions (its contact): only when its pitch moves.
+        // Retuning a set only when its pitch moves.
         const i32 key = lf ^ (b.k[2] << 3) ^ (h >> 7);
         if (b.tuned[set ? 1 : 0] != key) {
             b.tuned[set ? 1 : 0] = key;
-            u32 w0, w1;
-            widths(h, w0, w1);
-            tune(b.mode[set], lf, dsp::decay(b.k[2]), 32767, w0, w1);
-            tune(b.mode[set + 1], lf + OCT(2.756), dsp::decay(b.k[2] + OCT(0.3)),
-                 dsp::m15(GQ15(0.32), GQ15(0.3) + (h >> 16)), w0, w1);
+            const u16* c = tine_contact(b, steps, lf);
+            tine_tune(b.mode[set], lf, b.pc[0], 32767, c[0], c[1]);
+            tine_tune(b.mode[set + 1], lf + OCT(2.756), b.pc[1], dsp::m15(GQ15(0.32), GQ15(0.3) + (h >> 16)), c[2], c[3]);
             // The tine's glint, 5.4 octaves up: over 0.45 of the rate it would only
             // sit at the cap (and its contact leaves it 30 dB under): left out there.
             const i32 glint = lf + OCT(5.404);
             if (glint < dsp::log2_cap_hz) {
-                tune(b.mode[set + 2], glint, dsp::decay(b.k[2] + OCT(0.12)), dsp::m15(GQ15(0.15), h >> 16), w0, w1);
+                tine_tune(b.mode[set + 2], glint, b.pc[2], dsp::m15(GQ15(0.15), h >> 16), c[4], c[5]);
             } else {
                 Struck& off = b.mode[set + 2];
                 off.m.y1 = off.m.y2 = 0;
