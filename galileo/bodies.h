@@ -141,13 +141,11 @@ inline void widths(i32 h, u32& w0, u32& w1) {
 }
 
 // The grid impacts strike on (samples, a whole number of skin grains). A
-// fill's strikes retune what may still ring (the next head up), so where they
-// land sets how it carries on: a fill (its heads need whole grains) keeps 16.
-// A tine retunes a set of modes too, but on the 32-sample grid: its new
-// strike still rings from its 8-sample step, and only a ringing set's tail
-// takes the new pitch up to 24 samples (0.5 ms) early.
-const u32 step = 32, fill_step = 16;
-inline u32 step_of(u32 model) { return model == kit::fill ? fill_step : step; }
+// tine's and a fill's strikes retune what may still ring (a set of modes,
+// the next head up), so where they land sets how it carries on: a tine keeps
+// the 8-sample grid, a fill (its heads need whole grains) 16.
+const u32 step = 32, tine_step = 8, fill_step = 16;
+inline u32 step_of(u32 model) { return model == kit::tine ? tine_step : model == kit::fill ? fill_step : step; }
 // A pending strike the body schedules itself: a clap's reflections, a ratchet's teeth.
 // They gather on the grid ahead, a word a 32-sample cell, 64 cells (46 ms) round
 // a ring: the cell's force (Q15, the ghosts' together), its strongest

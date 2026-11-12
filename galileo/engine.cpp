@@ -225,17 +225,19 @@ __attribute__((noinline)) u32 gather(Voice& voice, motion::Impact* hits) {
 // The kit's soft ceiling: straight to 0.42 of full scale (1.5 dB under the
 // SDK's half-scale limit), then bending into it. Every default key peaks
 // under the bend; only a harder stroke (a steeper tilt, a control's extreme)
-// reaches it. x and the result are Q31.
+// reaches it. The bend is a cubic, 0.08 (u - 4/27 u^3) of u = over / 0.08,
+// flat at 0.5 of full scale from 0.12 over the knee: tanh's shape, without a
+// table or a branch. x and the result are Q31.
 inline i32 ceiling(i32 x) {
-    const i32 knee = 901943132;          // 0.42 of full scale
-    const i32 a = x < 0 ? -x : x;
-    if (a <= knee) return x;
-    // The 0.08 left: 0.08 tanh(over / 0.08), tanh reading 2^28 as 1, so the
-    // over is scaled by 1 / (8 x 0.08) = 1.5625.
-    const i32 over = a - knee;
-    const i32 bent = dsp::multiply(dsp::tanh(over + dsp::multiply(over, 1207959552)), 171798692);
-    const i32 y = knee + bent;
-    return x < 0 ? -y : y;
+    const i32 knee = 901943132, h = 171798692;   // 0.42, 0.08 of full scale
+    const i32 s = x >> 31;
+    const i32 a = (x ^ s) - s;                   // |x| (x is never -2^31 here)
+    i32 over = a - knee;
+    over = over < 0 ? 0 : over;
+    const i32 u = over < h + (h >> 1) ? over : h + (h >> 1);
+    const i32 d = dsp::multiply(dsp::multiply(dsp::multiply(u, u), u), GQ31(4.0 / 27.0 / 0.0064 / 32.0)) << 5;   // 4/27 u^3 / h^2
+    const i32 y = a - over + u - d;
+    return (y ^ s) - s;
 }
 
 // The body's sum at the model's gain, held within full scale (never wrapped
@@ -253,11 +255,13 @@ __attribute__((noinline)) i32 finish(const i32* __restrict sum, i32 g, i32* __re
     if (most <= 901943132 / 32) return most * 32;
     i32 peak = 0;
     for (u32 i = 0; i < opxy::block_frames; ++i) {
-        const i32 m = dsp::multiply(sum[i], g);
-        const i32 y = ceiling(m > 0x3ffffff ? dsp::one : m < -0x3ffffff ? -dsp::one : m * 32);
+        i32 m = dsp::multiply(sum[i], g);
+        m = m < -0x3ffffff ? -0x3ffffff : m;
+        m = m > 0x3ffffff ? 0x3ffffff : m;
+        const i32 y = ceiling(m * 32);
         output[i] = y;
         const i32 a = y < 0 ? -y : y;
-        if (a > peak) peak = a;
+        peak = a > peak ? a : peak;
     }
     return peak;
 }
@@ -288,7 +292,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     // Impacts and ghosts strike on a 32-sample grid (0.73 ms): a block splits into
     // at most two stretches however many balls land in it, and each stretch
     // runs the body's parts once. (Struck modes keep their 8-sample phase; a
-    // fill strikes on 16.)
+    // tine strikes on the 8-sample grid, a fill on 16.)
     const u32 grid = ~(body::step_of(voice.model) - 1);
     motion::Impact hits[max_impacts];
     const u32 count = gather(voice, hits);
