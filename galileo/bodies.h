@@ -257,17 +257,18 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 shares[3] = {32767, GQ15(0.42) + dsp::m15(GQ15(0.3), p3 >> 16), GQ15(0.22) + dsp::m15(GQ15(0.38), p3 >> 16)};
         skin(b.skin[0], lf, GQ16(0.6), dsp::decay(ms(12 * 256)), 3, ratios, decays, shares, GQ16(1.2));
         b.env[0].r = decay_ms(70 * 256, 370 * 256, p2);                      // the wires
-        // The wires' band: broad (Q 0.9), from a dark 1.4 kHz to a bright 4.5 kHz,
-        // over a high-pass that keeps the noise out of the head's low end.
-        b.band[0].tune(dsp::mix(q16(1400), q16(4500), p3), -OCT(1.1));
-        b.pc[0] = dsp::pole(q16(700));
-        b.pc[1] = dsp::pole(q16(8500));
+        // The wires' band: broad (0.59 to 1.7 of its centre, a one-pole high-pass
+        // and low-pass), from a dark 1.4 kHz to a bright 4.5 kHz, which keeps the
+        // noise out of the head's low end.
+        const i32 wires = dsp::mix(q16(1400), q16(4500), p3);
+        b.pc[0] = dsp::pole(wires - OCT(1.0 / 0.59));
+        b.pc[1] = dsp::pole(wires + OCT(1.7));
         prepare_click(b.click[0], 500, 3000);                               // the stick, and the
         b.cg[0] = GQ28(0.2);
         prepare_click(b.click[1], 2600, 3000);                              // crack, through one high-pass
         b.cg[1] = GQ28(0.05) + multiply(GQ28(0.45), p3);
         b.g[0] = GQ28(1.1) - multiply(GQ28(0.45), p1);                       // head
-        b.g[1] = multiply(GQ28(1.75), p1);                                   // wires
+        b.g[1] = multiply(GQ28(1.75 * 1.35), p1);                            // wires (the band's 2.6 dB back)
         break;
     }
     case tom: case fill: {   // tune, decay, bend (tom) or spread (fill), skin
@@ -354,11 +355,10 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         b.env[0].r = dsp::decay(tau);
         b.env[1].r = dsp::decay(tau + OCT(0.6));
         b.band[0].tune(q16(3800), OCT(0.7));
-        b.band[1].tune(q16(5500), OCT(0.9));
         b.pc[0] = dsp::pole(q16(1800));
-        b.pc[1] = dsp::pole(q16(10000));
-        b.pc[2] = dsp::pole(q16(2800));
-        b.pc[3] = dsp::pole(q16(11000));
+        // The wash's band: 3.2 to 9.4 kHz around 5.5 (a one-pole high-pass and low-pass).
+        b.pc[2] = dsp::pole(q16(3250));
+        b.pc[3] = dsp::pole(q16(9350));
         u32 w0, w1;
         widths(GQ31(0.8), w0, w1);
         const i32 lbell = lb + OCT(2.1);
@@ -367,7 +367,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         // stick's contact: left out.)
         tune(b.mode[0], lbell, dsp::decay(tau + OCT(0.7)), 32767, w0, w1);
         tune(b.mode[1], lbell + OCT(2.0), dsp::decay(tau + OCT(0.45)), GQ15(0.4), w0, w1);
-        b.g[0] = multiply(GQ28(0.6), p3);
+        b.g[0] = multiply(GQ28(0.6 * 1.35), p3);
         b.g[1] = multiply(GQ28(0.55), p2);
         prepare_click(b.click[0], 300, 5000);
         b.cg[0] = GQ28(0.15);
@@ -1047,35 +1047,57 @@ inline void band_high_add(dsp::Band& f, dsp::Pole& p, i32 c, i32* __restrict io,
     band_run(f, io, n);
     high_add(p, c, io, out, g28, n);
 }
-// Noise under an envelope, swelling with a swing (Q31, at half the rate: one for
-// each two samples) as 0.55 + 0.45 swing, written.
-__attribute__((noinline)) void noise_env_swell(Energy& env, u32& seed, const i32* __restrict swing, i32* __restrict out, u32 n) {
-    i32 a = env.a;
-    const i32 r = env.r;
-    u32 x = seed;
-    const u32 m = n >> 1;
-    for (u32 j = 0; j < m; ++j) {
-        const i32 swell = GQ31(0.55) + multiply(GQ31(0.45), swing[j]);
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        a = multiply(a, r);
-        out[2 * j] = multiply(multiply(static_cast<i32>(x) >> 2, a) * 8, swell);
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        a = multiply(a, r);
-        out[2 * j + 1] = multiply(multiply(static_cast<i32>(x) >> 2, a) * 8, swell);
+// r^n: a per-sample decay over n samples.
+inline i32 decay_over(i32 r, u32 n) {
+    i32 y = dsp::one;
+    for (; n; n >>= 1) {
+        if (n & 1) y = multiply(y, r);
+        r = multiply(r, r);
     }
-    env.a = a;
-    seed = x;
+    return y;
 }
-// Noise under an envelope, swelling with `swing` if given, through a band-pass
-// and a one-pole high-pass, added into out at gain g: three passes through a
-// buffer, each with its state in registers.
-inline void noise_band_add(Energy& env, u32& seed, const i32* __restrict swing, dsp::Band& f, dsp::Pole& p, i32 c,
-                           i32* __restrict out, i32 g28, u32 n) {
-    i32 x[64];
-    if (swing) noise_env_swell(env, seed, swing, x, n);
-    else noise_env(env, seed, x, n);
-    band_run(f, x, n);
-    high_add(p, c, x, out, g28, n);
+// Noise under an envelope (swelling with a half-rate swing if SWELL, as
+// 0.55 + 0.45 swing, which it overwrites) through a one-pole high-pass at ch and a one-pole
+// low-pass at cl, a broad band, added into out at gain g (Q28, under 2.5): one
+// pass. The gain rides on the envelope's level; the level itself is decayed
+// once, over the stretch, at the end.
+template <bool SWELL>
+__attribute__((noinline)) void noise_hl_add(Energy& env, u32& seed, i32* __restrict swing, dsp::Pole& hp, dsp::Pole& lp,
+                                            i32 ch, i32 cl, i32* __restrict out, i32 g28, u32 n) {
+    i32 ag = multiply(env.a, g28) << 3, h = hp.s, l = lp.s;
+    const i32 r = env.r, r2 = multiply(r, r);
+    u32 x = seed;
+    if (SWELL) {
+        // The level each two samples (the swing's rate) first, in place of the
+        // swing; then the noise, two samples a turn.
+        const u32 m = n >> 1;
+        for (u32 j = 0; j < m; ++j) {
+            swing[j] = multiply(ag, GQ31(0.55) + multiply(GQ31(0.45), swing[j]));
+            ag = multiply(ag, r2);
+        }
+        for (u32 i = 0; i < n; ++i) {
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            const i32 v = multiply(static_cast<i32>(x) >> 2, swing[i >> 1]) * 8;
+            h += multiply(v - h, ch);
+            l += multiply(v - h - l, cl);
+            out[i] += l;
+        }
+    } else {
+        for (u32 i = 0; i < n; ++i) {
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            ag = multiply(ag, r);
+            const i32 v = multiply(static_cast<i32>(x) >> 2, ag) * 8;
+            h += multiply(v - h, ch);
+            l += multiply(v - h - l, cl);
+            out[i] += l;
+        }
+    }
+    seed = x;
+    const i32 a = multiply(env.a, decay_over(r, n));
+    if (a < 64 && l < 4096 && l > -4096) h = l = 0;
+    env.a = a;
+    hp.s = h;
+    lp.s = l;
 }
 
 // The largest |x| of n samples, unsigned (so |-2^31| is 2^31).
@@ -1119,9 +1141,9 @@ __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u3
     i32 h[32], swing[32];
     skin_half(b.skin[0], h, count / 2, swing, b.g[0]);   // the head at its level
     expand<false>(h, count / 2, b.held, out);
-    if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
+    if (!idle(b.env[0]) || b.pole[1].s) {
         // The wires buzz with the head: noise, swelling with the head's swing.
-        noise_band_add(b.env[0], b.seed, swing, b.band[0], b.pole[0], b.pc[0], out, b.g[1], count);
+        noise_hl_add<true>(b.env[0], b.seed, swing, b.pole[0], b.pole[1], b.pc[0], b.pc[1], out, b.g[1], count);
     }
     // The stick's click and the crack: one burst of noise, one high-pass.
     click_pair_add(b.click[0], b.click[1], b.seed, out, count, b.cg[0], b.cg[1]);
@@ -1263,8 +1285,8 @@ __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32
         b.env[0].a = a;
         band_high_add(b.band[0], b.pole[0], b.pc[0], sh, out, GQ28(0.8), count);
     } else for (u32 k = 0; k < 8; ++k) b.sq[k] += b.sqi[k] * count;
-    if (b.g[0] && (!idle(b.env[1]) || b.band[1].y1 || b.band[1].y2))
-        noise_band_add(b.env[1], b.seed, 0, b.band[1], b.pole[3], b.pc[2], out, b.g[0], count);
+    if (b.g[0] && (!idle(b.env[1]) || b.pole[2].s))
+        noise_hl_add<false>(b.env[1], b.seed, 0, b.pole[3], b.pole[2], b.pc[2], b.pc[3], out, b.g[0], count);
     if (b.g[1]) modes_add(b.mode, 2, out, count);   // the bell, at its level from the strikes
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
