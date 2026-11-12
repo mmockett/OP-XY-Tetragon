@@ -44,6 +44,12 @@ inline i32 corner(u32 a, u32 b, i32 p) {
 }
 inline i32 q16(u32 hz) { return dsp::log2(hz); }
 
+// r^16: a per-sample decay's grain.
+inline i32 per_grain(i32 r) {
+    for (int i = 0; i < 4; ++i) r = multiply(r, r);
+    return r;
+}
+
 // A membrane: up to three partials on one phase trajectory whose pitch rises
 // with the strike (sweep) and falls back.
 struct Skin {
@@ -52,7 +58,7 @@ struct Skin {
     i32 share[3];      // each partial's strike, Q15
     Energy e[3];
     u32 inc, sweep_inc;
-    i32 s, sr;         // the sweep envelope, Q31, and its decay
+    i32 s, sr;         // the sweep envelope, Q31, and its decay a grain (16 samples)
     i32 vp;            // strike exponent, Q16
     u32 parts;
     // v15 the strike's force; tone15 how hard it reads (the force, a little
@@ -64,19 +70,6 @@ struct Skin {
         const i32 sv = GQ31(0.4) + multiply(GQ31(0.6), tone15 << 16);
         if (sv > s) s = sv;
     }
-    // One sample.
-    i32 run() {
-        s = multiply(s, sr);
-        const i32 curve = multiply(s, GQ31(0.6) + multiply(s, GQ31(0.4)));   // ~ s^1.3
-        const u32 now = inc + static_cast<u32>(multiply(static_cast<i32>(sweep_inc), curve));
-        ph[0] += now;
-        i32 y = multiply(dsp::sine(ph[0]), e[0].step());
-        for (u32 k = 1; k < parts; ++k) {
-            ph[k] += times(now, ratio[k]);
-            y += multiply(dsp::sine(ph[k]), e[k].step());
-        }
-        return y;
-    }
     bool quiet() const { return e[0].a < 64 && (parts < 2 || e[1].a < 64) && (parts < 3 || e[2].a < 64); }
 };
 // Sets a skin: base log2 Hz, the sweep's depth (Q16 ratio of the base), its
@@ -85,12 +78,12 @@ inline void skin(Skin& k, i32 log2_hz, i32 depth16, i32 sweep_r, u32 parts, cons
                  const i32* shares, i32 vp) {
     k.inc = dsp::increment(log2_hz);
     k.sweep_inc = static_cast<u32>(multiply(static_cast<i32>(k.inc >> 1), (depth16 > 0 ? depth16 : 0) << 12)) << 4;
-    k.sr = sweep_r;
+    k.sr = per_grain(sweep_r);
     k.parts = parts;
     k.vp = vp;
     for (u32 i = 0; i < parts; ++i) {
         k.ratio[i] = ratios[i];
-        k.e[i].r = decays[i];
+        k.e[i].r = per_grain(decays[i]);   // a grain's (16 samples), as the skin runs
         k.share[i] = shares[i];
     }
 }
@@ -769,11 +762,6 @@ __attribute__((noinline)) void strike_ghosts(Body& b, u32 n) {
 const u32 grain = 16;
 // The sweep's curve, ~ s^1.3.
 inline i32 sweep_curve(i32 s) { return multiply(s, GQ31(0.6) + multiply(s, GQ31(0.4))); }
-// r^16: a per-sample decay's grain.
-inline i32 per_grain(i32 r) {
-    for (int i = 0; i < 4; ++i) r = multiply(r, r);
-    return r;
-}
 // An interpolated sine of a 32-bit phase (dsp::sine, its fraction by shifts).
 inline i32 sine_of(u32 x) {
     const i32* t = table::sine + (x >> 23);
@@ -819,10 +807,10 @@ __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, cons
     level = a;
 }
 template <bool ADD, bool SWING>
-inline void partial(bool sweep, u32& phase, i32& level, i32 r, const u32* inc, i32 ratio28, i32 g28, i32* out, i32* swing,
+inline void partial(bool sweep, u32& phase, i32& level, i32 r16, const u32* inc, i32 ratio28, i32 g28, i32* out, i32* swing,
                     u32 m) {
-    if (sweep) partial_run<ADD, SWING, true>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, m);
-    else partial_run<ADD, SWING, false>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, m);
+    if (sweep) partial_run<ADD, SWING, true>(phase, level, r16, inc, ratio28, g28, out, swing, m);
+    else partial_run<ADD, SWING, false>(phase, level, r16, inc, ratio28, g28, out, swing, m);
 }
 // A skin at half the rate: writes m samples (a whole number of half grains),
 // or adds them (add), at gain g (Q28) if given. swing, if given, gets |sine|
@@ -833,7 +821,7 @@ inline void skin_half(Skin& k, i32* __restrict out, u32 m, i32* __restrict swing
     const u32 grains = m / hgrain;
     i32 s = k.s;
     if (s > 4194304 && k.sweep_inc) {                       // sweeping (above 0.002)
-        const i32 sr16 = per_grain(k.sr);
+        const i32 sr16 = k.sr;
         const u32 base = k.inc, sweep = k.sweep_inc;
         inc[0] = base + static_cast<u32>(multiply(static_cast<i32>(sweep), sweep_curve(s)));
         for (u32 g = 1; g <= grains; ++g) {
