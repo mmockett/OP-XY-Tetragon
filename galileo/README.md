@@ -1,6 +1,6 @@
 # GALILEO
 
-![GALILEO's screen: Galileo's inclined plane on a bench, a grooved board on risers sloping to a snare drum, a ball waiting at its head](docs/screen.png)
+![GALILEO's screen mid-run: a ball rolling down an inclined board under a rail of bells, towards a snare drum at its foot](docs/screen.png)
 
 A drum kit with motion inside the hit. Every key of GALILEO is one of
 Galileo's inclined planes: a note releases a ball, or a handful of them, down
@@ -228,51 +228,88 @@ while silent; impacts strike on an 8-sample grid (0.18 ms), so a handful of
 
 ## The screen
 
-Galileo's inclined plane on a bench, in the OP-XY's own isometric look: a
-grooved board slopes from a stack of risers down to a trestle, bells hang
-over its groove, the handful of balls waits at its head, and a snare stands
-at its foot with the bounce from the board onto its head dotted between them.
-Every face of every part is outlined in black; top and left faces share a
-grey and the right face is one step darker.
+One object: an 18th-century demonstration plane, after the "plane with
+bells" instrument makers built for lecture rooms to show Galileo's law of
+fall. On a moulded walnut base, a grooved board with brass ferrules and an
+engraved scale turns on a brass hinge at its foot; an index on its underside
+reads its angle on a brass quadrant, and its head rests on a peg in a
+graduated post. Small bells hang from brass gallows along the groove; a catch
+holds the ball and the rest of the handful waits in a cup behind it; a
+pendulum hangs beside the post over its own scale. At the foot stands the
+key's instrument, large, from the hinge's pillar to the edge of the screen,
+on a stand that reaches the base.
 
-The grey is the encoder's, as on the stock screens:
+Every control moves a real part. Tilt turns the whole board, the index
+sweeps the quadrant and the peg rides up the post; frets stand gallows and
+bells along the groove, and SPACE slides them (never closer than 10 px);
+bounce draws the dotted hops over the instrument; balls fills the cup with
+shot; FEEL lets the pendulum swing the beat or ties it back to the post. On
+the instrument, tune sets its size, decay lays a felt or a tape on it, stacks
+its felts or lowers its damper bar, and each model's two own controls move
+its parts:
 
-| Control | Part | Grey |
-| --- | --- | --- |
-| 1 (tune, or the clap's and shot's tone) | the drum: seven sizes, smaller as it rises; its head | `323232` |
-| 2 | the wires across the head, one to six | `4B4B4B` |
-| 3 | the ring on the head, wider as it rises | `969696` |
-| 4 | the tab on the shell, sliding up as it rises | `CDCDCD` |
-| TILT | the risers under the board's head, one to four | `323232` |
-| FRETS | the bells over the groove, none to nine, at Galileo's spacing (x ~ k²) | `4B4B4B` |
-| BOUNCE | the arc of dots from the board's foot onto the head, higher as it rises | `969696` |
-| BALLS | the balls waiting at the head, one to six | `CDCDCD` |
+- **kick**: the beater drawn back by punch, a big felt head or a small hard one by beater;
+- **snare**: a shallow snare on its stand, its wires pressed up under the bottom head or dropped clear on the throw-off, the strainer's lever up or down with them; a stick laid across the head from the far hoop, or raised onto the rim; its felt on the head's near half, clear of the stick;
+- **tom**: a deep rack tom held by its bracket on the L-arm of a stand; its head sagging with bend, its muffling ring lifting off with skin;
+- **fill**: a floor tom on three legs and two rack toms on a post, shrinking as their steps widen;
+- **hand**: a conga's slapping hand raised, its muting palm lowered;
+- **rim**: a rim-click: the stick laid across the head with its butt on a heavy counter-hoop, where the ball strikes; wood lowers it from a raised rim shot to a side-stick, tune shortens it, body sizes the drum;
+- **hat** and **ride**: the pair opening and the lower cymbal tilting; the ride's bell cup, felts and rivets;
+- **bell**: two alpine cowbells on a yoke, each with its riveted lip, its strap and its clapper hanging in the open mouth; the second bell grows with pair, the first one's mouth flares with metal;
+- **tine**: the chimes' tubes, their number, the hammer's head and the damper bar;
+- **clock**: a bracket clock with a bell top, carrying handle and feet; its dial sized by tune, its bell by decay, its case by case, and through the glazed door under the dial the pendulum swinging as far as tock sets;
+- **block**: the woodblock's slit and its mallet or stick;
+- **clap**: a slapstick, the orchestra's clapper board, on its sound box: its boards' length, how far snap springs them open, the box's size;
+- **shot**: a cabasa lying on its cradle, its open end towards you: up to three more loops of bead chain along it with shell, spaced evenly, coarser beads in its front chain with grit, every bead big enough to read;
+- **rattle**: a watchman's ratchet: its gear cut with one to twelve teeth, its tongue thicker for wood, riding the teeth in the slot of its frame.
 
-The same plane and drum serve every model; the header carries each model's
-own control names and values. Parts only slide or repeat, never turn or
-change size: the drum is one of seven copies, the risers, bells and balls
-are shown or parked, and the tab slides.
+A note trips the catch and releases the ball. Struck bells swing for 0.22 s
+(at most four at once), and the ball falls along the dotted half-parabola, as
+Galileo drew it, strikes the instrument and hops to rest. Onto an instrument
+that stands taller than the board's lip (a conga, the cowbells, the clock) it
+is thrown in an arc off the lip that comes down onto it. The dots are the
+ball's path as a stroboscope would catch it, one for each equal moment:
+wider apart as it falls faster, smaller as the hops die away, each ringed in
+black so it reads over a drum's bright head. Those the ball has passed are lit, so the path reads in its direction; once it rests they go
+out again, three a frame. Each strike moves the instrument: a head dents,
+cymbals and bells swing, the clappers swing in their mouths, the slapstick
+slaps shut, the ratchet's gear turns a tooth and its tongue springs, the
+clock's hands tick and its pendulum swings to its other side. The display
+replays the same plan the engine plays, from the key's controls, its note
+serial and the elapsed time.
 
-A note releases the balls, the lowest first, as the engine plays them: each
-rolls down the groove (x ~ t²), lifting each bell a pixel as it passes,
-flies the dotted arc onto the head and hops to its own spot there. Once the
-last has rested, they wait at the head again. When a key's sound lands at
-once (a single hit with no frets, as at most defaults) or within 0.1 s, the
-roll is shown over 0.1 s and the hops that much later; longer runs follow
-the sound. With reduced motion the balls are on the head at once.
+When a key's sound lands at once (a single hit with no frets, as at most
+defaults) or within 0.1 s, the screen still shows the ball travel: from the
+catch, down the board and off the lip onto the instrument over 0.1 s, fast at
+first and easing into its landing, ringing any bells as it passes them, and
+the instrument takes the strike as the ball lands. Whatever follows (the
+hops, the rest of the handful) is shown that much later, in its own time.
+Longer runs follow the sound. With reduced motion the ball is on the
+instrument at once.
 
-![Every control at 0, 50 and 100, Shift on both rows, frames mid-run](docs/controls-1x.png)
+![A default snare hit, frame by frame at 60 frames a second: the ball's travel shown over 0.1 s](docs/travel-1x.png)
 
-The screen uses 147 of its 512 nodes (139 for the drawing, the header's
-eight bars) and one reshaping outline, the ring, in 47 KB of artwork
-(`tools/make_panel.py` writes `panel.svg.fragment` and `art.h`). While a run
-plays, about 12 nodes change a frame on average and 21 at the peak (16
-frets at 1/64, 24 balls and full bounce); turning a control changes at most
-29 in a frame (a change of risers moves the board and the balls, and the
-bells a frame later); at rest, none. `tests/screen.cpp` checks the ring
-against the OP-XY's drawing rules (no turn sharper than 150 degrees among
-them) across every model and control, the churn, and every caption's width
-in the device font.
+![Every control at 0, 50 and 100, Shift on both rows, frames mid-run, and the ball's path lit as it passes](docs/controls-1x.png)
+
+![The fifteen bodies, at their defaults and with each body control at 0 and at 100](docs/bodies-1x.png)
+
+Every line draws 1 px wide, as stock Drumline's do, whatever size a part is
+drawn at: a part the display scales takes its stroke from a palette entry
+for its scale, so a felt or a mallet head stays 1 px from its smallest to its
+largest. Engraved lines (grain, lathe rings, seams) are thin ribbons about
+1.5 px across. Parts that are curved in life are drawn as curves: the conga's
+bellied staves, the clock's bell top, the cowbells' shoulders and flare, the
+hands, the knobs, the woodblock's rounded edges, the drums' and cymbals'
+ellipses.
+
+The screen uses 209 of its 512 nodes and two reshaping outlines (a drum's
+head or the ratchet's tongue; the ratchet's gear, a cowbell's mouth or the
+cabasa's front chain) in 58 KB of artwork, 239 elements. Ticks engraved together share one outline, and a drum's six
+lugs and rods are one. While a run plays at 60 frames a second, about 8
+nodes change a frame on average and 19 at the peak (16 frets at 1/64, 24
+balls and full bounce); at rest, none. Every outline follows the OP-XY's
+drawing rules across every model and control (`tests/screen.cpp`: no faults
+in 18 million frames).
 
 ## CPU
 
