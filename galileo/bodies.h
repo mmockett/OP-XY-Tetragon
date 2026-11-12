@@ -317,11 +317,12 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 shares[3] = {32767, GQ15(0.25) + dsp::m15(GQ15(0.4), p1 >> 16), dsp::m15(GQ15(0.35), p1 >> 16)};
         skin(b.skin[0], lf, GQ16(0.15), dsp::decay(ms(20 * 256)), 3, ratios, decays, shares, GQ16(1.2));
         b.env[0].r = decay_ms(12 * 256, 32 * 256, p1);
-        // The slap's ring: a resonator the noise drives (no zeros), its input
-        // scaled by 2 sin w for unit gain at 1.8 kHz, and by the slap's gain.
-        b.band[0].tune(q16(1800), OCT(1.2));
-        b.g[1] = multiply(GQ28(1.4), p1);
-        b.band[0].b = multiply(multiply(b.band[0].b, dsp::sine(dsp::increment(q16(1800)))) * 2, b.g[1] << 2) << 1;
+        // The slap's ring: a resonator the noise drives (no zeros), at half the
+        // rate (run_hand), its input scaled by 2 sin w for unit gain at 1.8 kHz,
+        // by the slap's gain, and 3 dB down (half-rate noise is twice as dense).
+        b.band[0].tune(q16(1800) + dsp::octave, OCT(1.2));
+        b.g[1] = multiply(GQ28(1.4 * 0.7071), p1);
+        b.band[0].b = multiply(multiply(b.band[0].b, dsp::sine(dsp::increment(q16(1800) + dsp::octave))) * 2, b.g[1] << 2) << 1;
         prepare_click(b.click[0], 400, 3000);
         b.cg[0] = GQ28(0.2);
         b.g[0] = GQ28(1) - multiply(GQ28(0.4), p1);
@@ -1161,21 +1162,22 @@ inline void band_high_add(dsp::Band& f, dsp::Pole& p, i32 c, i32* __restrict io,
     high_add(p, c, io, out, g28, n);
 }
 // Noise under an envelope driving a two-pole resonator (f's a1 and a2, its
-// input scaled by f.b), added into out (n even): two samples a turn, so the
-// state swaps without moves.
-__attribute__((noinline)) void noise_ring_add(Energy& env, u32& seed, dsp::Band& f, i32* __restrict out, u32 n) {
+// input scaled by f.b), at half the rate: m samples (m even) written, the
+// envelope's decay squared a sample. Two samples a turn, so the state swaps
+// without moves.
+__attribute__((noinline)) void noise_ring_half(Energy& env, u32& seed, dsp::Band& f, i32* __restrict out, u32 m) {
     i32 a = env.a, y1 = f.y1, y2 = f.y2;
-    const i32 r = env.r, b = f.b, a1 = f.a1, a2 = f.a2;
+    const i32 r = multiply(env.r, env.r), b = f.b, a1 = f.a1, a2 = f.a2;
     u32 x = seed;
-    for (u32 i = 0; i < n; i += 2) {
+    for (u32 i = 0; i < m; i += 2) {
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         a = multiply(a, r);
         y2 = multiply(b, multiply(static_cast<i32>(x) >> 2, a) * 8) + multiply(a1, y1) * 2 - multiply(a2, y2);
-        out[i] += y2;
+        out[i] = y2;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         a = multiply(a, r);
         y1 = multiply(b, multiply(static_cast<i32>(x) >> 2, a) * 8) + multiply(a1, y2) * 2 - multiply(a2, y1);
-        out[i + 1] += y1;
+        out[i + 1] = y1;
     }
     seed = x;
     env.a = a;
@@ -1312,7 +1314,11 @@ __attribute__((noinline)) inline void run_hand(Body& b, i32* __restrict out, u32
     i32 h[32];
     skin_half(b.skin[0], h, count / 2, 0, b.g[0]);
     expand<false>(h, count / 2, b.held, out);
-    if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) noise_ring_add(b.env[0], b.seed, b.band[0], out, count);
+    if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
+        // The slap at half the rate, back by straight lines.
+        noise_ring_half(b.env[0], b.seed, b.band[0], h, count / 2);
+        expand<true>(h, count / 2, b.pole[0].s, out);
+    }
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_modes(Body& b, i32* __restrict out, u32 count, u32 modes) {   // rim, block, tine (6), clock (7), ratchet
