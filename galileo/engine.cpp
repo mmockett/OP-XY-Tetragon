@@ -301,9 +301,9 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     // Impacts and ghosts strike on a 32-sample grid (0.73 ms): a block splits into
     // at most two stretches however many balls land in it, and each stretch
     // runs the body's parts once. (Struck modes keep their 8-sample phase; a
-    // tine strikes on the 8-sample grid, a fill on 16.)
+    // fill strikes on 16.)
     const u32 cell = body::step_of(voice.model);
-    const u32 shift = cell == 32 ? 5 : cell == 16 ? 4 : 3;
+    const u32 shift = cell == 32 ? 5 : 4;
     const u32 grid = ~(cell - 1);
     Cell cells[cells_max];
     u32 used = gather(voice, cells, shift);
