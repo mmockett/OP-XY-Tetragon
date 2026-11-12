@@ -340,12 +340,11 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
         for (unsigned i = 0; i < opxy::block_frames; ++i) output[i] = 0;
         return;
     } else {
-        u32 raw[8];
-        read_controls(parameters, raw);
-        bool moved = false;
-        for (u32 c = 0; c < 8; ++c) moved = moved || raw[c] != voice.raw[c];
+        // Whether a control moved, in one pass without a branch a control.
+        u32 moved = 0;
+        for (u32 c = 0; c < 8; ++c) moved |= (static_cast<u32>(positive(parameters[c])) >> 24) ^ voice.raw[c];
         if (moved) {
-            for (u32 c = 0; c < 8; ++c) voice.raw[c] = raw[c];
+            read_controls(parameters, voice.raw);
             set_up(voice);
         }
     }
