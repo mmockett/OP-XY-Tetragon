@@ -11,7 +11,15 @@
 #include "bodies.h"
 
 namespace galileo {
-const u32 max_impacts = 48;   // a block's impacts at most; the rest wait a block
+// A block's impacts gathered on the strike grid: every ball landing within one
+// cell of it strikes the body once, together (dsp::together), from the
+// strongest one's 8-sample step and place in the run. A cell is 32 samples
+// (0.73 ms), 16 for a fill, 8 for a tine, so a block holds 2 to 8.
+struct Cell {
+    i32 v, top;           // the cell's force, and its strongest impact's (Q15)
+    u32 fine, step;       // the strongest's 8-sample step in the block, and its place in the run
+};
+const u32 cells_max = 8;
 
 struct Voice {
     u32 model, next;      // the model sounding, and the played key's, from drum_select

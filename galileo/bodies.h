@@ -719,36 +719,38 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     }
     (void)kind;
 }
-// Plays the ghosts due in the grid's step from b.now, each one's modes from
-// its 8-sample step.
+// Plays the ghosts due in the grid's step from b.now as one strike (their
+// forces together), its modes from the strongest one's 8-sample step.
 inline void strike_ghosts(Body& b, u32 n) {
     const u32 end = b.now + step - 1;
     if (b.due > end) return;
-    // One walk over the slots held, in order: the due strike, the rest give
-    // the next due. (A ghost's strike lays no ghosts.)
-    u32 due = 0xffffffffu;
+    // One walk over the slots held: the due ones gathered, the rest give the
+    // next due. (A ghost's strike lays no ghosts.)
+    u32 due = 0xffffffffu, at = 0;
+    i32 v = 0, top = 0;
     for (u32 i = 0, m = b.used; m; ++i, m >>= 1) {
         if (!(m & 1u)) continue;
         Ghost& g = b.ghost[i];
         if (g.at <= end) {
-            const i32 v = g.v;
-            const u32 at = g.at & ~7u;
+            v = dsp::together(v, g.v);
+            if (g.v > top) { top = g.v; at = g.at & ~7u; }
             g.v = 0;
             b.used &= ~(1u << i);
-            const u32 late = at > b.now ? at - b.now : 0;
-            if (b.model == kit::ratchet) {
-                // A tooth: what strike() does for one, without its dispatch.
-                ++b.count;
-                strike_modes(b, 3, v, GQ16(1.1), touch(b, v), late, b.g[0]);
-                b.click[0].strike(v);
-            } else {
-                strike(b, v, 0, 0, n, true, late);
-            }
         } else if (g.at < due) {
             due = g.at;
         }
     }
     b.due = due;
+    if (v <= 0) return;
+    const u32 late = at > b.now ? at - b.now : 0;
+    if (b.model == kit::ratchet) {
+        // Teeth: what strike() does for one, without its dispatch.
+        ++b.count;
+        strike_modes(b, 3, v, GQ16(1.1), touch(b, v), late, b.g[0]);
+        b.click[0].strike(v);
+    } else {
+        strike(b, v, 0, 0, n, true, late);
+    }
 }
 
 // -------------------------------------------------------------------- run --
