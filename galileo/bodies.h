@@ -1167,13 +1167,25 @@ inline void knee_run(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
     if (peak_of(io, n) > static_cast<u32>(k)) knee_bend(io, n, k, h, inv_h28);
 }
 
+// The kick head's saturation: x driven by g (Q28), through a cubic soft clip
+// (u - 4/27 u^3, held at 1 from u = 1.5; tanh's shape, a little firmer), at
+// the makeup gain (Q28). In place.
+__attribute__((noinline)) void kick_drive(i32* __restrict io, u32 n, i32 g28, i32 makeup) {
+    const i32 hi = GQ28(1.5), lo = -GQ28(1.5);
+    for (u32 i = 0; i < n; ++i) {
+        i32 u = gain(io[i], g28);
+        u = u > hi ? hi : u < lo ? lo : u;
+        const i32 sq = multiply(u << 2, u << 1);                  // u^2, units 2^28
+        const i32 y = u - multiply(u, multiply(sq << 2, GQ31(4.0 / 27.0)) << 1);
+        io[i] = multiply(y, makeup) << 3;
+    }
+}
 __attribute__((noinline)) inline void run_kick(Body& b, i32* __restrict out, u32 count) {
     i32 h[32];
     skin_half(b.skin[0], h, count / 2);
     expand<false>(h, count / 2, b.held, out);
     modes_add(b.mode, 2, out, count);   // at the attack's level, from their strikes
-    const i32 drive = b.k[0], makeup = b.k[1];
-    for (u32 i = 0; i < count; ++i) out[i] = multiply(dsp::tanh(gain(out[i], drive)), makeup);
+    kick_drive(out, count, b.k[0], b.k[1]);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u32 count) {
