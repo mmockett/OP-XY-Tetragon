@@ -118,10 +118,10 @@ __attribute__((noinline)) inline void block_boom(Voice& v, Work& w, i32* out) {
     w.fin[0] = v.s[0];
     v.s[0] = 0;
     run_modes(v, w.exc, out);
-    copy(w.body, out);
+    const i32 most = v.c_amount ? block_most(out) : 0;   // (how far the sheet moves, for the chain)
     add_click(v, out);
     run_field(v, w.fin, out, v.flevel);
-    run_chain(v, w.body, out);
+    if (v.c_amount) chain_most(v, most, out);
 }
 
 // ============================================================ SLAP: snare
@@ -160,18 +160,17 @@ __attribute__((noinline)) inline void block_slap(Voice& v, Work& w, i32* out) {
     glide_modes(v);
     excite(v, w.exc);
     clear(w.fin);
-    clear(w.aux);
     clear(out);
     w.fin[0] = v.s[0];
     v.s[0] = 0;
     run_modes(v, w.exc, out);
-    copy(w.body, out);
+    const i32 most = v.c_amount ? block_most(out) : 0;   // (how far the sheet moves, for the chain)
     add_click(v, out);
     run_field(v, w.fin, out, v.flevel);
-    run_chain(v, w.body, w.aux);
+    // the wires, twice over, as they fall away (at the block's middle)
     i32 e;
     const i32 step = v.env[0].step(e);
-    add_ramped(w.aux, out, e, step);
+    if (v.c_amount) chain_most(v, most, out, e + step * 32);
 }
 
 // ============================================================ POP: clap, snap
@@ -201,9 +200,9 @@ inline void setup_pop(Voice& v, const i32* c, i32 tune) {
     setup_field(v, lband - octave, Q16(0.8), lt + log16(mix(Q16(1.0), Q16(4.0) - 1, c[5]) >> 2) + 2 * octave, Q16(0.6));
     v.flevel = q31(power16(c[5], Q16(1.5)));   // METAL^1.5: a hint of ring low down, a long metal tail at the top
     if (!c[5]) v.fon = 0;   // no METAL: no ring to run
-    v.k[8] = onepole_k(L(400));
-    v.k[9] = onepole_k(lband + L(3) < L(14000) ? lband + L(3) : L(14000));
-    v.k[10] = onepole_k(L(150));
+    field_raw(v);   // (the ring is filtered at half rate)
+    v.k[8] = onepole_k(L(400) + octave);
+    v.k[9] = onepole_k((lband + L(3) < L(10000) ? lband + L(3) : L(10000)) + octave);
     v.k[11] = multiply(q31(sq16(hard)), Q31(0.7));   // a hard snap's click
     setup_chain(v, Q16(0.9), Q16(0.6), L(0.06), L(2500), L(6000), c[6]);
     v.s[0] = v.s[1] = 0;
@@ -225,38 +224,37 @@ __attribute__((noinline)) inline u32 pop_noise(i32* exc, const i32* x, u32 count
     tail_ = tail;
     return seed;
 }
-// dry: the snaps through the dent's band, twice
+// dry: the snaps through the dent's band (once: twice was 2.5 dB quieter,
+// which its x 1.5 keeps)
 __attribute__((noinline)) inline void pop_dry(Voice& v, const i32* x, i32* out) {
     const i32 f = v.k[2], q = v.k[3];
-    i32 al = v.sv[0].lp, ab = v.sv[0].bp, bl = v.sv[1].lp, bb = v.sv[1].bp;
+    i32 al = v.sv[0].lp, ab = v.sv[0].bp;
     for (u32 n = 0; n < frames; ++n) {
         al += multiply(f, ab);
-        ab += multiply(f, *x++ - al - (multiply(q, ab) << 1));
-        const i32 y = multiply(q, ab) << 1;
-        bl += multiply(f, bb);
-        bb += multiply(f, y - bl - (multiply(q, bb) << 1));
-        *out++ = multiply(q, bb) << 2;
+        const i32 m = multiply(q, ab);
+        ab += multiply(f, *x++ - al - (m << 1));
+        *out++ = m + (m << 1);
     }
-    v.sv[0].lp = al; v.sv[0].bp = ab; v.sv[1].lp = bl; v.sv[1].bp = bb;
+    v.sv[0].lp = al; v.sv[0].bp = ab;
 }
-// the ring high-passed twice at 400 Hz and low-passed over the band, at its level
-__attribute__((noinline)) inline void pop_ring(Voice& v, const i32* x, i32* out) {
+// the ring (at half rate) high-passed twice at 400 Hz and low-passed over the
+// band, at its level, in place
+__attribute__((noinline)) inline void pop_ring(Voice& v, i32* x) {
     const i32 k8 = v.k[8], k9 = v.k[9], lv = v.flevel;
     i32 h0 = v.op[0].s, h1 = v.op[4].s, l0 = v.op[1].s;
-    for (u32 n = 0; n < frames; ++n) {
-        const i32 xi = *x++;
+    for (u32 n = 0; n < half; ++n) {
+        const i32 xi = *x;
         h0 += multiply(xi - h0, k8);
         const i32 a = xi - h0;
         h1 += multiply(a - h1, k8);
         l0 += multiply(a - h1 - l0, k9);
-        *out++ += multiply(l0, lv) << 1;
+        *x++ = multiply(l0, lv) << 1;
     }
     v.op[0].s = h0; v.op[4].s = h1; v.op[1].s = l0;
 }
 __attribute__((noinline)) inline void block_pop(Voice& v, Work& w, i32* out) {
     i32 burst = v.s[0], tail = v.s[1];
     clear(w.fin);
-    clear(w.aux);
     const bool pops = v.left && v.at < v.t + frames;
     if (pops || burst > (1 << 14) || tail > (1 << 14)) {
         u32 seed = v.cseed ? v.cseed : 1u;
@@ -292,13 +290,14 @@ __attribute__((noinline)) inline void block_pop(Voice& v, Work& w, i32* out) {
     v.s[1] = tail;
     v.waiting = v.left != 0;
     pop_dry(v, w.exc, out);
-    // the sheet's ring under them (METAL), band-limited
-    run_field(v, w.exc, w.aux, Q31(0.5));
-    if (v.fon) pop_ring(v, w.aux, out);
-    if (v.c_amount) {
-        lift_into(w.exc, w.body, v.op[2].s, v.k[10], 2);   // the sheet's lift
-        run_chain(v, w.body, out);
+    // the sheet's ring under them (METAL), band-limited (at half rate, at the
+    // level the full rate's held samples gave it)
+    if (v.fon) {
+        run_field(v, w.exc, w.aux, one);
+        pop_ring(v, w.aux);
+        v.s[2] = up_add(w.aux, out, v.s[2]);
     }
+    if (v.c_amount) chain_most(v, block_most(w.exc), out);   // the sheet's lift: the crackle's peak
 }
 
 // ============================================================ FLICK: hats
@@ -482,7 +481,7 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     const i32 hand0 = hand;
     flick_ring(v, w.aux, out, hand, hs);
     if (flicking || tick > (1 << 16)) flick_tick(v, w.exc, out, tick, ts);
-    if (multiply(fizz, hand0) > (1 << 16)) {
+    if (multiply(fizz, hand0) > (1 << 20)) {
         // the densest modes: the sizzle, under the hand, high-passed three times
         i32 t[frames];
         flick_squares<false>(v.u + 10, v.u + 4, t);
@@ -574,7 +573,11 @@ inline void setup_tom(Voice& v, const i32* c, i32 tune) {
     click(v, v.k[1], v.k[3], v.k[4], v.k[5], v.k[6]);
     v.s[0] = U;
 }
-// the head driven hard: a soft clip, z - 4 z^3 / 27, flat at |z| = 1.5
+// the head driven hard: a soft clip, z - 4 z^3 / 27, flat at |z| = 1.5; once
+// it rings under a quarter (the clip then bends it under 1%), as it is
+__attribute__((noinline)) inline void tom_linear(i32* x, i32 g) {
+    for (u32 n = 0; n < frames; ++n) { *x = multiply(*x, g) << 2; ++x; }
+}
 __attribute__((noinline)) inline void tom_clip(i32* x, i32 g) {
     for (u32 n = 0; n < frames; ++n) {
         const i32 z = clamp(multiply(*x, g), -(3 << 24), 3 << 24) << 5;   // Q30 of U, |z| <= 1.5
@@ -609,11 +612,12 @@ __attribute__((noinline)) inline void block_tom(Voice& v, Work& w, i32* out) {
     v.waiting = v.left != 0;
     clear(out);
     run_modes(v, w.exc, out);
-    copy(w.body, out);
-    if (v.k[7]) tom_clip(out, v.k[7]);
+    const i32 most = block_most(out);   // (the head's swing: what the clip and the chain feel)
+    if (multiply(most, v.k[7]) < (1 << 23)) tom_linear(out, v.k[7]);
+    else tom_clip(out, v.k[7]);
     add_click(v, out);
     run_field(v, w.fin, out, v.flevel);
-    run_chain(v, w.body, out);
+    if (v.c_amount) chain_most(v, most, out);
 }
 
 // ============================================================ CRASH: cymbals
@@ -1030,8 +1034,9 @@ __attribute__((noinline)) inline void block_bounce(Voice& v, Work& w, i32* out) 
     add_click(v, out);
     run_field(v, w.fin, out, v.flevel);
     if (v.c_amount) {
-        lift_into(out, w.body, v.op[0].s, v.k[2], 1);
-        run_chain(v, w.body, out);
+        // (the block's peak, as near as the low-passed |x| once lifting it was)
+        const i32 most = block_most(out);
+        chain_most(v, most + (most >> 2), out);
     }
 }
 
@@ -1087,6 +1092,8 @@ __attribute__((noinline)) inline void block_zap(Voice& v, Work& w, i32* out) {
         const u32 start = v.u[1 + e];
         if (t + frames <= start) continue;
         last = e + 1;
+        // an echo that has died away (90 dB under its start) is left out
+        if (start < t && v.k[16 + e] < (1 << 16)) { v.k[16 + e] = 0; continue; }
         const u32 te0 = t > start ? t - start : 0, te1 = t + frames - start;
         // the chirp's pitch at the block's start and end: top * depth^-(u^p), u = te / sweep, to 1.5
         u32 inc[2];
@@ -1121,14 +1128,14 @@ __attribute__((noinline)) inline void block_zap(Voice& v, Work& w, i32* out) {
     i32 g;
     const i32 gs = v.env[0].step(g);
     ramped_into(out, w.fin, g, gs);
-    copy(w.body, out);
+    const i32 most = v.c_amount ? block_most(out) : 0;   // (how far the sheet moves, for the chain)
     run_field(v, w.fin, w.aux, Q31(0.5));   // (at half rate: 32 values)
     if (v.fon) {
         // at its level, at the level the full rate's held samples gave it
         scale_half(w.aux, v.flevel);
         v.s[6] = up_add(w.aux, out, v.s[6]);
     }
-    run_chain(v, w.body, out);
+    if (v.c_amount) chain_most(v, most, out);
 }
 
 // ============================================================ BOW: the singing sheet
@@ -1257,8 +1264,7 @@ __attribute__((noinline)) inline void block_bow(Voice& v, Work& w, i32* out) {
     bow_pure(ol, ob, f0, e0, es, v.k[8], out);
     v.s[4] = ol;
     v.s[5] = ob;
-    copy(w.body, out);
-    run_chain(v, w.body, out);
+    run_chain(v, out, out);
 }
 
 // ============================================================ SHAKE: thunder

@@ -846,7 +846,7 @@ __attribute__((noinline)) inline i32 chain_band(const i32* x, i32* out, i32 hk, 
 // How far the sheet moves this block (its largest |disp|), for a model that
 // knows it without a pass over the block (a ramp's: the larger end).
 inline i32 chain_reach(i32 most, i32 d) { d = d < 0 ? -d : d; return d > most ? d : most; }
-inline void chain_most(Voice& v, i32 most, i32* out);
+inline void chain_most(Voice& v, i32 most, i32* out, i32 scale = -1);
 // a block's largest |x| (a value of -2^31 counts as none, as it always has)
 __attribute__((noinline)) inline i32 block_most(const i32* x) {
     i32 most = 0;
@@ -861,8 +861,9 @@ inline void run_chain(Voice& v, const i32* disp, i32* out) {
     if (!v.c_amount) return;
     chain_most(v, block_most(disp), out);
 }
-// most: how far the sheet moves this block (near U at its loudest).
-inline void chain_most(Voice& v, i32 most, i32* out) {
+// most: how far the sheet moves this block (near U at its loudest); scale
+// (Q31), if given, takes its level that far down and doubles it.
+inline void chain_most(Voice& v, i32 most, i32* out, i32 scale) {
     // How far past their weight the sheet lifts the links this block, 0..U,
     // held by a leaky integrator (x4).
     i32 c = most - v.c_thr;
@@ -874,7 +875,8 @@ inline void chain_most(Voice& v, i32 most, i32* out) {
     if (!env0 && !env1 && !v.c_hp.s && !v.c_l1 && !v.c_l2) return;
     // A slap with probability p * env, each 0.4..1 as hard, through the band.
     const i32 chance = multiply(v.c_p, (env0 + env1) >> 1) << 2;
-    const i32 gain = multiply(v.c_amount, env1) << 2;   // Q29 x Q29: of U / 16 hits
+    i32 gain = multiply(v.c_amount, env1) << 2;   // Q29 x Q29: of U / 16 hits
+    if (scale >= 0) gain = multiply(gain, scale) << 1;
     i32 hs = v.c_hp.s, lp = v.c_l1;
     u32 seed = v.seed ? v.seed : 1u;
     // the dice at twice the chance; past certainty a second slap takes the rest
