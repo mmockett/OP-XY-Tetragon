@@ -24,12 +24,14 @@ struct Glass {
     i32 rub_amp;
     u32 chink_at;
     i32 chink_amp, sec_amp[4];
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
         t = 0;
+        hlast = 0;
         // The rim: 1500 Hz for a thin glass down to 495 for a goblet; water
         // lowers it up to 42%.
         const i32 lpe = hz(1500) - sc(C(1.6), c[3]) + tune;
@@ -52,8 +54,12 @@ struct Glass {
             for (int b = 0; b < 6; ++b) k[m] = mul(k[m], k[m]);   // a block's worth
             amp[m] = static_cast<i32>(ex2((28 << 12) - (lk[m] * (aex >> 2) >> 10)));   // (k + 1)^-aex, Q28; the doublet halves it
             v[m] = amp[m];
+            // The shell rings at half the rate (two samples a step): a mode
+            // over 10 kHz is left out.
+            if (incs[2 * m] > 974000000u) v[m] = amp[m] = 0;
             // The second glass, a major third up: 0.6 of the decays and levels.
-            dsp::tune(secondk[m], static_cast<u32>(mul(static_cast<i32>(incs[2 * m] >> 1), F(1.26 / 2.0)) << 2), decay60(static_cast<u32>(mul(static_cast<i32>(t60), F(0.6)))));
+            const u32 i2 = static_cast<u32>(mul(static_cast<i32>(incs[2 * m] >> 1), F(1.26 / 2.0)) << 2);
+            dsp::tune(secondk[m], i2 < 974000000u ? i2 << 1 : 0, decay60(static_cast<u32>(mul(static_cast<i32>(t60), F(0.3)))));
             second[m] = Res();
             sec_amp[m] = mul(amp[m], F(0.6));
         }
@@ -65,10 +71,10 @@ struct Glass {
         click.v = U(0.25) + sc(U(0.6), c[1]);
         click.k = decay(1000);
         // The crack's buzz.
-        band(crackk, hz(4000), C(0.7));
+        band_half(crackk, hz(4000), C(0.7));
         crackr = Res();
         crk.v = sc(U(0.2), c[6]);
-        crk.k = decay(60000);
+        crk.k = decay(30000);   // at half the rate
         ph90 = ph42 = ph55 = 0;
         slosh = sc(F(0.05), c[5]);
         slosh_env = full;
@@ -78,7 +84,7 @@ struct Glass {
         rub.inc = incs[0];
         rub.v = rub.a = 0;
         rub_amp = sc(U(0.7), c[4]);
-        if (rub_amp) rub.hit(rub_amp, decay(static_cast<u32>(600000 + sc(1500000, c[4]))), decay(static_cast<u32>(150000 + sc(400000, c[4]))));
+        if (rub_amp) rub.hit(rub_amp, decay(static_cast<u32>(300000 + sc(750000, c[4]))), decay(static_cast<u32>(75000 + sc(200000, c[4]))));   // at half the rate
         chink_at = c[7] > 0 ? samples(static_cast<u32>(20000 + sc(60000, c[7]))) : 0;
         chink_amp = sc(U(1.4), c[7]);
     }
@@ -93,7 +99,6 @@ struct Glass {
         u32 pa = ph[2 * m], pb = ph[2 * m + 1];
         const u32 dn = nb - na, hd0 = (pb - pa) >> 1, hd1 = hd0 + (frames / 2) * dn;
         u32 pc = pa + hd0;
-        const u32 nc = na + (dn >> 1);
         const i32 v0 = v[m], v1 = mul(v0, k[m]);
         i32 l0 = mul(v0, sine(hd0 + 0x40000000u)), l1 = mul(v1, sine(hd1 + 0x40000000u));
         if (slosh) {
@@ -101,10 +106,11 @@ struct Glass {
             l0 += mul(l0, vib) * 6;
             l1 += mul(l1, vib) * 6;
         }
-        const i32 dl = (l1 - l0) >> 6;
+        const i32 dl = (l1 - l0) >> 5;
         i32 l = l0;
-        for (u32 j = 0; j < frames; ++j) {
-            pc += nc;
+        const u32 nc2 = na + nb;   // two samples a step
+        for (u32 j = 0; j < frames / 2; ++j) {
+            pc += nc2;
             l += dl;
             y[j] += mul(l, sine(pc));
         }
@@ -112,57 +118,46 @@ struct Glass {
         ph[2 * m + 1] = pb + frames * nb;
         v[m] = v1;
     }
-    __attribute__((noinline)) void noise_pass(i32* nb) {
-        u32 r = rng;
-        for (u32 j = 0; j < frames; ++j) nb[j] = noise(r);
-        rng = r;
-    }
-    // The strike's tick of band noise.
-    __attribute__((noinline)) void click_pass(i32* y, const i32* nb) {
+    // The strike's tick of band noise, at the full rate while it sounds.
+    __attribute__((noinline)) void click_pass(i32* y) {
         i32 cv = click.v, y1 = clickr.y1, y2 = clickr.y2, x1 = clickr.x1, x2 = clickr.x2;
         const i32 ck = click.k, c = clickk.c, r2 = clickk.r2, b = clickk.b, g = click_gain;
+        u32 r = rng;
         for (u32 j = 0; j < frames; ++j) {
-            if (CURIO_LIKELY(cv > 4096)) {
-                const i32 in = mul(nb[j], b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                cv = mul(cv, ck);
-                y[j] += lev(gn(o, g), cv);
-            }
+            const i32 in = mul(noise(r), b);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            cv = mul(cv, ck);
+            y[j] += lev(gn(o, g), cv);
         }
         click.v = cv;
         clickr.y1 = y1;
         clickr.y2 = y2;
         clickr.x1 = x1;
         clickr.x2 = x2;
+        rng = r;
     }
-    // The crack's buzz, gated at 90 Hz.
-    __attribute__((noinline)) void crack_pass(i32* y, const i32* nb) {
-        i32 cv = crk.v, y1 = crackr.y1, y2 = crackr.y2, x1 = crackr.x1, x2 = crackr.x2;
-        u32 p = ph90;
-        const i32 ck = crk.k, c = crackk.c, r2 = crackk.r2, b = crackk.b;
-        for (u32 j = 0; j < frames; ++j) {
-            if (CURIO_LIKELY(cv > 4096)) {
-                p += 8765280u;   // 90 Hz
-                const i32 in = mul(nb[j], b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                if (static_cast<i32>(p) >= 0) y[j] += lev(o, cv);
-                cv = mul(cv, ck);
-            }
+    // The crack's buzz, gated at 90 Hz, at half the rate.
+    __attribute__((noinline)) void crack_pass(i32* y) {
+        i32 cv = crk.v, y1 = crackr.y1, y2 = crackr.y2;
+        u32 p = ph90, r = rng;
+        const i32 ck = crk.k, c = crackk.c, r2 = crackk.r2, g = crackk.g;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            p += 2 * 8765280u;   // 90 Hz
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
+            y2 = y1;
+            y1 = o;
+            if (static_cast<i32>(p) >= 0) y[j] += lev(o, cv);
+            cv = mul(cv, ck);
         }
         crk.v = cv;
         ph90 = p;
+        rng = r;
         crackr.y1 = y1;
         crackr.y2 = y2;
-        crackr.x1 = x1;
-        crackr.x2 = x2;
     }
     void run(i32* out) {
         // The water's slosh, once a block.
@@ -174,24 +169,27 @@ struct Glass {
         u32 now[8];
         for (int o = 0; o < 8; ++o) now[o] = incs[o] + static_cast<u32>(mul(static_cast<i32>(incs[o]), vib));
         const u32 rub_inc = rub.inc + static_cast<u32>(mul(static_cast<i32>(rub.inc), rubvib));
-        for (u32 i = 0; i < frames; ++i) out[i] = 0;
-        for (int m = 0; m < 4; ++m) doublet_pass(m, out, now[2 * m], now[2 * m + 1], vib);
-        i32 nb[frames];
-        noise_pass(nb);
+        // The shell, the finger, the crack and the second glass at half the
+        // rate; the strike's tick at the full rate.
+        i32 h[frames / 2];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
+        for (int m = 0; m < 4; ++m)
+            if (v[m]) doublet_pass(m, h, now[2 * m], now[2 * m + 1], vib);
         // Once under its floor a part stays there.
-        if (click.v > 4096) click_pass(out, nb);
-        if (crk.v > 4096) crack_pass(out, nb);
-        if (rub_amp) tone_into(rub, out, frames, rub_inc);
+        if (crk.v > 4096) crack_pass(h);
+        if (rub_amp) tone_into(rub, h, frames / 2, rub_inc << 1);
         // The second glass rings from its chink.
         if (chink_at) {
             const u32 d = chink_at - t;
             if (d < frames) {
                 for (int m = 0; m < 4; ++m) dsp::strike(second[m], secondk[m], lev(sec_amp[m], chink_amp));
-                ring_bank(second, secondk, 4, out + d, frames - d);
+                ring_bank(second, secondk, 4, h + (d >> 1), frames / 2 - (d >> 1));
             } else if (t >= chink_at) {
-                ring_bank(second, secondk, 4, out, frames);
+                ring_bank(second, secondk, 4, h, frames / 2);
             }
         }
+        up_onto(h, out, hlast);
+        if (click.v > 4096) click_pass(out);
         t += frames;
     }
 };
