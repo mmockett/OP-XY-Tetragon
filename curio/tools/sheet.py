@@ -137,7 +137,7 @@ def main():
     d = defs[0]
     sheets["shift"] = [
         ("Shift, first row", scene(0, d, shift=1, line=0, pan=-40, level=-6, choke=1)),
-        ("Shift, second row", scene(0, d, shift=1, line=1, pads=(-5, 8, 0, 51))),
+        ("Shift, second row", scene(0, d, shift=1, line=1, pads=(-5, 8, 0, 4))),
         ("Shift, first row: bell jar", scene(13, defs[13], shift=1, line=0, choke=0)),
         ("second row, no Shift", scene(0, d, line=1)),
     ]
