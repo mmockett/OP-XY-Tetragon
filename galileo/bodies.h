@@ -843,23 +843,40 @@ __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, cons
     u32 p = phase;
     i32 a = level;
     u32 now = (ratio28 ? times(inc[0], ratio28) : inc[0]) << 1;
+    // The sine by its two-term recurrence, sin(x + w) = 2 cos w sin x - sin(x - w),
+    // from the table's sin p and sin(p + w) (wrapping arithmetic: each result
+    // is a sine, in range). A sweep sets each grain at its mean step w afresh;
+    // a steady partial runs the whole stretch from one start.
+    u32 w = now;
+    i32 c = sine_of(w + 0x40000000u);
+    i32 y0 = sine_of(p), y1 = sine_of(p + w);
     for (u32 g = 0; g < m; g += hgrain) {
         const u32 next = SWEEP ? (ratio28 ? times(inc[g / hgrain + 1], ratio28) : inc[g / hgrain + 1]) << 1 : now;
-        const i32 step = static_cast<i32>(next - now) >> 3;
+        if (SWEEP) {
+            w = now + static_cast<u32>(static_cast<i32>(next - now) >> 1);
+            c = sine_of(w + 0x40000000u);
+            y0 = sine_of(p);
+            y1 = sine_of(p + w);
+        }
         const i32 end = multiply(a, r16);
         i32 l = g28 ? gain(a, g28) : a;
         const i32 dl = ((g28 ? gain(end, g28) : end) - l) >> 3;
         i32* __restrict o = out + g;
-        for (u32 i = 0; i < hgrain; ++i) {
-            if (SWEEP) now += static_cast<u32>(step);
-            p += now;
+        for (u32 i = 0; i < hgrain; i += 2) {
             l += dl;
-            const i32 v = sine_of(p);
-            const i32 y = multiply(v, l);
-            if (ADD) o[i] += y;
-            else o[i] = y;
-            if (SWING) swing[g + i] = v < 0 ? -v : v;
+            const i32 v = multiply(y1, l);
+            if (ADD) o[i] += v;
+            else o[i] = v;
+            if (SWING) swing[g + i] = y1 < 0 ? -y1 : y1;
+            y0 = static_cast<i32>((static_cast<u32>(multiply(c, y1)) << 1) - static_cast<u32>(y0));
+            l += dl;
+            const i32 u = multiply(y0, l);
+            if (ADD) o[i + 1] += u;
+            else o[i + 1] = u;
+            if (SWING) swing[g + i + 1] = y0 < 0 ? -y0 : y0;
+            y1 = static_cast<i32>((static_cast<u32>(multiply(c, y0)) << 1) - static_cast<u32>(y1));
         }
+        p += w * hgrain;
         now = next;
         a = end;
     }
