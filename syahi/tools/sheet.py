@@ -115,7 +115,7 @@ def main():
         sts, labels = [state(mi, d)], ["defaults"]
         sts.append(state(mi, d, hit=60)); labels.append("hit, 60 ms after")
         sts.append(state(mi, d, shift=1, line=0, pan=-40, level=-6, choke=1)); labels.append("shift, first row")
-        sts.append(state(mi, d, shift=1, line=1, pads=(6, -5, 0, 4))); labels.append("shift, second row")
+        sts.append(state(mi, d, shift=1, line=1, pads=(6, -5, 0, 51))); labels.append("shift, second row")
         for slot, label in enumerate(kits.LABELS[model]):
             for v in (0, 64, 127):
                 c = list(d)

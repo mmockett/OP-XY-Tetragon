@@ -165,7 +165,7 @@ def main():
     frames = run_script(exe, "\n".join(scene(f"f{i}", "SNARE", base, pad=(0, v, 0, 0), note=True, run=0.35) for i, v in enumerate((0, 4, 15))))
     rows.append(("FEEL lock / sw21 / free, mid-run: the pendulum swings the beat, or is tied back", list(zip(frames, ["lock", "sw21", "free"]))))
     frames = run_script(exe, "\n".join([scene("sh0", "SNARE", base, row=0, shift=0, extra="pan -40\nlevel -6"),
-                                        scene("sh1", "SNARE", base, row=1, shift=1, pad=(-6, 9, 0, 4)),
+                                        scene("sh1", "SNARE", base, row=1, shift=1, pad=(-6, 9, 0, 51)),
                                         scene("rowa", "SNARE", base, row=0)]))
     rows.append(("Shift on the first row (MACHINE, CHOKE, PAN, LEVEL), on the second (SPACE, FEEL, FX I, FX II); the body row",
                  list(zip(frames, ["Shift, row 1", "Shift, row 2", "body row bright"]))))
