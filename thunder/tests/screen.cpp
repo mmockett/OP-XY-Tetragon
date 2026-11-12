@@ -164,8 +164,8 @@ int main() {
                 input.choices[1] = static_cast<opxy::u8>(k & 3);
                 input.pad[0] = static_cast<opxy::i8>(k / 2 - 16);
                 input.pad[1] = static_cast<opxy::i8>(k & 15);
-                input.pad[2] = static_cast<opxy::i8>(k & 7);
-                input.pad[3] = static_cast<opxy::i8>((k >> 3) & 7);
+                input.pad[2] = static_cast<opxy::i8>(k * 101 / 63);          // TRK, then percent + 1 (SDK 1.15)
+                input.pad[3] = static_cast<opxy::i8>((63 - k) * 101 / 63);
                 thunder::display_reset(state);
                 thunder::display(state, input, frame);
                 for (int i = 0; i < 4; ++i) {
@@ -214,7 +214,7 @@ int main() {
         input.pad[0] = 7;
         input.pad[1] = 0;
         input.pad[2] = 0;
-        input.pad[3] = 7;
+        input.pad[3] = 101;   // 100: percent + 1
         thunder::display_reset(state);
         thunder::display(state, input, frame);
         const char* want2[4] = {"+7", "OFF", "TRK", "100"};
