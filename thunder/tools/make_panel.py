@@ -55,8 +55,8 @@ WIRE_B = 7.0                               # its lower piece, up from the sheet'
 MALLET = (128.0, 34.0)                     # the mallet's cord and handle
 CORE_Z, CORE_H, CORE_R = 38.0, 9.0, 4.0
 RING_STEP = 2.4                            # each felt ring this much wider than the last
-PAD = (8.0, 6.0, 10.0)                     # a felt pad: along the sheet, across it, high
-LINK = (2.6, 1.6)                          # a chain link's half widths on screen (before K)
+PAD = (9.0, 6.0, 13.0)                     # a felt pad: along the sheet, across it, high
+LINK = (3.4, 2.0)                          # a chain link's half widths on screen (before K)
 N_MARKS, N_LINKS, N_PADS = 3, 9, 4
 
 # ---------------------------------------------------------------- greys
@@ -203,12 +203,12 @@ def parts():
     for k in range(N_MARKS):
         node(f"mark_{k}", about(ribbon(P(-4, SHEET_Y, 0), P(4, SHEET_Y, -1), r), o), "none", "#4A4A4A", s)
     # SPOT's chalk cross on the sheet, two strokes about its middle
-    r, s = line_style(1.2 * K)
-    node("cross_a", about(ribbon(P(-3, SHEET_Y, -3), P(3, SHEET_Y, 3), r), o), "none", E4, s)
-    node("cross_b", about(ribbon(P(-3, SHEET_Y, 3), P(3, SHEET_Y, -3), r), o), "none", E4, s)
+    r, s = line_style(1.5 * K)
+    node("cross_a", about(ribbon(P(-5, SHEET_Y, -5), P(5, SHEET_Y, 5), r), o), "none", E4, s)
+    node("cross_b", about(ribbon(P(-5, SHEET_Y, 5), P(5, SHEET_Y, -5), r), o), "none", E4, s)
     # CHAIN's links lying on the sheet, flat ovals on screen
     for k in range(N_LINKS):
-        node(f"link_{k}", ellipse(0, 0, K * LINK[0], K * LINK[1], 20), "none", E4, 0.9 * K)
+        node(f"link_{k}", ellipse(0, 0, K * LINK[0], K * LINK[1], 24), "none", E4, 1.1 * K)
     # DAMP's felt pads, boxes about their back lower corner
     for k in range(N_PADS):
         left, right, top = box_faces(0, 0, 0, *PAD, P(0, 0, 0))
