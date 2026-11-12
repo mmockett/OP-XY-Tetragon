@@ -325,11 +325,11 @@ static inline void finish(Voice& voice, const i32* out, i32* output) {
     f.makeup = g > 0 ? tables::grit_makeup[g] : 0;
     f.hold = g > 9 ? static_cast<u32>(1 + (g - 9) * 2) : 0;
     f.step = g > 9 ? static_cast<i32>(1) << (16 + ((g - 10) * 7) / 5) : 0;   // 2^(14 - 1.4 (g - 9)) steps a working level
-    // The high-pass's coefficient for a whole hold: 1 - (1 - c)^hold.
+    // The high-pass's coefficient for a whole hold, 1 - (1 - c)^hold, from tables::crush_hp.
     const u32 under = g == 0 ? finish_clean(f, out, output)
                     : g < 0 ? finish_pass<grit_soft>(f, out, output)
                     : g <= 9 ? finish_pass<grit_drive_only>(f, out, output)
-                    : finish_crush(f, out, output, one - power(one - 7323000, f.hold));
+                    : finish_crush(f, out, output, tables::crush_hp[g - 10]);
     voice.hp = f.hp;
     voice.low = f.low;
     voice.held = f.held;

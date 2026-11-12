@@ -90,6 +90,22 @@ def main():
             parts.append("        " + ", ".join(entries[i:i + 4]) + ",")
         parts.append("    },")
     parts += ["};"]
+    # GRIT past +9: the 24 Hz high-pass's coefficient for a whole hold of
+    # 3, 5, .. 13 samples, 1 - (1 - c)^hold, in the engine's Q31 arithmetic
+    # (multiply truncates; power squares), so it matches it bit for bit.
+    def mul(a, b):
+        return min(0x7fffffff, (a * b) >> 31)
+    def power(x, n):
+        r = 0x7fffffff
+        while n:
+            if n & 1:
+                r = mul(r, x)
+            x = mul(x, x)
+            n >>= 1
+        return r
+    crush_hp = [0x7fffffff - power(0x7fffffff - 7323000, 1 + 2 * (g - 9)) for g in range(10, 16)]
+    parts += ["// GRIT +10..+15 (index 0..5): the 24 Hz high-pass over a hold of 3..13 samples, Q31.",
+              "const i32 crush_hp[6] = {" + ", ".join(map(str, crush_hp)) + "};"]
     parts += ["}", "}", ""]
     (HERE / "tables.h").write_text("\n".join(parts))
     print("wrote", HERE / "tables.h")

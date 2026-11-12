@@ -65,6 +65,7 @@ struct Core {
     u32 seed;
     // noise burst: established and pending level (units), decay a sample, ramp
     i32 nb, np, nd, nramp, nstep, nd_tail;
+    i32 nd16, nd_tail16;          // the burst's fall over 16 samples, and its tail's
     u32 noise_quiet;
     Svf n1, n2;
     SvfCoefficients cn;
@@ -270,6 +271,8 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
         if (s.noise_ring) v.r0.set(q_drum, v.part[0].rest);
         v.nd = one - one_pole(s.noise_length);
         v.nd_tail = s.tail ? one - one_pole(s.noise_length + s.tail) : v.nd;
+        v.nd16 = power(v.nd, 16);
+        v.nd_tail16 = power(v.nd_tail, 16);
         v.nstep = static_cast<i32>(exp2i_cold(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
     }
     // The rattle.
@@ -723,7 +726,7 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
     const Spec& s = v.spec;
     const i32 gain = multiply(v.velocity, q31(1.732 / 2));
     // The burst: established and pending level, the pending part ramping in.
-    i32 nb = v.nb, np = v.np, ramp = v.nramp, nd = v.nd;
+    i32 nb = v.nb, np = v.np, ramp = v.nramp, nd = v.nd, nd16 = v.nd16;
     const i32 step = v.nstep;
     NoiseRun z;
     z.seed = v.seed;
@@ -740,7 +743,7 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
         // its attack and its fall.
         for (u32 at = begin; at < end;) {
             const u32 count = end - at < 16 ? end - at : 16;
-            const i32 fall = power(nd, count);
+            const i32 fall = count == 16 ? nd16 : power(nd, count);
             const i32 ramp_end = ramp > one - static_cast<i32>(count) * step || static_cast<i32>(count) * step < 0 ? one
                                : ramp + static_cast<i32>(count) * step;
             const i32 from = multiply(nb + multiply(np, ramp), gain);
@@ -772,11 +775,14 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
                 z.cn = v.cn;
                 z.cn.k = multiply(z.cn.k, q31(0.7071));
             }
-            if (strikes.last[i] && s.tail) nd = v.nd_tail;
+            if (strikes.last[i] && s.tail) {
+                nd = v.nd_tail;
+                nd16 = v.nd_tail16;
+            }
         }
         begin = end;
     }
-    v.nb = nb; v.np = np; v.nramp = ramp; v.nd = nd; v.seed = z.seed;
+    v.nb = nb; v.np = np; v.nramp = ramp; v.nd = nd; v.nd16 = nd16; v.seed = z.seed;
     v.n1 = z.f1; v.r0 = z.g0;
     v.noise_quiet = nb > silent || np > silent ? 0 : v.noise_quiet + 1;
 }
@@ -971,7 +977,8 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     qs[1] = v.qs[1];
     qs[2] = v.qs[2];
     i32* const q = qs + 3;
-    for (u32 i = 0; i < 16; ++i) q[i] = 0;
+    if (v.quarter)
+        for (u32 i = 0; i < 16; ++i) q[i] = 0;
     bool quartered = qs[0] || qs[1] || qs[2];
     {
         u32 hb = 0, qb = 0;
