@@ -3,26 +3,26 @@
 screen, the cabinet with its drawer pulled open, in the stock isometric look.
 
 The cabinet stands at the back with two closed drawers; the open drawer
-holds a felt bed, a small drum on it and the release clamp on its stand that
-drops a ball onto the drum's head. Every key's specimen shares the drawer;
-the card holder on the drawer's front carries the selected specimen's
-symbol. The grey is the encoder's: encoder 1's parts 323232 (the clamp, and
-on the second row the damper on the head), encoder 2's 4B4B4B (the bounce
-marks; the crate), encoder 3's 969696 (the drum's head and its rods; the
-spot), encoder 4's CDCDCD (the ball; the grit).
+holds a felt bed, a small drum on it and the release clamp on its stand. The
+clamp holds the key's specimen over the drum (sixteen silhouettes in
+tools/specimens.py, one shown), and a hit drops it onto the head. The grey
+is the encoder's: encoder 1's parts 323232 (the clamp, and on the second row
+the damper on the head), encoder 2's 4B4B4B (the bounce marks; the crate),
+encoder 3's 969696 (the drum's head and its rods; the spot), encoder 4's
+CDCDCD (the specimen; the grit).
 
  1 DROP    the clamp on its stand: higher, and the plumb line longer
  2 BOUNCE  a mark at the top of each bounce
  3 SKIN    the rods round the drum, 4 to 10
- 4 BALL    the ball, five sizes
+ 4 BALL    the specimen, five sizes
  5 DECAY   a felt damper on the head, slid toward the rim for a longer ring
  6 FLOOR   a crate on the felt, slid toward the drum for more floor
- 7 SPOT    a ring on the head where the ball lands, centre to rim
+ 7 SPOT    a ring on the head where the specimen lands, centre to rim
  8 GRIT    grains on the head, 0 to 10
 
 3D parts only slide or repeat: the stand is two overlapping lengths, the
-upper one sliding with the clamp; the rods, marks, grains and balls are
-copies placed or parked. The plumb line is the one reshaping outline: a
+upper one sliding with the clamp; the rods, marks and grains are copies
+placed or parked. The specimen is flat, a silhouette, so it may also scale. The plumb line is the one reshaping outline: a
 thin closed ribbon of four points. Every outline is one subpath of at most
 64 distinct points, 1/8 px apart, with a closing edge of at least 1/4 px,
 some area, and no turn sharper than SHARPEST degrees (the OP-XY strokes with
@@ -37,6 +37,8 @@ two-row header (its box's middle at y 130). Pure Python:
 import math
 import pathlib
 import re
+
+import specimens
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ID = "curio"
@@ -59,11 +61,14 @@ def P(x, y, z=0.0):
 # ---------------------------------------------------------------- the design's measures
 DX, DY, DR = 70, 40, 20            # the drum: its centre and radius
 BX, BY = DX - 4, DY - 4            # the plumb line and the ball
-SXW, SYW = 30, 30                  # the stand
-DROP0, DROP1 = 36, 74              # the clamp's height over the drawer's floor, DROP 0..100
+SXW, SYW = 30, BY                  # the stand, in line with the plumb line
+ARM = BX + 3 - SXW                 # the clamp's arm, out from the stand to just past the plumb line
+DROP0, DROP1 = 66, 96              # the clamp's height over the drawer's floor, DROP 0..100
 HEAD = 24                          # the head's height
-STAND = 42                         # each length of the stand
-BALLS = [3.5, 4.25, 5.0, 5.75, 6.5]
+STAND = 50                         # each length of the stand
+STAND_TOP = 6                      # the stand's top over the clamp
+SIZES = [0.8, 0.9, 1.0, 1.12, 1.25]   # encoder 4: the specimen's five sizes, as a scale
+GAP = 2                            # between the clamp and the specimen it holds
 PAD = (DX + 1, DY - 15, 6, 4, 1)   # the damper at DECAY 0: x, y, width, depth, height
 PAD_SLIDE = (0, -4)                # plan px it slides by DECAY 100, out to the back rim
 CRATE = (14, 52, 10, 10, 7)        # the crate: x at FLOOR 0, y, width, depth, height
@@ -214,56 +219,6 @@ def box_static(x0, y0, z0, w, d, h, g, faces=("left", "right", "top")):
             static(pts, fill, name=f"box {face}")
 
 
-def symbol(kind):
-    """Each specimen's symbol, about 6 px, one outline about (0, 0)."""
-    def e(rx, ry, n=16, rot=0.0):
-        return [(x * math.cos(rot) - y * math.sin(rot), x * math.sin(rot) + y * math.cos(rot)) for x, y in ellipse(0, 0, rx, ry, n)]
-    if kind == "cask":       # a barrel: bulging sides, flat ends
-        right = [(1.5 + 0.6 * math.cos(math.pi * (i / 6 - 0.5)), -2.6 + 5.2 * i / 6) for i in range(7)]
-        return right + [(-x, y) for x, y in reversed(right)]
-    if kind == "stone":      # a bar
-        return rrect(-3.4, -1.2, 3.4, 1.2, 0.5, 2)
-    if kind == "drip":       # a drop
-        return [(0, -2.8)] + [(1.5 * math.cos(math.radians(d)), 0.9 + 1.5 * math.sin(math.radians(d))) for d in range(-30, 211, 20)]
-    if kind == "ice":        # a crystal
-        return [(2.4 * math.cos(math.radians(60 * i + 30)), 2.4 * math.sin(math.radians(60 * i + 30))) for i in range(6)]
-    if kind == "sheet":      # a hung sheet
-        return [(-1.8, -2.6), (1.8, -2.6), (2.0, 2.6), (-1.6, 2.6)]
-    if kind == "spark":      # a four-pointed spark
-        return [((2.8 if i % 2 == 0 else 1.25) * math.cos(math.pi * i / 4 - math.pi / 2),
-                 (2.8 if i % 2 == 0 else 1.25) * math.sin(math.pi * i / 4 - math.pi / 2)) for i in range(8)]
-    if kind == "cork":       # a cork, wider at its top
-        return [(-1.6, -2.2), (1.6, -2.2), (1.1, 2.2), (-1.1, 2.2)]
-    if kind == "cicada":     # wings folded over the body
-        return [(0, -2.8), (1.4, -1.6), (2.0, 1.6), (0, 2.8), (-2.0, 1.6), (-1.4, -1.6)]
-    if kind == "ratchet":    # a cog
-        pts = []
-        for i in range(8):
-            a = 2 * math.pi * i / 8
-            for da, r in ((-0.17, 2.6), (0.17, 2.6), (0.24, 1.8), (0.55, 1.8)):
-                pts.append((r * math.cos(a + da), r * math.sin(a + da)))
-        return pts
-    if kind == "pod":        # a seed pod
-        return e(1.5, 2.6, 16)
-    if kind == "match":      # a stick with its head
-        head = [(0.8 * math.cos(math.radians(d)), -1.9 + 0.8 * math.sin(math.radians(d))) for d in list(range(64, -245, -31)) + [-244]]
-        return [(0.35, 2.8)] + head + [(-0.35, 2.8)]
-    if kind == "glass":      # a goblet
-        return [(-2.0, -2.8), (2.0, -2.8), (1.6, -0.9), (0.35, 0.2), (0.35, 2.0), (1.6, 2.8), (-1.6, 2.8),
-                (-0.35, 2.0), (-0.35, 0.2), (-1.6, -0.9)]
-    if kind == "bell jar":   # a bell
-        dome = [(1.4 * math.cos(math.radians(d)), -1.0 + 1.6 * math.sin(math.radians(d))) for d in range(-180, 1, 30)]
-        return dome + [(1.6, 1.6), (2.4, 2.4), (-2.4, 2.4), (-1.6, 1.6)]
-    if kind == "chalk":      # a stick of chalk, at a slant
-        return [(x * math.cos(0.6) - y * math.sin(0.6), x * math.sin(0.6) + y * math.cos(0.6))
-                for x, y in rrect(-0.8, -3.0, 0.8, 3.0, 0.3, 1)]
-    if kind == "roar":       # a slat
-        return e(3.2, 1.0, 18, -0.35)
-    raise KeyError(kind)
-
-
-MODELS = ["ball", "cask", "stone", "drip", "ice", "sheet", "spark", "cork",
-          "cicada", "ratchet", "pod", "match", "glass", "bell jar", "chalk", "roar"]
 slides = {}
 
 # the cabinet behind, two closed drawers in it
@@ -312,39 +267,38 @@ for k, g in enumerate(grains):
 # DROP: the clamp's base, its stand (a fixed lower length, the upper one sliding) and the clamp
 box_static(SXW - 3, SYW - 3, 6, 6, 6, 2, "#7D7D7D")
 box_static(SXW - 1, SYW - 1, 8, 2, 2, STAND, "#7D7D7D", faces=("left", "right"))
-# the upper length at DROP 0: its top at the drop plus 14
-stand_o = P(SXW, SYW, DROP0 + 14 - STAND / 2)
-box_node("stand", SXW - 1, SYW - 1, DROP0 + 14 - STAND, 2, 2, STAND, "#7D7D7D", stand_o)
-arm_o = P(SXW + 13, SYW, DROP0 + 2)
-box_node("arm", SXW, SYW - 2, DROP0, 26, 4, 4, E1, arm_o)
-# the plumb line (node 0, reshaping): its foot on the head
+# the upper length at DROP 0: its top just over the clamp
+stand_o = P(SXW, SYW, DROP0 + STAND_TOP - STAND / 2)
+box_node("stand", SXW - 1, SYW - 1, DROP0 + STAND_TOP - STAND, 2, 2, STAND, "#7D7D7D", stand_o)
+arm_o = P(SXW + ARM / 2, SYW, DROP0 + 2)
+box_node("arm", SXW, SYW - 2, DROP0, ARM, 4, 4, E1, arm_o)
+# the plumb line (node 0, reshaping): from the head up to the clamp, about its middle so
+# its points stay within the device's 64 px of the origin at every DROP
 plumb_o = P(BX, BY, HEAD)
 L0 = DROP0 - HEAD
-plumb_pts = [(0.125, 0), (-0.125, 0), (-0.125, -L0), (0.125, -L0)]
+plumb_pts = [(0.125, L0 / 2), (-0.125, L0 / 2), (-0.125, -L0 / 2), (0.125, -L0 / 2)]
 check(plumb_pts, "plumb")
-out.append(f'<path id="{ID}_node_0" transform="matrix(1 0 0 1 {fmt(plumb_o[0])} {fmt(plumb_o[1])})" d="{d_of(plumb_pts)}" '
+out.append(f'<path id="{ID}_node_0" transform="matrix(1 0 0 1 {fmt(plumb_o[0])} {fmt(plumb_o[1] - L0 / 2)})" d="{d_of(plumb_pts)}" '
            f'fill="none" stroke="#3A3A3A" stroke-width="0.4"/>')
 # BOUNCE: a mark at each bounce's top, five copies; their places at the head's height
 marks = [P(BX + 6 * (k + 1), BY, HEAD) for k in range(5)]
 for k, (mx, my) in enumerate(marks):
     node(f"mark_{k}", [(mx + x, my + y) for x, y in rrect(-2.5, -1, 2.5, 1, 1, 3)], (mx, my), E2, "none", 0.5)
-# BALL: five sizes, each a ball and its glint about the ball's foot, at rest over the head
-for k, br in enumerate(BALLS):
-    rr = br * 1.15
-    foot = (plumb_o[0], plumb_o[1] - 0.55 * L0)
-    node_circle(f"ball_{k}", 0, -rr, rr, foot, E4, K, 0.5)
-    node(f"glint_{k}", [(foot[0] + x, foot[1] + y) for x, y in ellipse(-rr * 0.35, -rr * 1.35, rr * 0.28, rr * 0.18, 12)],
-         foot, "#E6E6E6", "none", 0.5)
-# the drawer's front, its card holder with the specimen's symbol, and its knob
+# The specimen in the clamp (encoder 4 sizes it): each of the sixteen a few nodes sharing its
+# foot, drawn at scale 1 hanging under the clamp at DROP 0; display.cpp shows the selected one.
+spec_o = (plumb_o[0], plumb_o[1] - (DROP0 - HEAD - GAP))
+spec_first, spec_count, spec_h = [], [], []
+for m in specimens.MODELS:
+    layers = specimens.DRAW[m]()
+    spec_first.append(len(order) + PATHS)
+    spec_count.append(len(layers))
+    spec_h.append(-min(y for _, pts, *_ in layers for _, y in pts))
+    for name, pts, fill, stroke, w in layers:
+        node(f"spec_{m.replace(' ', '_')}_{name}", [(spec_o[0] + x, spec_o[1] + y) for x, y in pts], spec_o, fill, stroke, w)
+# the drawer's front, its brass card holder and its knob
 box_static(4, 80, 0, 112, 4, 18, "#7D7D7D")
 hx, hy = P(60, 84, 11)
 static(rrect(hx - 9, hy - 5, hx + 9, hy + 3, 1.5, 3), "#AFAFAF")
-sym_o = (hx, hy - 1)
-for m in MODELS:
-    if m == "ball":
-        node_circle("symbol_ball", 0, 0, 2.2, sym_o, "none", "#3A3A3A", 0.9)
-    else:
-        node(f"symbol_{m.replace(' ', '_')}", [(sym_o[0] + x, sym_o[1] + y) for x, y in symbol(m)], sym_o, "none", "#3A3A3A", 0.9)
 static_circle(*P(96, 84, 9), 2.6, "#AFAFAF")
 
 # the header's eight bar nodes and sixteen text slots
@@ -399,10 +353,17 @@ enum Node : unsigned {{
     plumb = 0,
 {enum}
 }};
-// Sixteen symbols for the card holder, one a specimen, in the kit's order.
-const unsigned symbol_first = symbol_ball;
-// The plumb line's foot on the head, where the ball lands; the drop over the
-// head at DROP 0, and how much more at 100. The ball rests 0.55 of the way up.
+// The sixteen specimens in the kit's order: each one's first node, its node
+// count, and its height at scale 1 (Q10 px); its five sizes (encoder 4) as a
+// scale (Q10); the gap between the clamp and the specimen it holds (Q10 px).
+const unsigned spec_first[16] = {arr(spec_first)};
+const unsigned spec_count[16] = {arr(spec_count)};
+const i32 spec_h[16] = {arr(q(h) for h in spec_h)};
+const i32 spec_scale[5] = {arr(q(k) for k in SIZES)};
+const i32 gap = {q(GAP)};
+// The plumb line's foot on the head, where the specimen lands; the drop over
+// the head at DROP 0, and how much more at 100. The specimen hangs from the
+// clamp, its top the gap under it.
 const i32 plumb_x = {q(plumb_o[0])}, plumb_y = {q(plumb_o[1])};
 const i32 drop_lo = {q(DROP0 - HEAD)}, drop_span = {q(DROP1 - DROP0)};
 // The clamp and the stand's upper length at DROP 0: they rise with the drop.
@@ -423,8 +384,6 @@ const i32 grit_x[10] = {arr(q(p[0]) for p in grains)};
 const i32 grit_y[10] = {arr(q(p[1]) for p in grains)};
 const i32 mark_x[5] = {arr(q(p[0]) for p in marks)};
 const i32 mark_y[5] = {arr(q(p[1]) for p in marks)};
-// The symbol on the card holder.
-const i32 symbol_x = {q(sym_o[0])}, symbol_y = {q(sym_o[1])};
 }}
 }}
 """

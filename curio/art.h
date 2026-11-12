@@ -7,7 +7,7 @@
 namespace curio {
 namespace art {
 using opxy::i32;
-const unsigned node_count = 73, header_node = 65;
+const unsigned node_count = 99, header_node = 91;
 enum Node : unsigned {
     plumb = 0,
     crate_left = 1,
@@ -48,42 +48,75 @@ enum Node : unsigned {
     mark_2 = 36,
     mark_3 = 37,
     mark_4 = 38,
-    ball_0 = 39,
-    glint_0 = 40,
-    ball_1 = 41,
-    glint_1 = 42,
-    ball_2 = 43,
-    glint_2 = 44,
-    ball_3 = 45,
-    glint_3 = 46,
-    ball_4 = 47,
-    glint_4 = 48,
-    symbol_ball = 49,
-    symbol_cask = 50,
-    symbol_stone = 51,
-    symbol_drip = 52,
-    symbol_ice = 53,
-    symbol_sheet = 54,
-    symbol_spark = 55,
-    symbol_cork = 56,
-    symbol_cicada = 57,
-    symbol_ratchet = 58,
-    symbol_pod = 59,
-    symbol_match = 60,
-    symbol_glass = 61,
-    symbol_bell_jar = 62,
-    symbol_chalk = 63,
-    symbol_roar = 64
+    spec_ball_ball = 39,
+    spec_ball_glint = 40,
+    spec_cask_cask = 41,
+    spec_cask_hoop_top = 42,
+    spec_cask_hoop_foot = 43,
+    spec_cask_bung = 44,
+    spec_stone_stone = 45,
+    spec_stone_hole = 46,
+    spec_stone_chip = 47,
+    spec_drip_drop = 48,
+    spec_drip_shine = 49,
+    spec_ice_ice = 50,
+    spec_ice_crack = 51,
+    spec_sheet_sheet = 52,
+    spec_sheet_hole_l = 53,
+    spec_sheet_hole_r = 54,
+    spec_sheet_fold = 55,
+    spec_spark_jar = 56,
+    spec_spark_foil = 57,
+    spec_spark_rod = 58,
+    spec_spark_knob = 59,
+    spec_cork_cork = 60,
+    spec_cork_grain = 61,
+    spec_cork_screw = 62,
+    spec_cork_handle = 63,
+    spec_cicada_cicada = 64,
+    spec_cicada_collar = 65,
+    spec_cicada_seam = 66,
+    spec_cicada_vein_l = 67,
+    spec_cicada_vein_r = 68,
+    spec_ratchet_wheel = 69,
+    spec_ratchet_hub = 70,
+    spec_ratchet_handle = 71,
+    spec_pod_pod = 72,
+    spec_pod_seam = 73,
+    spec_pod_stalk = 74,
+    spec_match_stick = 75,
+    spec_match_head = 76,
+    spec_match_flame = 77,
+    spec_glass_glass = 78,
+    spec_glass_water = 79,
+    spec_bell_jar_dome = 80,
+    spec_bell_jar_bell = 81,
+    spec_bell_jar_clapper = 82,
+    spec_bell_jar_knob = 83,
+    spec_chalk_slate = 84,
+    spec_chalk_face = 85,
+    spec_chalk_squeal = 86,
+    spec_roar_slat = 87,
+    spec_roar_hole = 88,
+    spec_roar_groove = 89,
+    spec_roar_cord = 90
 };
-// Sixteen symbols for the card holder, one a specimen, in the kit's order.
-const unsigned symbol_first = symbol_ball;
-// The plumb line's foot on the head, where the ball lands; the drop over the
-// head at DROP 0, and how much more at 100. The ball rests 0.55 of the way up.
+// The sixteen specimens in the kit's order: each one's first node, its node
+// count, and its height at scale 1 (Q10 px); its five sizes (encoder 4) as a
+// scale (Q10); the gap between the clamp and the specimen it holds (Q10 px).
+const unsigned spec_first[16] = {39, 41, 45, 48, 50, 52, 56, 60, 64, 69, 72, 75, 78, 80, 84, 87};
+const unsigned spec_count[16] = {2, 4, 3, 2, 2, 4, 4, 4, 5, 3, 3, 3, 2, 4, 3, 4};
+const i32 spec_h[16] = {20480, 24576, 20480, 27648, 26624, 27648, 28672, 27136, 28672, 27493, 28526, 29184, 27648, 30742, 22528, 29889};
+const i32 spec_scale[5] = {819, 922, 1024, 1147, 1280};
+const i32 gap = 2048;
+// The plumb line's foot on the head, where the specimen lands; the drop over
+// the head at DROP 0, and how much more at 100. The specimen hangs from the
+// clamp, its top the gap under it.
 const i32 plumb_x = 252908, plumb_y = 147456;
-const i32 drop_lo = 12288, drop_span = 38912;
+const i32 drop_lo = 43008, drop_span = 30720;
 // The clamp and the stand's upper length at DROP 0: they rise with the drop.
-const i32 arm_x = 237833, arm_y = 118272;
-const i32 stand_x = 226304, stand_y = 120832;
+const i32 arm_x = 238276, arm_y = 93952;
+const i32 stand_x = 220983, stand_y = 105472;
 // The damper (DECAY), the crate (FLOOR) and the spot (SPOT) at 0, and how far each slides by 100.
 const i32 pad_x = 267984, pad_y = 146432, pad_dx = 3547, pad_dy = -2048;
 const i32 crate_x = 192605, crate_y = 148992, crate_dx = 14189, crate_dy = 8192;
@@ -111,7 +144,5 @@ const i32 grit_x[10] = {258960, 251381, 258473, 256838, 261936, 249918, 235523, 
 const i32 grit_y[10] = {151125, 148486, 152628, 146893, 146176, 159708, 152085, 154059, 156496, 150327};
 const i32 mark_x[5] = {258229, 263550, 268871, 274192, 279513};
 const i32 mark_y[5] = {150528, 153600, 156672, 159744, 162816};
-// The symbol on the card holder.
-const i32 symbol_x = 205021, symbol_y = 181248;
 }
 }

@@ -3,9 +3,10 @@
 // control's whole travel (points at least 1/8 px apart, a closing edge of at
 // least 1/4 px, no turn sharper than SHARPEST degrees: the device strokes
 // with mitred joins and no mitre limit), every part upright at its own size
-// (3D parts only slide), still at rest, light on churn while a hit plays,
-// every control moving the picture, a hit's motion its sound's own length,
-// and every caption fitting its column in the OP-XY's face.
+// (3D parts only slide; the flat specimen alone takes its five sizes), still
+// at rest, light on churn while a hit plays, every control moving the
+// picture, a hit's motion its sound's own length, and every caption fitting
+// its column in the OP-XY's face.
 #include "../engine.cpp"
 #include "../display.cpp"
 #include <cmath>
@@ -62,9 +63,14 @@ bool outlines_ok(const curio::Frame& f, const char* what) {
         }
         if (ok && std::fabs(area) / 2 < 0.25 * 1024.0 * 1024.0) { std::printf("FAIL outline %u has no area: %s\n", p, what); ok = false; }
     }
+    // The specimen is a flat silhouette, so it alone may scale (its five sizes);
+    // every 3D part only slides.
+    const unsigned spec_lo = curio::art::spec_first[0], spec_hi = curio::art::spec_first[15] + curio::art::spec_count[15];
     for (unsigned i = 0; i < curio::Frame::node_count && ok; ++i) {
         const opxy::draw::Node& d = f.nodes[i];
-        if (d.scale != 1024 || d.cos != 1024 || d.sin != 0) { std::printf("FAIL node %u turned or scaled: %s\n", i, what); ok = false; }
+        const bool specimen = i >= spec_lo && i < spec_hi;
+        const bool sized = specimen ? d.scale >= 512 && d.scale <= 2048 : d.scale == 1024;
+        if (!sized || d.cos != 1024 || d.sin != 0) { std::printf("FAIL node %u turned or scaled: %s\n", i, what); ok = false; }
     }
     if (!ok) ++failures;
     return ok;

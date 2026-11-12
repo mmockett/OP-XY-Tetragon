@@ -2,15 +2,15 @@
 
 // CURIO's screen: the cabinet's drawer pulled open, in the stock isometric
 // look (art.h, panel.svg.fragment, from tools/make_panel.py). A small drum
-// on a felt bed, the release clamp on its stand and the ball over the head;
-// every key's specimen shares the drawer, and the card holder on its front
-// carries the selected specimen's symbol. The controls move parts by their
-// encoder: 1 the clamp (DROP), 2 the bounce marks (BOUNCE), 3 the rods (SKIN),
-// 4 the ball (BALL); on the second row 1 the damper on the head (DECAY), 2
-// the crate (FLOOR), 3 the spot (SPOT), 4 the grains (GRIT), each the first
-// row's control in its place for the specimen in hand. A hit drops the ball
-// down the plumb line onto the head; it bounces to each mark, rests on the
-// head while the sound lasts and is back under the clamp 200 ms after.
+// on a felt bed and the release clamp on its stand, holding the key's
+// specimen over the head: a ball, a cask, a glass, a cicada, as the key
+// plays. The controls move parts by their encoder: 1 the clamp (DROP), 2 the
+// bounce marks (BOUNCE), 3 the rods (SKIN), 4 the specimen's size (BALL); on
+// the second row 1 the damper on the head (DECAY), 2 the crate (FLOOR), 3 the
+// spot (SPOT), 4 the grains (GRIT), each the first row's control in its place
+// for the specimen in hand. A hit drops the specimen down the plumb line onto
+// the head; it bounces to each mark, rests on the head while the sound lasts
+// and is back in the clamp 200 ms after.
 //
 // A hit's motion lasts as long as its sound, the specimen's own decay: a drum
 // kit's voices play until their sound ends, untouched by the track's amp
@@ -123,10 +123,10 @@ inline i32 root(i32 v) {
 }
 // The time a fall of h (Q10 px) takes, ms: 40 ms for each root pixel.
 inline i32 fall_ms(i32 h) { return 5 * root(h >> 4); }
-// The ball's height over the head (Q10 px), age ms into a hit: down the
+// The specimen's height over the head (Q10 px), age ms into a hit: down the
 // plumb line from its rest (rest), then a bounce to each mark's height (each
-// the last times e, Q10, from the whole drop len, while at least 3 px), then
-// still on the head.
+// the last times e, Q10, from the fall len, while at least 3 px), then still
+// on the head.
 inline i32 ball_height(i32 len, i32 rest, i32 e, i32 age) {
     const i32 tf = fall_ms(rest);
     if (age < tf) {
@@ -192,24 +192,31 @@ inline void display(DisplayState& state, const Input& input, Frame& frame) {
     const i32 age = state.age, life = state.life;
 
     // 1 DROP: the clamp and the stand's upper length rise; the plumb line, a
-    // thin ribbon from the clamp's height to the head, lengthens.
+    // thin ribbon from the clamp's height to the head, lengthens. Its points
+    // are about its middle, so they stay within 64 px of its origin.
     const i32 lift = art::drop_span * c[0] / 4095;
     const i32 len = art::drop_lo + lift;
     put_box(frame, art::arm_left, art::arm_x, art::arm_y - lift);
     put_box(frame, art::stand_left, art::stand_x, art::stand_y - lift);
     {
         Path& p = frame.paths[art::plumb];
-        p.points[0].x = 128;  p.points[0].y = 0;
-        p.points[1].x = -128; p.points[1].y = 0;
-        p.points[2].x = -128; p.points[2].y = -len;
-        p.points[3].x = 128;  p.points[3].y = -len;
+        const i32 half = len / 2;
+        p.points[0].x = 128;  p.points[0].y = len - half;
+        p.points[1].x = -128; p.points[1].y = len - half;
+        p.points[2].x = -128; p.points[2].y = -half;
+        p.points[3].x = 128;  p.points[3].y = -half;
         p.key = static_cast<u32>(len) * 2u + 1u;
-        put(frame, art::plumb, art::plumb_x, art::plumb_y);
+        put(frame, art::plumb, art::plumb_x, art::plumb_y - (len - half));
     }
+    // The specimen hangs from the clamp, its top the gap under it: its foot's
+    // height over the head is its fall, and the bounces' reference.
+    const i32 size = (c[3] * 5) >> 12;
+    const i32 scale = art::spec_scale[size];
+    const i32 rest = len - art::gap - (art::spec_h[m] * scale >> 10);
     // 2 BOUNCE: a mark at the top of each bounce, each the last times e, while at least 3 px.
     const i32 e = 256 + 563 * c[1] / 4095;
     {
-        i32 h = len;
+        i32 h = rest;
         bool more = true;
         for (u32 k = 0; k < 5; ++k) {
             h = h * e >> 10;
@@ -226,27 +233,20 @@ inline void display(DisplayState& state, const Input& input, Frame& frame) {
             else hide(frame, art::rod_0 + static_cast<u32>(k));
         }
     }
-    // 4 BALL: one of five sizes, resting 0.55 of the way up the plumb line; a
-    // hit drops it (above).
+    // 4 BALL: the specimen in five sizes, held in the clamp, its top the gap
+    // under it; a hit drops it (above). Its nodes share its foot and its scale.
     {
-        const i32 size = (c[3] * 5) >> 12;
-        const i32 rest = len * 563 >> 10;
         i32 z = rest;
-        if (age >= 0 && age < life) z = ball_height(len, rest, e, age);
+        if (age >= 0 && age < life) z = ball_height(rest, rest, e, age);
         else if (age >= life) {
-            const i32 at = ball_height(len, rest, e, life);
+            const i32 at = ball_height(rest, rest, e, life);
             z = at + (rest - at) * (age - life) / 200;
         }
-        for (i32 k = 0; k < 5; ++k) {
-            const u32 n = art::ball_0 + 2 * static_cast<u32>(k);
-            if (k == size) {
-                put(frame, n, art::plumb_x, art::plumb_y - z);
-                put(frame, n + 1, art::plumb_x, art::plumb_y - z);
-            } else {
-                hide(frame, n);
-                hide(frame, n + 1);
+        for (u32 s = 0; s < kit::models; ++s)
+            for (u32 k = 0; k < art::spec_count[s]; ++k) {
+                if (s == m) place(frame, art::spec_first[s] + k, art::plumb_x, art::plumb_y - z, scale, 0, keep);
+                else hide(frame, art::spec_first[s] + k);
             }
-        }
     }
     // 5 DECAY: the damper slides toward the rim, off the middle of the head.
     put_box(frame, art::pad_left, art::pad_x + art::pad_dx * c[4] / 4095, art::pad_y + art::pad_dy * c[4] / 4095);
@@ -261,11 +261,6 @@ inline void display(DisplayState& state, const Input& input, Frame& frame) {
             if (k < n) put(frame, art::grit_0 + static_cast<u32>(k), art::grit_x[k], art::grit_y[k]);
             else hide(frame, art::grit_0 + static_cast<u32>(k));
         }
-    }
-    // The specimen's symbol on the card holder.
-    for (u32 s = 0; s < kit::models; ++s) {
-        if (s == m) put(frame, art::symbol_first + s, art::symbol_x, art::symbol_y);
-        else hide(frame, art::symbol_first + s);
     }
 
 
