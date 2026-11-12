@@ -302,11 +302,14 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 shares[3] = {32767, GQ15(0.25) + dsp::m15(GQ15(0.4), p1 >> 16), dsp::m15(GQ15(0.35), p1 >> 16)};
         skin(b.skin[0], lf, GQ16(0.15), dsp::decay(ms(20 * 256)), 3, ratios, decays, shares, GQ16(1.2));
         b.env[0].r = decay_ms(12 * 256, 32 * 256, p1);
+        // The slap's ring: a resonator the noise drives (no zeros), its input
+        // scaled by 2 sin w for unit gain at 1.8 kHz, and by the slap's gain.
         b.band[0].tune(q16(1800), OCT(1.2));
+        b.g[1] = multiply(GQ28(1.4), p1);
+        b.band[0].b = multiply(multiply(b.band[0].b, dsp::sine(dsp::increment(q16(1800)))) * 2, b.g[1] << 2) << 1;
         prepare_click(b.click[0], 400, 3000);
         b.cg[0] = GQ28(0.2);
         b.g[0] = GQ28(1) - multiply(GQ28(0.4), p1);
-        b.g[1] = multiply(GQ28(1.4), p1);
         break;
     }
     case rim: {    // tune, wood, decay, body
@@ -1047,6 +1050,29 @@ inline void band_high_add(dsp::Band& f, dsp::Pole& p, i32 c, i32* __restrict io,
     band_run(f, io, n);
     high_add(p, c, io, out, g28, n);
 }
+// Noise under an envelope driving a two-pole resonator (f's a1 and a2, its
+// input scaled by f.b), added into out (n even): two samples a turn, so the
+// state swaps without moves.
+__attribute__((noinline)) void noise_ring_add(Energy& env, u32& seed, dsp::Band& f, i32* __restrict out, u32 n) {
+    i32 a = env.a, y1 = f.y1, y2 = f.y2;
+    const i32 r = env.r, b = f.b, a1 = f.a1, a2 = f.a2;
+    u32 x = seed;
+    for (u32 i = 0; i < n; i += 2) {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        a = multiply(a, r);
+        y2 = multiply(b, multiply(static_cast<i32>(x) >> 2, a) * 8) + multiply(a1, y1) * 2 - multiply(a2, y2);
+        out[i] += y2;
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        a = multiply(a, r);
+        y1 = multiply(b, multiply(static_cast<i32>(x) >> 2, a) * 8) + multiply(a1, y2) * 2 - multiply(a2, y1);
+        out[i + 1] += y1;
+    }
+    seed = x;
+    env.a = a;
+    if (a < 64 && y1 < 4096 && y1 > -4096 && y2 < 4096 && y2 > -4096) y1 = y2 = 0;
+    f.y1 = y1;
+    f.y2 = y2;
+}
 // r^n: a per-sample decay over n samples.
 inline i32 decay_over(i32 r, u32 n) {
     i32 y = dsp::one;
@@ -1160,12 +1186,7 @@ __attribute__((noinline)) inline void run_hand(Body& b, i32* __restrict out, u32
     i32 h[32];
     skin_half(b.skin[0], h, count / 2, 0, b.g[0]);
     expand<false>(h, count / 2, b.held, out);
-    if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
-        i32 sl[64];
-        noise_env(b.env[0], b.seed, sl, count);
-        band_run(b.band[0], sl, count);
-        add_gain(out, sl, b.g[1], count);
-    }
+    if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) noise_ring_add(b.env[0], b.seed, b.band[0], out, count);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_modes(Body& b, i32* __restrict out, u32 count, u32 modes) {   // rim, block, tine (6), clock (7), ratchet
