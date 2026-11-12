@@ -172,12 +172,12 @@ inline void display(DisplayState& state, const opxy::draw::Input& input, Frame& 
             else hide(frame, art::strap_0_0 + 7 * b + j);
         }
     }
-    const i32 top = art::z_body + art::band_h * bands;              // the body's top, px
-    const i32 lift = (art::z_top - top) * U;                        // the head's drop on screen, Q10
+    const i32 top = art::z_body + art::band_h * bands;              // the body's top on screen, Q10
+    const i32 lift = art::z_top - top;                              // the head's drop on screen, Q10
     // TUNE: the tuning blocks slide down the straps, from just under the head to the foot.
-    const i32 high = (top - art::block_drop) * U;
-    const i32 foot = high + (art::block_lo * U - high) * static_cast<i32>(k.raw[0]) / 127;
-    for (u32 i = art::block_0_left; i <= art::block_3_top; ++i) at(frame, i, 0, art::block_ref * U - foot);
+    const i32 high = top - art::block_drop;
+    const i32 foot = high + (art::block_lo - high) * static_cast<i32>(k.raw[0]) / 127;
+    for (u32 i = art::block_0_left; i <= art::block_3_top; ++i) at(frame, i, 0, art::block_ref - foot);
     // The head.
     at(frame, art::head_side, 0, lift);
     at(frame, art::head_top, 0, lift);

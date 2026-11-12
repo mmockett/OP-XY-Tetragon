@@ -12,20 +12,20 @@ const u32 nodes = 68;
 const u32 first = 8;                  // the drum's first node
 // the palette: a nodal circle lit and dim, a nodal diameter lit and dim, each as a hit lights it
 const u32 circle_lit = 1, circle_dim = 2, diameter_lit = 3, diameter_dim = 4, circle_struck = 5, diameter_struck = 6;
-// the drum, in px: its bands and the body's top with every band on
-const i32 bands = 4, band_h = 12, z_body = 6, z_top = 54;
-// a tuning block's foot with TUNE at 0 (this far below the body's top), with TUNE full, and as drawn, px
-const i32 block_drop = 10, block_lo = 9, block_ref = 44;
+// the drum on screen, Q10 px: its bands and the body's top with every band on
+const i32 bands = 4, band_h = 17739, z_body = 10644, z_top = 81601;
+// a tuning block's foot with TUNE at 0 (this far below the body's top), with TUNE full, and as drawn, Q10 px
+const i32 block_drop = 26609, block_lo = 15965, block_ref = 54992;
 // the syahi's smallest ring and each ring's step, px * 10
 const i32 syahi_r0 = 40, syahi_step = 26, syahi_rings = 5;
 // the pad's radius at DECAY 0 and 100, px * 10
-const i32 pad_max = 90, pad_min = 30;
+const i32 pad_max = 65, pad_min = 25;
 // the spot's slide right per unit of its distance out (Q10 px), and that distance at SPOT 0 and 100 (Q15)
-const i32 spot_run = 31925, spot_lo = 6554, spot_hi = 27853;
-const i32 head_x = 246272, head_y = 102912, pad_x = 215677, pad_y = 102144;
+const i32 spot_run = 55306, spot_lo = 6554, spot_hi = 27853;
+const i32 head_x = 245760, head_y = 88831, pad_x = 194756, pad_y = 87234;
 // each drum node's anchor on screen as drawn, Q10 px
-const i32 at_x[60] = {245760, 245760, 245760, 245760, 249856, 238592, 229376, 220160, 214016, 209920, 208896, 249856, 238592, 229376, 220160, 214016, 209920, 208896, 249856, 238592, 229376, 220160, 214016, 209920, 208896, 249856, 238592, 229376, 220160, 214016, 209920, 208896, 244736, 244736, 244736, 227328, 227328, 227328, 214016, 214016, 214016, 207872, 207872, 207872, 246272, 246272, 246272, 246272, 246272, 246272, 246272, 246272, 246272, 246272, 246272, 246272, 246272, 246272, 215677, 246272};
-const i32 at_y[60] = {158720, 146432, 134144, 121856, 169984, 168960, 166912, 163840, 158720, 153600, 147456, 157696, 156672, 154624, 151552, 146432, 141312, 135168, 145408, 144384, 142336, 139264, 134144, 129024, 122880, 133120, 132096, 130048, 126976, 121856, 116736, 110592, 133120, 133120, 133120, 131072, 131072, 131072, 123904, 123904, 123904, 114688, 114688, 114688, 102912, 102912, 102912, 102912, 102912, 102912, 102912, 102912, 102912, 102912, 102912, 102912, 102912, 102912, 102144, 102912};
+const i32 at_x[60] = {245760, 245760, 245760, 245760, 251904, 233472, 216064, 201728, 189440, 183296, 180224, 251904, 233472, 216064, 201728, 189440, 183296, 180224, 251904, 233472, 216064, 201728, 189440, 183296, 180224, 251904, 233472, 216064, 201728, 189440, 183296, 180224, 242688, 242688, 242688, 212992, 212992, 212992, 190464, 190464, 190464, 179200, 179200, 179200, 245760, 245760, 245760, 245760, 245760, 245760, 245760, 245760, 245760, 245760, 245760, 245760, 245760, 245760, 194756, 245760};
+const i32 at_y[60] = {173056, 155648, 138240, 119808, 191488, 191488, 188416, 182272, 174080, 163840, 153600, 174080, 174080, 169984, 163840, 155648, 146432, 136192, 156672, 155648, 152576, 146432, 138240, 129024, 118784, 138240, 138240, 135168, 129024, 120832, 110592, 100352, 150528, 150528, 150528, 145408, 145408, 145408, 134144, 134144, 134144, 117760, 117760, 117760, 88831, 88831, 88831, 88831, 88831, 88831, 88831, 88831, 88831, 88831, 88831, 88831, 88831, 88831, 87234, 88831};
 enum Node : u32 {
     band_0 = 8,
     band_1 = 9,

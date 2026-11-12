@@ -40,33 +40,41 @@ SHARPEST = 150.0   # degrees: the sharpest turn an outline may make (the device'
 # ---------------------------------------------------------------- the view
 C30, S30 = math.cos(math.radians(30)), 0.5
 RX_K, RY_K = math.sqrt(1.5), math.sqrt(0.5)   # a level circle of radius r is an ellipse r*RX_K by r*RY_K
-# The drawing's origin: the design's (236, 104), moved so the drum's extent over
-# every setting is centred on x = 240 in the stage under the header (y 38..222).
-OX, OY = 236.0 + 4.5, 104.0 + 12.5
+# The drum's extent on screen with every band on: from y 50, 12 px under the
+# two-row header (38 px), to y 214, as tall as the stage allows with air above
+# and below, centred on x = 240. The scale (SC, world units to screen px) follows.
+TOP, FOOT = 50.0, 214.0
 
 
 def P(x, y, z=0.0):
     """A world point on screen."""
-    return (OX + (x - y) * C30, OY + (x + y) * S30 - z)
+    return (OX + SC * (x - y) * C30, OY + SC * ((x + y) * S30 - z))
 
 
 # ---------------------------------------------------------------- the drum
 CX, CY, R = 40.0, 40.0, 30.0   # the body's axis and radius
 RING_R, RING_H = R + 6, 6.0    # the ring it sits on
-BAND_H, BANDS = 12.0, 4        # FORM takes bands off the top: four for a skin, one for a gong
+BAND_H, BANDS = 10.0, 4        # FORM takes bands off the top: four for a skin, one for a gong
 Z_BODY = RING_H                # the lowest band's foot
 Z_TOP = Z_BODY + BAND_H * BANDS   # the body's top with every band: the reference for the head's nodes
 HEAD_H = 2.0
 Z_HEAD = Z_TOP + HEAD_H        # the head's face
+# The scale and origin, so that the drum with every band on spans TOP to FOOT, centred on
+# x = 240: its head's far rim at the top, the ring's near rim at the foot.
+SC = (FOOT - TOP) / (Z_HEAD + R * RY_K + RING_R * RY_K)
+_top = SC * ((CX + CY) * S30 - Z_HEAD - R * RY_K)
+_foot = SC * ((CX + CY) * S30 + RING_R * RY_K)
+OX = 240.0 - SC * (CX - CY) * C30
+OY = (TOP + FOOT) / 2 - (_top + _foot) / 2
 STRAPS = [math.radians(40 + k * 16) for k in range(7)]
 BLOCKS = [math.radians(48 + k * 26) for k in range(4)]
 BLOCK, BLOCK_H = 5.0, 8.0
 BLOCK_LO = 9.0                 # a block's foot with TUNE full: slid down to tighten
-BLOCK_REF = Z_TOP - 10         # its foot with TUNE at 0, every band on
+BLOCK_REF = Z_TOP - 15         # its foot with TUNE at 0, every band on: just under the head
 RULES = [("d", math.radians(20 + 45 * k)) for k in range(4)] + [("c", k) for k in (0.42, 0.72)]
 SYAHI_R0, SYAHI_STEP, SYAHI_RINGS = 4.0, 2.6, 5
-PAD = (CX - R * 0.6, CY + R * 0.55)
-PAD_MAX, PAD_MIN = 9.0, 3.0    # the pad's radius at DECAY 0 and 100
+PAD = (CX - 17.5, CY + 15.7)   # between the widest syahi and the rim, at its largest
+PAD_MAX, PAD_MIN = 6.5, 2.5    # the pad's radius at DECAY 0 and 100
 SPOT_R = 2.2
 SPOT_LO, SPOT_HI = 0.2, 0.85   # the stroke's distance out, as a share of R * 0.6 along each axis
 
@@ -127,14 +135,14 @@ def poly(points):
 def ellipse(x, y, z, r, n=48):
     """A level circle on screen."""
     cx, cy = P(x, y, z)
-    return [(cx + r * RX_K * math.cos(2 * math.pi * i / n), cy + r * RY_K * math.sin(2 * math.pi * i / n)) for i in range(n)]
+    return [(cx + SC * r * RX_K * math.cos(2 * math.pi * i / n), cy + SC * r * RY_K * math.sin(2 * math.pi * i / n)) for i in range(n)]
 
 
 def side(x, y, z, r, h, n=40):
     """An upright cylinder's side, as the design draws it: straight up both edges from the
     foot's front arc, closed straight across at the top (the top's ellipse covers it)."""
     cx, cy = P(x, y, z)
-    rx, ry = r * RX_K, r * RY_K
+    rx, ry, h = SC * r * RX_K, SC * r * RY_K, SC * h
     arc = [(cx + rx * math.cos(math.pi - math.pi * i / n), cy + ry * math.sin(math.pi - math.pi * i / n)) for i in range(n + 1)]
     return [(cx - rx, cy - h)] + arc + [(cx + rx, cy - h)]
 
@@ -215,7 +223,7 @@ def build_art():
     pad = P(PAD[0], PAD[1], Z_HEAD)
     node("pad", ellipse(PAD[0], PAD[1], Z_HEAD, PAD_MAX, 36), pad, E2, K, 0.5)
     # SPOT: where the stroke lands, drawn at the head's centre (display.cpp slides it out)
-    node("spot", screen_circle(head[0], head[1], SPOT_R), head, E4, K, 0.5)
+    node("spot", screen_circle(head[0], head[1], SC * SPOT_R), head, E4, K, 0.5)
 
 
 def q10(v):
@@ -270,16 +278,16 @@ def build():
          f"const u32 first = {header};                  // the drum's first node",
          "// the palette: a nodal circle lit and dim, a nodal diameter lit and dim, each as a hit lights it",
          "const u32 circle_lit = 1, circle_dim = 2, diameter_lit = 3, diameter_dim = 4, circle_struck = 5, diameter_struck = 6;",
-         "// the drum, in px: its bands and the body's top with every band on",
-         f"const i32 bands = {BANDS}, band_h = {int(BAND_H)}, z_body = {int(Z_BODY)}, z_top = {int(Z_TOP)};",
-         "// a tuning block's foot with TUNE at 0 (this far below the body's top), with TUNE full, and as drawn, px",
-         f"const i32 block_drop = 10, block_lo = {int(BLOCK_LO)}, block_ref = {int(BLOCK_REF)};",
+         "// the drum on screen, Q10 px: its bands and the body's top with every band on",
+         f"const i32 bands = {BANDS}, band_h = {q10(SC * BAND_H)}, z_body = {q10(SC * Z_BODY)}, z_top = {q10(SC * Z_TOP)};",
+         "// a tuning block's foot with TUNE at 0 (this far below the body's top), with TUNE full, and as drawn, Q10 px",
+         f"const i32 block_drop = {q10(SC * (Z_TOP - BLOCK_REF))}, block_lo = {q10(SC * BLOCK_LO)}, block_ref = {q10(SC * BLOCK_REF)};",
          "// the syahi's smallest ring and each ring's step, px * 10",
          f"const i32 syahi_r0 = {int(SYAHI_R0 * 10)}, syahi_step = {int(SYAHI_STEP * 10)}, syahi_rings = {SYAHI_RINGS};",
          "// the pad's radius at DECAY 0 and 100, px * 10",
          f"const i32 pad_max = {int(PAD_MAX * 10)}, pad_min = {int(PAD_MIN * 10)};",
          "// the spot's slide right per unit of its distance out (Q10 px), and that distance at SPOT 0 and 100 (Q15)",
-         f"const i32 spot_run = {q10(2 * R * 0.6 * C30)}, spot_lo = {int(round(SPOT_LO * 32768))}, spot_hi = {int(round(SPOT_HI * 32768))};",
+         f"const i32 spot_run = {q10(SC * 2 * R * 0.6 * C30)}, spot_lo = {int(round(SPOT_LO * 32768))}, spot_hi = {int(round(SPOT_HI * 32768))};",
          f"const i32 head_x = {q10(head[0])}, head_y = {q10(head[1])}, pad_x = {q10(pad[0])}, pad_y = {q10(pad[1])};",
          "// each drum node's anchor on screen as drawn, Q10 px",
          f"const i32 at_x[{len(NODES)}] = {{" + ", ".join(str(q10(n[2][0])) for n in NODES) + "};",
