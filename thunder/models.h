@@ -142,7 +142,7 @@ inline void setup_slap(Voice& v, const i32* c, i32 tune) {
     const i32 amp = beater_lift(v, lf0, ltc, lbend, lt0, Q16(0.6), 8, 0);
     // (never quite equal lines, and a smeared input: a crisp ring, not a boing)
     setup_field(v, lf0 + L(3.5), Q16(0.45) + mul16(65535 - tension, Q16(0.55)), lt0 + log16(mix(Q16(1.5), Q16(8.0) - 1, power16(c[7], Q16(0.6))) >> 3) + L(8.0),
-                Q16(0.4) + mul16(c[2], Q16(0.5)), 1);
+                Q16(0.4) + mul16(c[2], Q16(0.5)), 1, true);   // (four lines: METAL is the sheet ringing on)
     v.flevel = multiply(Q31(0.9), q31_root(c[7]));    // 1.8 sqrt(METAL), Q31 x 2
     if (!c[7]) v.fon = 0;
     // The wires: LINKS loosens them, slower to settle and lower.
@@ -194,6 +194,7 @@ inline void setup_pop(Voice& v, const i32* c, i32 tune) {
     v.k[7] = mix(Q31(0.05), Q31(0.7), c[7]);                           // and level
     v.k[12] = q31(sq16(c[7]));                                         // and how often a snap's crackle is new
     v.k[2] = svf_f(increment(lband + mul16(hard, Q16(0.6))));
+    v.k[10] = onepole_k(lband + mul16(hard, Q16(0.6)) + L(1.5));   // the dent's low-pass
     v.k[3] = damping30(mix(Q16(0.56), Q16(0.9), hard));   // Q over 0.5: its 1 / Q fits
     // the sheet's ring under the snaps (METAL)
     const i32 lt = ltail + octave > L(0.1) ? ltail + octave : L(0.1);
@@ -224,18 +225,19 @@ __attribute__((noinline)) inline u32 pop_noise(i32* exc, const i32* x, u32 count
     tail_ = tail;
     return seed;
 }
-// dry: the snaps through the dent's band (once: twice was 2.5 dB quieter,
-// which its x 1.5 keeps)
+// dry: the snaps through the dent's band, once, and a low-pass half an
+// octave over it (as dark as the band twice, and as loud: x 1.25)
 __attribute__((noinline)) inline void pop_dry(Voice& v, const i32* x, i32* out) {
-    const i32 f = v.k[2], q = v.k[3];
-    i32 al = v.sv[0].lp, ab = v.sv[0].bp;
+    const i32 f = v.k[2], q = v.k[3], k = v.k[10];
+    i32 al = v.sv[0].lp, ab = v.sv[0].bp, l = v.sv[1].lp;
     for (u32 n = 0; n < frames; ++n) {
         al += multiply(f, ab);
         const i32 m = multiply(q, ab);
         ab += multiply(f, *x++ - al - (m << 1));
-        *out++ = m + (m << 1);
+        l += multiply((m << 2) + m - l, k);
+        *out++ = l;
     }
-    v.sv[0].lp = al; v.sv[0].bp = ab;
+    v.sv[0].lp = al; v.sv[0].bp = ab; v.sv[1].lp = l;
 }
 // the ring (at half rate) high-passed twice at 400 Hz and low-passed over the
 // band, at its level, in place
@@ -394,9 +396,9 @@ __attribute__((noinline)) inline void flick_squares(u32* phase, const u32* inc, 
     }
     phase[0] = p0; phase[1] = p1; phase[2] = p2;
 }
-// The squares (each +-1: no step at the start) and a noisy sizzle among them, high-passed three times.
+// The squares (each +-1: no step at the start) and a noisy sizzle among them, high-passed twice.
 __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, i32* t, u32 seed) {
-    i32 h4 = v.op[4].s, h5 = v.op[5].s, h6 = v.op[3].s;
+    i32 h4 = v.op[4].s, h5 = v.op[5].s;
     const i32 k1 = v.k[1], kn = v.k[3];
     for (u32 n = 0; n < frames; ++n) {
         seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
@@ -404,13 +406,10 @@ __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, i32* t, u32 seed) {
         h4 += multiply(x - h4, k1);
         const i32 a = x - h4;
         h5 += multiply(a - h5, k1);
-        const i32 b = a - h5;
-        h6 += multiply(b - h6, k1);
-        *t++ = b - h6;
+        *t++ = a - h5;
     }
     v.op[4].s = h4;
     v.op[5].s = h5;
-    v.op[3].s = h6;
     return seed;
 }
 // out += x e, e stepping by es a sample.
@@ -481,7 +480,7 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     flick_ring(v, w.aux, out, hand, hs);
     if (flicking || tick > (1 << 16)) flick_tick(v, w.exc, out, tick, ts);
     if (multiply(fizz, hand0) > (1 << 20)) {
-        // the densest modes: the sizzle, under the hand, high-passed three times
+        // the densest modes: the sizzle, under the hand, high-passed twice
         i32 t[frames];
         flick_squares<false>(v.u + 10, v.u + 4, t);
         flick_squares<true>(v.u + 13, v.u + 7, t);
@@ -525,7 +524,7 @@ inline void setup_tom(Voice& v, const i32* c, i32 tune) {
     // stick's strike reaches the midrange). The shell: one more mode, an
     // octave over the head, as large as the fundamental, ringing 0.6 of its
     // time; it glides with the head
-    if (v.nmodes > 7) v.nmodes = 7;
+    if (v.nmodes > 5) v.nmodes = 5;   // (its five lowest: three passes with the shell)
     {
         Mode& sh = v.mode[v.nmodes++];
         const i32 lf = lf0 + octave;

@@ -21,7 +21,7 @@ struct Mode { i32 lp, bp, f, r, gw; u32 inc; };   // r: its decay over 8 samples
 const u32 field_samples = 512;
 const u32 wide_stride = 128;    // a wide field's four rings
 const u32 small_stride = 256;   // a small field's two rings
-const u32 swing_keep = 76;      // the swing's delay is 11..72.8 samples: it keeps the last 76 (38 at half rate)
+const u32 swing_keep = 38;      // the swing's delay is 5.5..36.4 half-rate samples: it keeps the last 38 (and the last wet value)
 
 struct Voice {
     u32 owner, model, next, pending, done, quiet;
@@ -72,7 +72,7 @@ struct Voice {
     Svf sv[4];
     OnePole op[6];
     Ramp env[4];
-    i32 sw_buf[swing_keep];
+    i32 sw_buf[swing_keep + 1];
     i32 buf[field_samples];
 };
 
@@ -765,7 +765,7 @@ __attribute__((noinline)) inline void click_run(Voice& v, i32* out) {
             y = l2 << 2;
         }
         env = multiply(env, ck);
-        if (env < (1 << 16)) { env = 0; break; }
+        if (env < (1 << 20)) { env = 0; break; }   // (66 dB under a full click: done)
         *out++ += multiply(y, env) << 1;
     }
     v.cenv = env;
@@ -931,7 +931,7 @@ inline void setup_swing(Voice& v, i32 depth, i32 lrate) {
     v.sw_phase = v.seed;
     v.sw_wet = multiply(Q31(0.9), q31_root(depth));
     v.sw_turn = multiply(q31(depth), Q31(0.65));
-    for (u32 i = 0; i < swing_keep; ++i) v.sw_buf[i] = 0;
+    for (u32 i = 0; i <= swing_keep; ++i) v.sw_buf[i] = 0;
 }
 // The comb and the turn in one pass over count samples (noinline, its state
 // in locals). The delay is under keep - 1 samples, so the pass keeps the
@@ -955,7 +955,35 @@ __attribute__((noinline)) inline void swing_run(i32* kept, i32* x, i32 d, i32 st
     }
     for (u32 n = 0; n < keep; ++n) kept[n] = line[count + n];
 }
-// y: the block (at the full rate) or its 32 half-rate samples (at_half), swung in place.
+// The comb at half rate on a full-rate block: the delayed path is made from
+// the block's pairs (each pair's mean), and comes back between and on them;
+// the dry path and the turn stay at the full rate.
+__attribute__((noinline)) inline void swing_wet(i32* kept, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
+    const u32 keep = swing_keep;
+    i32 line[keep + half];
+    for (u32 n = 0; n < keep; ++n) line[n] = kept[n];
+    i32* at = line + keep;
+    i32 prev = kept[keep];   // the last wet value
+    for (u32 n = 0; n < half; ++n) {
+        const i32 x0 = x[0], x1 = x[1];
+        *at = (x0 >> 1) + (x1 >> 1);
+        const i32* back = at - (d >> 8);
+        const i32 s0 = back[0];
+        const i32 y = multiply(s0 + multiply(back[-1] - s0, (d & 0xff) << 23), wet);
+        x[0] = multiply(x0 + ((prev + y) >> 1), g);
+        g += gs;
+        x[1] = multiply(x1 + y, g);
+        g += gs;
+        prev = y;
+        x += 2;
+        ++at;
+        d += step;
+    }
+    for (u32 n = 0; n < keep; ++n) kept[n] = line[half + n];
+    kept[keep] = prev;
+}
+// y: the block (at the full rate, its delayed path at half rate) or its 32
+// half-rate samples (at_half), swung in place.
 template <bool at_half>
 inline void run_swing(Voice& v, i32* y) {
     if (!v.sw_depth) return;
@@ -966,12 +994,13 @@ inline void run_swing(Voice& v, i32* y) {
     const i32 b = (1 << 15) + (sine(v.sw_phase) >> 16);
     i32 d = 2822 + multiply(15805, multiply(depth << 15, a << 15));
     i32 d1 = 2822 + multiply(15805, multiply(depth << 15, b << 15));
-    if (at_half) { d >>= 1; d1 >>= 1; }
     // and the sheet turning away as it swings: up to 9 dB quieter at the far end of its swing
     const i32 turn = v.sw_turn;
     const i32 g = one - multiply(turn, a << 15);
     const i32 g1 = one - multiply(turn, b << 15);
-    if (at_half) swing_run<half, swing_keep / 2>(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, (g1 - g) >> 5);
-    else swing_run<frames, swing_keep>(v.sw_buf, y, d, (d1 - d) >> 6, v.sw_wet, g, (g1 - g) >> 6);
+    d >>= 1;   // (in half-rate samples)
+    d1 >>= 1;
+    if (at_half) swing_run<half, swing_keep>(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, (g1 - g) >> 5);
+    else swing_wet(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, (g1 - g) >> 6);
 }
 }

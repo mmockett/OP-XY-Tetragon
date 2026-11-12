@@ -98,7 +98,7 @@
   ],
   "presets": {},
   "resources": {
-    "voiceBytes": 3372,
+    "voiceBytes": 3224,
     "voiceAlignment": 4,
     "voiceCapacity": 16,
     "sharedBytes": 4,
