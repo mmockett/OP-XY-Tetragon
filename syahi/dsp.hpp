@@ -81,8 +81,18 @@ static inline i32 one_pole(i32 log2_seconds) {
     return one - exp2q(-multiply(x, q31(0.5 / 0.6931471805599453)) * 2);
 }
 
-// Sine of a 32-bit phase, Q31 (no interpolation: 16384 steps, spurs under -85 dB).
-static inline i32 sine(u32 phase) { return static_cast<i32>(tables::sine[phase >> 18]) << 16; }
+// Sine of a 32-bit phase, Q31, from 2048 steps (no interpolation: spurs
+// under -66 dB, as the modes and rings read it a sample at a time).
+const u32 sine_shift = 21;
+static inline i32 sine(u32 phase) { return static_cast<i32>(tables::sine[phase >> sine_shift]) << 16; }
+// The same, interpolated (error under -100 dB): for coefficients set once a
+// note, which the table's steps would put out of tune.
+static inline i32 sine_fine(u32 phase) {
+    const u32 i = phase >> sine_shift;
+    const i32 f = static_cast<i32>((phase >> 5) & 0xffffu);   // the step's fraction, Q16
+    const i32 a = tables::sine[i];
+    return (a << 16) + (tables::sine[i + 1] - a) * f;
+}
 
 // White noise, xorshift32, full scale.
 static inline i32 noise(u32& seed) {

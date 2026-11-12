@@ -39,9 +39,11 @@ def main():
              "namespace tables {",
              "using opxy::i16;",
              "using opxy::i32;"]
-    # A sine of 4096 steps (and one more for the wrap), 16 bits.
-    sine = [int(round(32767 * math.sin(2 * math.pi * i / 16384))) for i in range(16384)]
-    parts += ["// sin(2 pi i / 16384) * 32767.", "const i16 sine[16384] = {", rows(sine, 16), "};"]
+    # A sine of 2048 steps and one more for the wrap, 16 bits: 4 KiB, small
+    # enough to stay in the data cache with sixteen voices' state (the module
+    # runs from SDRAM; 32 KiB missed on most of the modes' reads).
+    sine = [int(round(32767 * math.sin(2 * math.pi * i / 2048))) for i in range(2049)]
+    parts += ["// sin(2 pi i / 2048) * 32767, and its first step again for the wrap.", "const i16 sine[2049] = {", rows(sine, 16), "};"]
     # 2^(i / 256), Q30.
     exp2 = [int(round(2 ** (i / 256) * (1 << 30))) for i in range(257)]
     exp2[-1] = min(exp2[-1], 2147483647)

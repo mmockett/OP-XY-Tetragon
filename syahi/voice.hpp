@@ -402,14 +402,14 @@ __attribute__((noinline)) static void run_half(Partial& a, i32* __restrict h, co
     const u32 da = 4 * d;
     i32 ga = a.g + a.dg;
     const i32 dga = 2 * a.dg, ea = ramp ? a.pe : 0;
-    const i16* ta = table + (pa >> 18);
+    const i16* ta = table + (pa >> sine_shift);
     i32* o = h + begin;
     const i32* rr = r + 2 * begin + 1;
     for (u32 n = 0; n < count; ++n) {
         const i32 xa = static_cast<i32>(*ta) << 16;
         pa += ia;
         ia += da;
-        ta = table + (pa >> 18);
+        ta = table + (pa >> sine_shift);
         o[n] += ramp ? multiply(ga + multiply(ea, rr[2 * n]), xa) : multiply(ga, xa);
         ga += dga;
     }
@@ -852,7 +852,7 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
 namespace syahi {
 inline void Chamberlin::set(QClass q, i32 log2_hz) {
     // sin(pi fc / fs): half the phase increment, as a phase.
-    f = sine(increment(log2_hz < lg(8000) ? log2_hz : lg(8000)) >> 1);
+    f = sine_fine(increment(log2_hz < lg(8000) ? log2_hz : lg(8000)) >> 1);
     damping = tables::svf_k[q];
 }
 }
