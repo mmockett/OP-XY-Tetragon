@@ -361,10 +361,10 @@ struct Sheet {
     static const i32 ROLL = 4;   // a roll's stroke rings the modes 16 times its size of the blow's share (as loud as the noise did)
     u32 rng, t;
     i32 c[8], tune;
-    Res mode[16];
-    ResK modek[16];
-    i32 gain[16], amp[16];
-    u32 incs[16];
+    Res mode[12];
+    ResK modek[12];
+    i32 gain[12], amp[12];
+    u32 incs[12];
     u32 modes;
     Env burst, clank;
     i32 burst_lp, burst_a, clank_lp, clank_a;
