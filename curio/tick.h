@@ -284,12 +284,25 @@ struct Cicada {
             env[0].v = ev;
             return;
         }
-        for (u32 j = 0; j < n; ++j) {
-            ev = mul(ev, ek);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + lev(noise(r), gq);
-            y2 = y1;
-            y1 = o;
-            y[j] += soft(lev(o, ev) << 1) >> 1;   // flat from 0.75
+        // The band (its RMS the sizzle's level) peaks near 4 times that;
+        // driven under 0.3 the curve is a straight line (within 1.5%), so a
+        // quiet block skips it.
+        if (lev(lev(ev, U(4.0)), sizzle_level) < U(0.15)) {
+            for (u32 j = 0; j < n; ++j) {
+                ev = mul(ev, ek);
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + lev(noise(r), gq);
+                y2 = y1;
+                y1 = o;
+                y[j] += lev(o, ev);
+            }
+        } else {
+            for (u32 j = 0; j < n; ++j) {
+                ev = mul(ev, ek);
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + lev(noise(r), gq);
+                y2 = y1;
+                y1 = o;
+                y[j] += soft(lev(o, ev) << 1) >> 1;   // flat from 0.75
+            }
         }
         env[0].v = ev;
         srng = r;
