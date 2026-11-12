@@ -389,7 +389,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
             // decays at 1/tau + 1/12 ms
             b.env[2 * i + 1].r = multiply(dsp::decay(tau), dsp::decay(ms(12 * 256)));
         }
-        b.band[0].tune(lf + OCT(2.2), OCT(0.8));
+        b.band[0].tune(lf + OCT(2.2) + dsp::octave, OCT(0.8));   // at half the rate (run_bell)
         prepare_click(b.click[0], 300, 3000);
         b.cg[0] = GQ28(0.2);
         break;
@@ -1347,10 +1347,12 @@ __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32
 // negative exactly when its phase is past half a turn), under a slow and a
 // fast decay whose sum is planned every 16 samples and ramps between. KIND 0
 // has both parts, 1 only the pure (no clang), 2 only the clang (no table).
-// Each partial at half scale, so their sum (up to 1.8) stays in range.
+// Each partial at half scale, so their sum (up to 1.8) stays in range. At half
+// the rate: m samples, inc the full rate's increment.
 template <int KIND>
-__attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pure, i32 clang, u32* __restrict ph,
-                                        i32* __restrict out, u32 n) {
+__attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc_full, i32 pure, i32 clang, u32* __restrict ph,
+                                        i32* __restrict out, u32 m) {
+    const u32 inc = inc_full * 2;
     i32 slow = es.a, fast = ef.a;
     const i32 rs16 = per_grain(es.r), rf16 = per_grain(ef.r);
     const u32 inc2 = times(inc, GQ28(1.48));
@@ -1359,12 +1361,12 @@ __attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pur
     const i32 up0 = clang >> 1, down0 = (-clang) >> 1;
     const i32 up1 = multiply(clang, GQ31(0.8)) >> 1, down1 = multiply(-clang, GQ31(0.8)) >> 1;
     const i32 ups = up0 + up1, d0 = down0 - up0, d1 = down1 - up1;
-    for (u32 g = 0; g < n; g += grain) {
+    for (u32 g = 0; g < m; g += hgrain) {
         const i32 s1 = multiply(slow, rs16), f1 = multiply(fast, rf16);
         i32 l = slow + fast;
-        const i32 dl = (s1 + f1 - l) >> 4;
+        const i32 dl = (s1 + f1 - l) >> 3;
         i32* __restrict o = out + g;
-        for (u32 i = 0; i < grain; ++i) {
+        for (u32 i = 0; i < hgrain; ++i) {
             p0 += inc;
             p1 += inc2;
             l += dl;
@@ -1385,15 +1387,20 @@ __attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pur
 __attribute__((noinline)) inline void run_bell(Body& b, i32* __restrict out, u32 count) {
     const i32 sq = b.k[2];
     const i32 pure = dsp::one - sq, clang = multiply(GQ31(0.7), sq);
-    for (u32 i = 0; i < count; ++i) out[i] = 0;
+    // The pair and its band at half the rate (the bells under 1.9 kHz, the
+    // band under 5.7), back to the full rate by straight lines.
+    i32 h[32];
+    const u32 m = count / 2;
+    for (u32 i = 0; i < m; ++i) h[i] = 0;
     for (u32 w = 0; w < 2; ++w) {
         if (b.env[2 * w].a < 64 && b.env[2 * w + 1].a < 64) continue;
         const u32 inc = static_cast<u32>(w ? b.k[1] : b.k[0]);
-        if (!pure) bell_run<2>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
-        else if (!clang) bell_run<1>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
-        else bell_run<0>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
+        if (!pure) bell_run<2>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, h, m);
+        else if (!clang) bell_run<1>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, h, m);
+        else bell_run<0>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, h, m);
     }
-    band_run(b.band[0], out, count);
+    band_run(b.band[0], h, m);
+    expand<false>(h, m, b.held, out);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 // out 2 + hand g (the bursts' own crack over the cavity's ring), through two
