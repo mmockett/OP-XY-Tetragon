@@ -1014,6 +1014,8 @@ inline u32 burst_length(i32& e, i32 r8, u32 n) {
     while (k < n && e >= click_floor) { e = multiply(e, r8); k += 8; }
     return k;
 }
+// A click's noise is a linear congruential draw (its top bits; four
+// instructions where xorshift takes six).
 // A click under unity gain (g < 1, Q28): the gain rides on the burst's level,
 // so the sample needs no scaling (n a multiple of 8). The noise runs only as
 // long as the burst lasts, then the high-pass's tail.
@@ -1024,7 +1026,7 @@ __attribute__((noinline)) void click_soft_run(dsp::Click& c, u32& seed, i32* __r
     const u32 k = burst_length(e, per_eight(r), n);
     u32 x = seed;
     for (u32 i = 0; i < k; ++i) {
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        x = x * 1664525u + 1013904223u;
         s = multiply(s, r);
         const i32 in = multiply(static_cast<i32>(x), s) * 2;
         h += multiply(in - h, cc);
@@ -1043,7 +1045,7 @@ __attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restri
     const u32 k = burst_length(left, per_eight(r), n);
     u32 x = seed;
     for (u32 i = 0; i < k; ++i) {
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        x = x * 1664525u + 1013904223u;
         e = multiply(e, r);
         const i32 in = multiply(static_cast<i32>(x), e) * 2;
         h += multiply(in - h, cc);
@@ -1078,7 +1080,7 @@ __attribute__((noinline)) void click_pair_run(dsp::Click& a, dsp::Click& b, u32&
     const u32 k = ka > kb ? ka : kb;
     u32 x = seed;
     for (u32 i = 0; i < k; ++i) {
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        x = x * 1664525u + 1013904223u;
         sa = multiply(sa, ra);
         sb = multiply(sb, rb);
         const i32 in = multiply(static_cast<i32>(x), sa + sb) * 2;
