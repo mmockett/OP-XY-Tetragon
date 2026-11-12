@@ -601,12 +601,14 @@ inline void strike_modes(Body& b, u32 count, i32 v15, i32 vp, i32 tone15, u32 la
 // `steps` (0..14) of its key, worked out at the step's first strike in a note
 // and kept, so a run over the same frets divides only once a step. Kept in
 // the ghost slots a tine has no use for; b.used marks the steps done.
+// A tine's overtone and glint, 2.756 and 5.404 times its pitch (log2, Q16).
+const i32 tine_over = 95850, tine_glint = 159516;   // OCT(2.756), OCT(5.404), as dsp::log2 reads them
 inline const u16* tine_contact(Body& b, u32 steps, i32 lf) {
     u16* c = reinterpret_cast<u16*>(b.later) + steps * 6;
     if (!(b.used & (1u << steps))) {
         b.used |= 1u << steps;
         const u32 w = static_cast<u32>(b.pc[3]), w0 = w & 0xffffu, w1 = w >> 16;
-        const i32 at[3] = {lf, lf + OCT(2.756), lf + OCT(5.404)};
+        const i32 at[3] = {lf, lf + tine_over, lf + tine_glint};
         for (u32 k = 0; k < 3; ++k) {
             if (at[k] >= log2_top_hz) { c[2 * k] = c[2 * k + 1] = 0; continue; }   // left out over 15 kHz
             const u32 inc = dsp::increment(at[k]);
@@ -722,10 +724,10 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
             b.tuned[set ? 1 : 0] = key;
             const u16* c = tine_contact(b, steps, lf);
             tine_tune(b.mode[set], lf, b.pc[0], 32767, c[0], c[1]);
-            tine_tune(b.mode[set + 1], lf + OCT(2.756), b.pc[1], dsp::m15(GQ15(0.32), GQ15(0.3) + (h >> 16)), c[2], c[3]);
+            tine_tune(b.mode[set + 1], lf + tine_over, b.pc[1], dsp::m15(GQ15(0.32), GQ15(0.3) + (h >> 16)), c[2], c[3]);
             // The tine's glint, 5.4 octaves up: over 0.45 of the rate it would only
             // sit at the cap (and its contact leaves it 30 dB under): left out there.
-            const i32 glint = lf + OCT(5.404);
+            const i32 glint = lf + tine_glint;
             if (glint < dsp::log2_cap_hz) {
                 tine_tune(b.mode[set + 2], glint, b.pc[2], dsp::m15(GQ15(0.15), h >> 16), c[4], c[5]);
             } else {
