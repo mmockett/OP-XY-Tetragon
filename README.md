@@ -45,7 +45,7 @@ to.
 ## Building
 
 The kits build with the [Open-XY SDK](https://github.com/etcetc000/open-xy)'s
-`staging` branch (SDK 1.10, with per-key mixer channels). Check it out beside
+`staging` branch (SDK 1.15: per-key mixer channels and sends). Check it out beside
 this repository and fetch its toolchain:
 
 ```sh
