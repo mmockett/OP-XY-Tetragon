@@ -89,6 +89,8 @@ struct Core {
     // the note's start), and the quarter-rate bus's last three samples.
     u32 quarter;
     i32 qs[3];
+    // The head's plan reaches one block ahead (1) or not (0), and the modes it runs (bit k).
+    u32 ahead, live_bits;
 };
 
 // Mode k's resting phase: the prototype's k * 1.3 radians.
@@ -371,7 +373,16 @@ static inline void schedule(Core& v, Strikes& out) {
 // ---- a block
 
 // The planned values at the block's end for partial k.
-static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 glide_now, u32 most) {
+// A plan's reach: its blocks (1 or 2), the decays it still owes (0..2: one
+// fewer when the last plan already took this block's), and where the struck
+// energy, the glide and the swell stand at its end.
+struct Reach {
+    u32 blocks, decays;
+    i32 energy, glide, swell;
+};
+// A mode's decay over the blocks a plan owes (1 or 2; 0 owes none).
+static inline i32 decay_for(const Partial& m, u32 d) { return d > 1 ? multiply(m.decay, m.decay) : m.decay; }
+static inline void plan_mode(Core& v, Partial& m, u32 k, const Reach& reach, u32 most) {
     // A finished ramp's strike joins the established ring.
     if (v.ramp >= 0x80000000u && m.p) {
         m.a += m.p;
@@ -379,18 +390,22 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
         m.p = 0;
         m.pe = 0;
     }
-    m.a = multiply(m.a, m.decay);
-    m.p = multiply(m.p, m.decay);
-    m.u = multiply(m.u, m.decay);
-    // Pitch at the block's end; the increment glides there sample by sample.
-    const i32 pitch = lifted(m, energy_end, glide_now);
+    if (reach.decays) {
+        const i32 d = decay_for(m, reach.decays);
+        m.a = multiply(m.a, d);
+        m.p = multiply(m.p, d);
+        if (v.tilt) m.u = multiply(m.u, d);   // (only METAL's wash reads it)
+    }
+    // Pitch at the plan's end; the increment glides there sample by sample.
+    const u32 shift = 5 + reach.blocks;   // 64 or 128 samples
+    const i32 pitch = lifted(m, reach.energy, reach.glide);
     // A mode whose pitch can't move (no bend, no glide) keeps its increment
     // after the first block.
     if (m.bend || v.spec.glide || !v.air_time) {
         u32 target = increment(pitch);
         if (target > most) target = most;
         if (m.inc > most) m.inc = most;
-        m.dinc = (static_cast<i32>(target) - static_cast<i32>(m.inc)) >> 6;
+        m.dinc = (static_cast<i32>(target) - static_cast<i32>(m.inc)) >> shift;
     } else {
         m.dinc = 0;
     }
@@ -403,15 +418,15 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
         if (hz >= 10500) mod = 0;
         else if (hz > 9000) mod = multiply(mod, (10500 - hz) * 1431655);
     }
-    if (k < head_modes && m.rank) mod = multiply(mod, q28(1.0) + multiply(m.rank, one - v.swell_left)) << 3;
+    if (k < head_modes && m.rank) mod = multiply(mod, q28(1.0) + multiply(m.rank, one - reach.swell)) << 3;
     if (m.beat_inc) {
-        m.beat_phase += m.beat_inc;
+        m.beat_phase += m.beat_inc * reach.blocks;
         mod = multiply(mod, sine(m.beat_phase + 0x40000000u));
     }
     m.m = mod;
     m.pe = multiply(m.p, mod) << 3;
     const i32 g_end = multiply(m.a, mod) << 3;
-    m.dg = (g_end - m.g) >> 6;
+    m.dg = (g_end - m.g) >> shift;
 }
 
 static inline void skip(Partial& m, u32 count) {
@@ -827,8 +842,8 @@ static inline void rattle_pass(Core& v, i32* out) {
 
 // Plans the head's modes for the block; returns the ones to run (the others
 // are quiet and only advance).
-__attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, i32 energy_end, i32 glide_now, u32* live) {
-    u32 lives = 0;
+__attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, const Reach& reach, u32* live) {
+    u32 lives = 0, bits = 0;
     // The highest a mode's increment may reach: under the half rate's Nyquist
     // (10.8 kHz), or the quarter rate's (5 kHz).
     const u32 most_half = increment(lg(10800)), most_quarter = increment(lg(5000));
@@ -837,14 +852,17 @@ __attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, 
         // A quiet mode with no strike only falls and moves on (its level is
         // under -78 dB of a strike: it is set to rest).
         if (!strikes.count && quiet(m)) {
-            m.a = multiply(m.a, m.decay);
-            m.p = multiply(m.p, m.decay);
-            m.u = multiply(m.u, m.decay);
+            if (reach.decays) {
+                const i32 d = decay_for(m, reach.decays);
+                m.a = multiply(m.a, d);
+                m.p = multiply(m.p, d);
+                m.u = multiply(m.u, d);
+            }
             m.g = m.dg = 0;
             skip(m, 64);
             continue;
         }
-        plan_mode(v, m, k, energy_end, glide_now, v.quarter >> k & 1u ? most_quarter : most_half);
+        plan_mode(v, m, k, reach, v.quarter >> k & 1u ? most_quarter : most_half);
         for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
         // A dropped mode (no weight) only moves on, even when struck.
         if (!m.weight || (!strikes.count && quiet(m))) {
@@ -852,7 +870,9 @@ __attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, 
             continue;
         }
         live[lives++] = k;
+        bits |= 1u << k;
     }
+    v.live_bits = bits;
     return lives;
 }
 static inline void render_core(Core& v, Scratch& scratch, i32* out) {
@@ -899,8 +919,32 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     }
     // The head's modes: plan each, skip the quiet, run the rest between the
     // strikes, landing each strike as it comes.
+    // A block with no strike and no ramp plans two blocks; the next, if it
+    // has no strike either, runs that plan on. (Envelopes and glides step in
+    // 128-sample lines: their times are 5 ms and longer.)
     u32 live[head_modes];
-    const u32 lives = plan_head(v, strikes, energy_end, glide_now, live);
+    u32 lives = 0;
+    if (v.ahead && !ramping) {
+        v.ahead = 0;
+        for (u32 k = 0; k < head_modes; ++k) {
+            if (v.live_bits >> k & 1u) live[lives++] = k;
+            else skip(v.part[k], 64);
+        }
+    } else {
+        Reach reach;
+        reach.blocks = ramping ? 1 : 2;
+        reach.decays = reach.blocks - v.ahead;
+        reach.energy = energy_end;
+        reach.glide = glide_now;
+        reach.swell = v.swell_left;
+        if (reach.blocks == 2) {
+            reach.energy = multiply(energy_end, v.energy_decay);
+            if (v.spec.glide) reach.glide = v.spec.glide - multiply(v.spec.glide, multiply(v.glide_left, v.glide_decay));
+            if (v.spec.swell) reach.swell = multiply(v.swell_left, v.swell_decay);
+        }
+        lives = plan_head(v, strikes, reach, live);
+        v.ahead = reach.blocks - 1;
+    }
     // The head at half the rate, its low modes at a quarter; the body and the air at a quarter.
     i32 h[32], qs[19];
     for (u32 i = 0; i < 32; ++i) h[i] = 0;
