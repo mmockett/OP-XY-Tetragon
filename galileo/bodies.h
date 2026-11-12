@@ -350,8 +350,10 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 tau = dsp::samples(OCT(0.55) + multiply(3 * dsp::octave, p1));   // 0.55 .. 4.4 s
         b.env[0].r = dsp::decay(tau);
         b.env[1].r = dsp::decay(tau + OCT(0.6));
-        b.band[0].tune(q16(3800), OCT(0.7));
-        b.pc[0] = dsp::pole(q16(1800));
+        // The bank sounds at half the rate (squares, band and high-pass), so its
+        // corners are tuned an octave up of the full rate's.
+        b.band[0].tune(q16(3800) + dsp::octave, OCT(0.7));
+        b.pc[0] = dsp::pole(q16(1800) + dsp::octave);
         // The wash's band: 3.2 to 9.4 kHz around 5.5 (a one-pole high-pass and low-pass).
         b.pc[2] = dsp::pole(q16(3250));
         b.pc[3] = dsp::pole(q16(9350));
@@ -1266,34 +1268,40 @@ __attribute__((noinline)) inline void run_hat(Body& b, i32* __restrict out, u32 
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32 count) {
-    i32 sh[64];
-    for (u32 i = 0; i < count; ++i) out[i] = 0;
+    i32 sh[32];
+    const u32 m = count / 2;
     if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
-        // The bank in two passes of four squares, the second applying the envelope.
+        // The bank at half the rate, in two passes of four squares, the second
+        // applying the envelope (its decay squared, a step of two samples).
         u32 p0 = b.sq[0], p1 = b.sq[1], p2 = b.sq[2], p3 = b.sq[3];
-        const u32 d0 = b.sqi[0], d1 = b.sqi[1], d2 = b.sqi[2], d3 = b.sqi[3];
-        for (u32 i = 0; i < count; ++i) {
+        const u32 d0 = b.sqi[0] * 2, d1 = b.sqi[1] * 2, d2 = b.sqi[2] * 2, d3 = b.sqi[3] * 2;
+        for (u32 i = 0; i < m; ++i) {
             p0 += d0; p1 += d1; p2 += d2; p3 += d3;
             sh[i] = (static_cast<i32>(p0) >> 31) + (static_cast<i32>(p1) >> 31) + (static_cast<i32>(p2) >> 31) +
                     (static_cast<i32>(p3) >> 31);
         }
         b.sq[0] = p0; b.sq[1] = p1; b.sq[2] = p2; b.sq[3] = p3;
         p0 = b.sq[4]; p1 = b.sq[5]; p2 = b.sq[6]; p3 = b.sq[7];
-        const u32 d4 = b.sqi[4], d5 = b.sqi[5], d6 = b.sqi[6], d7 = b.sqi[7];
+        const u32 d4 = b.sqi[4] * 2, d5 = b.sqi[5] * 2, d6 = b.sqi[6] * 2, d7 = b.sqi[7] * 2;
         i32 a = b.env[0].a;
-        const i32 r = b.env[0].r;
-        for (u32 i = 0; i < count; ++i) {
+        const i32 r = multiply(b.env[0].r, b.env[0].r);
+        for (u32 i = 0; i < m; ++i) {
             p0 += d4; p1 += d5; p2 += d6; p3 += d7;
-            // -count of negative squares, -8..0: the bank is (8 + 2 sum) * 2^25
+            // -count of negative squares, -8..0: the bank is (8 + 2 sum) * 2^25, at 0.8
             const i32 sum = sh[i] + (static_cast<i32>(p0) >> 31) + (static_cast<i32>(p1) >> 31) + (static_cast<i32>(p2) >> 31) +
                             (static_cast<i32>(p3) >> 31);
             a = multiply(a, r);
-            sh[i] = multiply((8 + 2 * sum) * (1 << 25), a) * 8;
+            sh[i] = multiply((8 + 2 * sum) * GQ28(0.8 / 8), a) * 8;
         }
         b.sq[4] = p0; b.sq[5] = p1; b.sq[6] = p2; b.sq[7] = p3;
         b.env[0].a = a;
-        band_high_add(b.band[0], b.pole[0], b.pc[0], sh, out, GQ28(0.8), count);
-    } else for (u32 k = 0; k < 8; ++k) b.sq[k] += b.sqi[k] * count;
+        band_run(b.band[0], sh, m);
+        high_run(b.pole[0], b.pc[0], sh, m);
+        expand<false>(sh, m, b.held, out);
+    } else {
+        for (u32 k = 0; k < 8; ++k) b.sq[k] += b.sqi[k] * count;
+        for (u32 i = 0; i < count; ++i) out[i] = 0;
+    }
     if (b.g[0] && (!idle(b.env[1]) || b.pole[2].s))
         noise_hl_add<false>(b.env[1], b.seed, 0, b.pole[3], b.pole[2], b.pc[2], b.pc[3], out, b.g[0], count);
     if (b.g[1]) modes_add(b.mode, 2, out, count);   // the bell, at its level from the strikes
