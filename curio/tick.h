@@ -52,10 +52,16 @@ struct Cicada {
         // A train that doesn't fall keeps its shell's tuning from rib to rib.
         if (lp == tuned[s]) return;
         tuned[s] = lp;
-        // The shell rings for q / (pi f): its decay from its quality.
-        const u32 tau = ex2(lq - lp);
-        tune_quick(shellk[s * 2], inc(lp), decay(tau));
-        tune_quick(shellk[s * 2 + 1], inc(lp + 2276), decay(static_cast<u32>(mul(static_cast<i32>(tau), F(0.68)))));   // 1.47
+        // The shell rings for q / (pi f): its decay from its quality, found
+        // from the log of that time without leaving the log (decay's own sum).
+        tune_quick(shellk[s * 2], inc(lp), decay_log(lq - lp));
+        tune_quick(shellk[s * 2 + 1], inc(lp + 2276), decay_log(lq - lp - 2279));   // 1.47, 0.68 of the time
+    }
+    // decay(2^(l / 4096) us), from l.
+    static i32 decay_log(i32 l) {
+        if (l < 27213) l = 27213;   // 100 us, as decay's floor
+        const u32 d = ex2(145421 - l);
+        return d >= 0x7fffffffu ? 0 : static_cast<i32>(0x7fffffffu - d);
     }
     // dsp::tune with sin and cos read from the sine table and interpolated
     // (to about 3e-5, a fraction of a hertz in the pole) rather than summed
@@ -219,6 +225,12 @@ struct Cicada {
             t = t0 + i;
             clicks();
         }
+        // The sizzle and the wing run over the whole block, the clicks'
+        // swells taken from its start: a click's sizzle sounds at most a
+        // block (1.5 ms) early, its shell and tick on the sample.
+        t = t0;
+        sizzle_pass(out, frames);
+        if (wing.v > 4096) wing_pass(out, frames);
         t = t0 + frames;
     }
     // Each cicada whose rib clicks at t.
@@ -230,10 +242,8 @@ struct Cicada {
     // registers; the noise is drawn in the same order as ever.
     __attribute__((noinline)) void span(i32* out, u32 n) {
         ring_bank(shell, shellk, cicadas > 1 ? 4 : 2, out, n);
-        // Each part, once under its floor, stays there until the next click.
+        // The tick, once under its floor, stays there until the next click.
         if (tick.v > 4096) tick_pass(out, n);
-        sizzle_pass(out, n);
-        if (wing.v > 4096) wing_pass(out, n);
     }
     // Each rib's tick.
     __attribute__((noinline)) void tick_pass(i32* y, u32 n) {
@@ -272,10 +282,8 @@ struct Cicada {
                 x1 = in;
                 y2 = y1;
                 y1 = o;
-                i32 sz = lev(lev(gn(o, bg), ev), sl);   // held within +-1.9
-                if (CURIO_UNLIKELY(sz > U(1.9))) sz = U(1.9);
-                if (CURIO_UNLIKELY(sz < -U(1.9))) sz = -U(1.9);
-                y[j] += tanh(sz << 1) >> 1;
+                const i32 sz = lev(lev(gn(o, bg), ev), sl);
+                y[j] += soft(sz << 1) >> 1;   // flat from 0.75
             }
         }
         env[0].v = ev;
