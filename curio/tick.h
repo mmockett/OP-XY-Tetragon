@@ -269,7 +269,7 @@ struct Cicada {
     __attribute__((noinline)) void sizzle_pass(i32* y, u32 n) {
         i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2, x1 = hi.x1, x2 = hi.x2;
         u32 r = srng;
-        const i32 ek = env[0].k, c = hik.c, r2 = hik.r2, b = lo(gn(hik.b >> 1, band_gain_now), F(0.4999)) << 1, sl = sizzle_level;   // the band's gain at its input (under 1 below 12.6 kHz)
+        const i32 ek = env[0].k, c = hik.c, r2 = hik.r2, b = dsp::lo(gn(hik.b >> 1, band_gain_now), F(0.4999)) << 1, sl = sizzle_level;   // the band's gain at its input (under 1 below 12.6 kHz)
         if (ev <= 4096) {   // under its floor until the next click: only the envelope moves
             for (u32 j = 0; j < n; ++j) ev = mul(ev, ek);
             env[0].v = ev;

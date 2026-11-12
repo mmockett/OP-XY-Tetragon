@@ -128,9 +128,23 @@ inline i32 sine(u32 phase) { return static_cast<i32>(table::sine[phase >> 20]) <
 // decaying sine of the struck amplitude; an input passes at unity at its peak.
 struct Res { i32 y1, y2, x1, x2; };
 struct ResK { i32 c, r2, s, g, b; };   // r cos w, r^2 / 2, sin w (all Q31), input gains Q31
+// The sine table at a phase, interpolated: Q30.
+inline i32 sine_q30(u32 phase) {
+    const u32 i = phase >> 20, f = (phase >> 4) & 0xffffu;
+    const i32 s0 = table::sine[i], s1 = table::sine[(i + 1) & 4095u];
+    return (s0 << 15) + ((s1 - s0) * static_cast<i32>(f) >> 1);
+}
 inline void tune(ResK& k, u32 increment, i32 r) {
     i32 s, c;
-    sincos(increment, s, c);
+    if (increment < 29217000u) {
+        sincos(increment, s, c);   // under 300 Hz the series, for the pole's place
+    } else {
+        // Above it the table: sin w, and cos w = 1 - 2 sin^2(w / 2), within
+        // a few cents of the series at a fraction of its work.
+        s = sine_q30(increment);
+        const i32 h = sine_q30(increment >> 1);
+        c = (1 << 30) - (mq(h, h) << 1);
+    }
     k.c = mul(r, c) << 1;
     k.r2 = mul(r, r) >> 1;
     k.s = s << 1;
