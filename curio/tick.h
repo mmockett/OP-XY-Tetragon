@@ -47,6 +47,7 @@ struct Cicada {
     u32 fall_k[6], fall_r[6], amp_k[6], amp_r[6];
     u32 fall_q, fall_rq, amp_q, amp_rq;
     i32 chirp, len;
+    i32 wlast;   // the wing's last half-rate sample
 
     __attribute__((noinline)) void tune_shell(int s, i32 lp) {
         // A train that doesn't fall keeps its shell's tuning from rib to rib.
@@ -162,11 +163,12 @@ struct Cicada {
         sizzle_level = lev(sizzle_amp, sizzle_norm) << 3;
         lo_gain = band_gain(lcf[0] - 3533, C(0.9));
         hi = lo = wingr = Res();
-        band(wingk, hz(2500), C(0.7));
-        wing_gain = band_gain(hz(2500), C(0.7));
+        band_half(wingk, hz(2500), C(0.7));   // the wing at half the rate
+        wing_gain = band_gain(hz(2500) + (1 << 12), C(0.7));
+        wlast = 0;
         wing.v = wingatt.v = sc(U(0.5), c[6]);
-        wing.k = decay(80000);
-        wingatt.k = mul(wing.k, decay(10000));
+        wing.k = decay(40000);
+        wingatt.k = mul(wing.k, decay(5000));
         tick.v = 0;
         tick.k = decay(300);
         tick_lp = 0;
@@ -230,7 +232,7 @@ struct Cicada {
         // block (1.5 ms) early, its shell and tick on the sample.
         t = t0;
         sizzle_pass(out, frames);
-        if (wing.v > 4096) wing_pass(out, frames);
+        if (wing.v > 4096) wing_pass(out);
         t = t0 + frames;
     }
     // Each cicada whose rib clicks at t.
@@ -267,7 +269,7 @@ struct Cicada {
     __attribute__((noinline)) void sizzle_pass(i32* y, u32 n) {
         i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2, x1 = hi.x1, x2 = hi.x2;
         u32 r = srng;
-        const i32 ek = env[0].k, c = hik.c, r2 = hik.r2, b = hik.b, bg = band_gain_now, sl = sizzle_level;
+        const i32 ek = env[0].k, c = hik.c, r2 = hik.r2, b = lo(gn(hik.b >> 1, band_gain_now), F(0.4999)) << 1, sl = sizzle_level;   // the band's gain at its input (under 1 below 12.6 kHz)
         if (ev <= 4096) {   // under its floor until the next click: only the envelope moves
             for (u32 j = 0; j < n; ++j) ev = mul(ev, ek);
             env[0].v = ev;
@@ -282,7 +284,7 @@ struct Cicada {
                 x1 = in;
                 y2 = y1;
                 y1 = o;
-                const i32 sz = lev(lev(gn(o, bg), ev), sl);
+                const i32 sz = lev(lev(o, ev), sl);
                 y[j] += soft(sz << 1) >> 1;   // flat from 0.75
             }
         }
@@ -294,30 +296,25 @@ struct Cicada {
         hi.x2 = x2;
     }
     // The wing's flick.
-    __attribute__((noinline)) void wing_pass(i32* y, u32 n) {
-        i32 wv = wing.v, av = wingatt.v, y1 = wingr.y1, y2 = wingr.y2, x1 = wingr.x1, x2 = wingr.x2;
+    __attribute__((noinline)) void wing_pass(i32* y) {
+        i32 wv = wing.v, av = wingatt.v, y1 = wingr.y1, y2 = wingr.y2;
         u32 r = wrng;
-        const i32 wk = wing.k, ak = wingatt.k, c = wingk.c, r2 = wingk.r2, b = wingk.b, g = wing_gain;
-        for (u32 j = 0; j < n; ++j) {
-            if (CURIO_LIKELY(wv > 4096)) {
-                wv = mul(wv, wk);
-                av = mul(av, ak);
-                const i32 in = mul(noise(r), b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                y[j] += lev(gn(o, g), wv - av);
-            }
+        const i32 wk = wing.k, ak = wingatt.k, c = wingk.c, r2 = wingk.r2, g = gn(wingk.g, wing_gain);   // driven straight, unit RMS
+        i32 h[frames / 2];
+        for (u32 j = 0; j < frames / 2; ++j) {
+            wv = mul(wv, wk);
+            av = mul(av, ak);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
+            y2 = y1;
+            y1 = o;
+            h[j] = lev(o, wv - av);
         }
         wing.v = wv;
         wingatt.v = av;
         wrng = r;
         wingr.y1 = y1;
         wingr.y2 = y2;
-        wingr.x1 = x1;
-        wingr.x2 = x2;
+        up_into(h, y, wlast);
     }
 };
 
