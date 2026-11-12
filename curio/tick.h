@@ -443,12 +443,13 @@ struct Pod {
     u32 bump_at;
     i32 bump_amp, peak_inv;
     u32 rate_p;
-    Res r[3], sw, late;
-    ResK rk[3], swk, latek;
+    Res r[3], sw;
+    ResK rk[3], swk;
     i32 norm, dry_lp, dry_a, sw_gain, sw_amp, late_norm;
     u32 late_p;
     Env late_env;
     u32 late_end, stop;
+    i32 late_k64;   // the stragglers' fall over a block
     i32 dk64, uk64, bdk64, buk64;   // the envelopes' decays over a block
     u32 srng;                       // the swish's own noise
 
@@ -508,11 +509,11 @@ struct Pod {
         sw_amp = U(0.1) + sc(U(1.4), c[6]);
         sw = Res();
         // Scatter: stragglers after 50 ms, for up to 0.3 s more.
-        dsp::tune(latek, inc(lps - 623), decay(ex2(74875 - (lps - 623) - (lg2(static_cast<u32>(bwr)) - (12 << 12)))));
-        late = Res();
         late_p = c[7] > 0 ? per_sample(static_cast<u32>(40 + sc(400, c[7]))) : 0;
         late_env.v = full;
         late_env.k = decay(250000);
+        late_k64 = late_env.k;
+        for (int i = 0; i < 6; ++i) late_k64 = mul(late_k64, late_k64);
         late_end = samples(static_cast<u32>(60000 + sc(500000, c[1]) + sc(300000, c[7])));
         late_norm = sc(U(1.4), c[7]);
     }
@@ -542,29 +543,30 @@ struct Pod {
         bump_up.v = bu;
     }
     // Seeds: a strike when the draw falls under the envelope's share of the
-    // rate; the swish's noise; the stragglers.
-    template <bool scatter> __attribute__((noinline)) void seed_pass(const i32* eb, const i32* bb, i32* ib, i32* lb) {
+    // rate, planned once a block from its middle; a straggler when it falls
+    // in the scatter's share just above. One draw a sample.
+    __attribute__((noinline)) void seed_pass(const i32* eb, const i32* bb, i32* ib) {
         u32 r = rng;
         const i32 rp = static_cast<i32>(rate_p >> 1), pi = peak_inv << 16;
-        i32 lv = late_env.v;
-        const i32 lk = late_env.k;
-        const u32 lp = late_p;
+        const u32 p = (static_cast<u32>(mul(rp, mul(eb[frames / 2], pi) << 1)) << 1) +
+                      (static_cast<u32>(mul(rp, bb[frames / 2])) << 3);   // up to 1.7 times the shake's rate
+        u32 q = p;
+        i32 la = 0;
+        if (late_p && t + frames / 2 > 2205 && t + frames / 2 < late_end) {
+            q = p + late_p;
+            // A straggler rings the shell as the lone late resonance did:
+            // its level spread over the three shells' weights.
+            la = mul(lev(late_env.v >> 3, late_norm), F(0.45));
+        }
         for (u32 j = 0; j < frames; ++j) {
-            const u32 tt = t + j;
             noise(r);
-            const u32 p = (static_cast<u32>(mul(rp, mul(eb[j], pi) << 1)) << 1) +
-                          (static_cast<u32>(mul(rp, bb[j])) << 3);   // up to 1.7 times the shake's rate
+            const u32 x = r;
             i32 imp = 0;
-            if (CURIO_UNLIKELY(r < p)) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r));   // 0.5 .. 1.5
+            if (CURIO_UNLIKELY(x < q)) imp = x < p ? one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r)) : la;   // 0.5 .. 1.5
             ib[j] = imp;
-            if (scatter && tt > 2205 && tt < late_end) {
-                noise(r);
-                lv = mul(lv, lk);
-                lb[j] = r < lp ? lv >> 3 : 0;
-            }
         }
         rng = r;
-        late_env.v = lv;
+        if (t + frames > 2205) late_env.v = mul(late_env.v, late_k64);
     }
     // A shell resonance rung by the seeds, weighted into y.
     template <bool weighted> __attribute__((noinline)) static void shell_pass(Res& z, const ResK& k, const i32* ib, i32* y, i32 w) {
@@ -597,42 +599,33 @@ struct Pod {
             for (u32 j = 0; j < frames; ++j) y[j] = gn(y[j], nm);
         }
     }
-    // The swish of the shake.
+    // The swish of the shake: its level (with the band's gain) glided
+    // across the block from its two ends.
     __attribute__((noinline)) void swish_pass(i32* y, const i32* eb, const i32* bb) {
         i32 y1 = sw.y1, y2 = sw.y2, x1 = sw.x1, x2 = sw.x2;
         u32 r = srng;
         const i32 c = swk.c, r2 = swk.r2, b = swk.b, g = sw_gain, amp = sw_amp;
+        const i32 l0 = gn(lev(amp, (eb[0] >> 3) + (bb[0] >> 1)), g);
+        const i32 l1 = gn(lev(amp, (eb[frames - 1] >> 3) + (bb[frames - 1] >> 1)), g);
+        const i32 dl = (l1 - l0) >> 6;
+        i32 l = l0;
         for (u32 j = 0; j < frames; j += 2) {   // two samples a turn: the states trade places
             const i32 i0 = mul(noise(r), b);
             y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
             x2 = i0;
-            y[j] += lev(gn(y2, g), lev(amp, (eb[j] >> 3) + (bb[j] >> 1)));
+            y[j] += lev(y2, l);
+            l += dl;
             const i32 i1 = mul(noise(r), b);
             y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
             x1 = i1;
-            y[j + 1] += lev(gn(y1, g), lev(amp, (eb[j + 1] >> 3) + (bb[j + 1] >> 1)));
+            y[j + 1] += lev(y1, l);
+            l += dl;
         }
         srng = r;
         sw.y1 = y1;
         sw.y2 = y2;
         sw.x1 = x1;
         sw.x2 = x2;
-    }
-    // Scatter: stragglers after 50 ms.
-    __attribute__((noinline)) void late_pass(i32* y, const i32* lb) {
-        i32 y1 = late.y1, y2 = late.y2;
-        const i32 c = latek.c, r2 = latek.r2, g = latek.g, nm = norm, ln = late_norm;
-        for (u32 j = 0; j < frames; ++j) {
-            const u32 tt = t + j;
-            if (tt > 2205 && tt < late_end) {
-                const i32 v = twice(mul(c, y1) - mul(r2, y2)) + mul(lb[j], g);
-                y2 = y1;
-                y1 = v;
-                y[j] += lev(gn(v, nm), ln);
-            }
-        }
-        late.y1 = y1;
-        late.y2 = y2;
     }
     // The shake's envelope and the tilt's pulse planned at the block's ends
     // and glided between them (they move slowly).
@@ -653,22 +646,20 @@ struct Pod {
         }
     }
     void run(i32* out) {
-        i32 eb[frames], bb[frames], ib[frames], lb[frames];
+        i32 eb[frames], bb[frames], ib[frames];
         // Sample by sample only where the tilt's pulse starts or the shake
         // fades out.
         const bool bumping = bump_amp && bump_at - t < frames;
         const bool fading = t + frames - 1 + 882 > stop && t < stop;
         if (bumping || fading) env_pass(eb, bb);
         else ramp_pass(eb, bb, t < stop);
-        if (late_norm) seed_pass<true>(eb, bb, ib, lb);
-        else seed_pass<false>(eb, bb, ib, lb);
+        seed_pass(eb, bb, ib);
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
         shell_pass<false>(r[0], rk[0], ib, out, 0);
         shell_pass<true>(r[1], rk[1], ib, out, F(0.7));
         shell_pass<true>(r[2], rk[2], ib, out, F(0.5));
         dry_pass(out);
         swish_pass(out, eb, bb);
-        if (late_norm) late_pass(out, lb);
         t += frames;
     }
 };
