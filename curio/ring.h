@@ -73,7 +73,7 @@ struct Glass {
         // The crack's buzz.
         band_half(crackk, hz(4000), C(0.7));
         crackr = Res();
-        crk.v = sc(U(0.2), c[6]);
+        crk.v = sc(U(0.2 * 0.7071), c[6]);   // its band at half the rate passes sqrt 2 more of the noise
         crk.k = decay(30000);   // at half the rate
         ph90 = ph42 = ph55 = 0;
         slosh = sc(F(0.05), c[5]);
