@@ -571,7 +571,12 @@ inline void add_ghost(Body& b, u32 at, i32 v) {
     if (at - b.now >= (later_cells - 1) * step) at = b.now + (later_cells - 1) * step - 1;
     u32& w = b.later[(at / step) % later_cells];
     const i32 had = static_cast<i32>(w & 0x7fffu), top = static_cast<i32>((w >> 15) & 0x7fffu);
-    if (!had) ++b.due;
+    if (!had) {
+        // At most 24 cells waiting, as the slots once held at most 32 ghosts:
+        // past that a ghost is lost (a ratchet struck hard by a big handful).
+        if (b.due >= 24) return;
+        ++b.due;
+    }
     const u32 fine = (at % step) >> 3;
     w = v > top ? static_cast<u32>(dsp::together(had, v)) | static_cast<u32>(v) << 15 | fine << 30
                 : static_cast<u32>(dsp::together(had, v)) | (w & ~0x7fffu);
