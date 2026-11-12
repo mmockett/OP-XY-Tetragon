@@ -139,13 +139,15 @@ inline void widths(i32 h, u32& w0, u32& w1) {
 const u32 step = 32, tine_step = 8, fill_step = 16;
 inline u32 step_of(u32 model) { return model == kit::tine ? tine_step : model == kit::fill ? fill_step : step; }
 // A pending strike the body schedules itself: a clap's reflections, a ratchet's teeth.
-struct Ghost { u32 at; i32 v; };
-const u32 ghosts = 32;
+// They gather on the grid ahead, a word a 32-sample cell, 64 cells (46 ms) round
+// a ring: the cell's force (Q15, the ghosts' together), its strongest
+// one's force, and that one's 8-sample step in the cell (bits 30..31).
+const u32 later_cells = 64;
 
 struct Body {
     u32 model;
     i32 p[4];          // the controls prepared, Q31
-    u32 used;          // which ghost slots hold one (bit i: slot i)
+    u32 used;          // a tine's steps whose contacts are kept (tine_contact)
     u32 seed;
     u32 count;         // strikes so far
     u32 now;           // samples since the note
@@ -160,9 +162,9 @@ struct Body {
     u32 sq[8], sqi[8];
     i32 g[8];          // mixing gains, Q28
     i32 k[4];          // model specifics
-    Ghost ghost[ghosts];
+    u32 later[later_cells];   // the ghosts ahead, by cell (a tine keeps its contacts here)
     u32 ready;         // model, p and the coefficients prepare() set hold
-    u32 due;           // the earliest ghost's time, or 0xffffffff for none
+    u32 due;           // cells ahead holding a ghost
     i32 tuned[2];      // a tine set's pitch as last tuned (log2 Hz), so a repeat isn't tuned again
     i32 held;          // the skins' last half-rate sample (expand)
 };
@@ -538,33 +540,33 @@ inline void clear_state(Body& b) {
     for (u32 i = 0; i < 2; ++i) b.click[i].e = b.click[i].hp.s = 0;
     for (u32 i = 0; i < 4; ++i) b.env[i].a = 0;
     for (u32 i = 0; i < 8; ++i) b.sq[i] = 0;
-    for (u32 i = 0; i < ghosts; ++i) b.ghost[i].at = b.ghost[i].v = 0;
+    for (u32 i = 0; i < later_cells; ++i) b.later[i] = 0;
+    b.due = 0;
     b.tuned[0] = b.tuned[1] = 0;
     b.held = 0;
 }
 
 // ----------------------------------------------------------------- strike --
 inline void add_ghost(Body& b, u32 at, i32 v) {
-    if (b.used == 0xffffffffu) return;   // all taken: a strike past them is lost
-    if (!v) {                            // a silent one only marks its time
-        if (at < b.due) b.due = at;
-        return;
-    }
-    // The first free slot: the lowest clear bit, found in five halvings.
-    u32 free = ~b.used & (b.used + 1), i = 0;
-    if (!(free & 0xffffu)) { i += 16; free >>= 16; }
-    if (!(free & 0xffu)) { i += 8; free >>= 8; }
-    if (!(free & 0xfu)) { i += 4; free >>= 4; }
-    if (!(free & 0x3u)) { i += 2; free >>= 2; }
-    if (!(free & 0x1u)) i += 1;
-    b.ghost[i].at = at;
-    b.ghost[i].v = v;
-    b.used |= 1u << i;
-    if (at < b.due) b.due = at;
+    if (v <= 0) return;
+    // Never a lap round the ring or more ahead (a ghost is at most 44 ms off).
+    if (at - b.now >= (later_cells - 1) * step) at = b.now + (later_cells - 1) * step - 1;
+    u32& w = b.later[(at / step) % later_cells];
+    const i32 had = static_cast<i32>(w & 0x7fffu), top = static_cast<i32>((w >> 15) & 0x7fffu);
+    if (!had) ++b.due;
+    const u32 fine = (at % step) >> 3;
+    w = v > top ? static_cast<u32>(dsp::together(had, v)) | static_cast<u32>(v) << 15 | fine << 30
+                : static_cast<u32>(dsp::together(had, v)) | (w & ~0x7fffu);
 }
-// The next ghost due, or 0xffffffff.
-inline u32 ghost_due(const Body& b) { return b.due; }
-
+// Samples from b.now (a cell's start) to the next cell holding a ghost, if it is
+// within this cell or the next; else all ones.
+inline u32 ghost_due(const Body& b) {
+    if (!b.due) return 0xffffffffu;
+    const u32 c = b.now / step;
+    if (b.later[c % later_cells]) return 0;
+    if (b.later[(c + 1) % later_cells]) return step;
+    return 0xffffffffu;
+}
 // How hard a stroke reads: its force, 12% more or less at random, so no two
 // strokes of a roll or a bounce sound alike (the contact, the pitch's rise).
 inline i32 touch(const Body& b, i32 v15) {
@@ -582,7 +584,7 @@ inline void strike_modes(Body& b, u32 count, i32 v15, i32 vp, i32 tone15, u32 la
 // and kept, so a run over the same frets divides only once a step. Kept in
 // the ghost slots a tine has no use for; b.used marks the steps done.
 inline const u16* tine_contact(Body& b, u32 steps, i32 lf) {
-    u16* c = reinterpret_cast<u16*>(b.ghost) + steps * 6;
+    u16* c = reinterpret_cast<u16*>(b.later) + steps * 6;
     if (!(b.used & (1u << steps))) {
         b.used |= 1u << steps;
         const u32 w = static_cast<u32>(b.pc[3]), w0 = w & 0xffffu, w1 = w >> 16;
@@ -739,7 +741,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         if (!ghost) {
             // A stroke drags the pawl over the teeth (laid out by prepare()).
             const u32 teeth = static_cast<u32>(b.k[0]);
-            for (u32 q = 1; q < teeth && b.used != 0xffffffffu; ++q) {
+            for (u32 q = 1; q < teeth; ++q) {
                 const u32 t = static_cast<u32>(tooth(b, q - 1));
                 add_ghost(b, b.now + late + (t >> 16), dsp::m15(v15, static_cast<i32>(t & 0xffffu)));
             }
@@ -753,30 +755,15 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     }
     (void)kind;
 }
-// Plays the ghosts due in the grid's step from b.now as one strike (their
-// forces together), its modes from the strongest one's 8-sample step.
+// Plays the ghosts of the cell at b.now as one strike (their forces together),
+// its modes from the strongest one's 8-sample step.
 __attribute__((noinline)) void strike_ghosts(Body& b, u32 n) {
-    const u32 end = b.now + step - 1;
-    if (b.due > end) return;
-    // One walk over the slots held: the due ones gathered, the rest give the
-    // next due. (A ghost's strike lays no ghosts.)
-    u32 due = 0xffffffffu, at = 0;
-    i32 v = 0, top = 0;
-    for (u32 i = 0, m = b.used; m; ++i, m >>= 1) {
-        if (!(m & 1u)) continue;
-        Ghost& g = b.ghost[i];
-        if (g.at <= end) {
-            v = dsp::together(v, g.v);
-            if (g.v > top) { top = g.v; at = g.at & ~7u; }
-            g.v = 0;
-            b.used &= ~(1u << i);
-        } else if (g.at < due) {
-            due = g.at;
-        }
-    }
-    b.due = due;
-    if (v <= 0) return;
-    const u32 late = at > b.now ? at - b.now : 0;
+    u32& w = b.later[(b.now / step) % later_cells];
+    const i32 v = static_cast<i32>(w & 0x7fffu);
+    const u32 late = (w >> 30) << 3;
+    w = 0;
+    if (!v) return;
+    --b.due;
     if (b.model == kit::ratchet) {
         // Teeth: what strike() does for one, without its dispatch.
         ++b.count;

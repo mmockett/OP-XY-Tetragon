@@ -188,7 +188,6 @@ __attribute__((noinline)) void begin_note(Voice& voice, Shared& shared, opxy::Pa
         body::prepare(b, voice.model, p);
         voice.gain = trimmed_gain(voice.model, p);
     }
-    b.due = 0xffffffffu;
     b.seed = 0x243f6a88u ^ (shared.notes * 0x85ebca6bu) ^ voice.owner;
     const motion::Feel feel = motion::feel(voice.feel);
     // The run depends only on these: a repeat of the same key keeps the last one's.
@@ -315,11 +314,9 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     while (at < opxy::block_frames) {
         while (k < count && !(used & (1u << k))) ++k;
         u32 until = k < count ? k << shift : opxy::block_frames;
+        // A cell of ghosts ahead (a clap's, a ratchet's: on the 32-sample grid).
         const u32 ghost = body::ghost_due(b);
-        if (ghost != 0xffffffffu) {
-            const u32 g = ghost > b.now ? ((ghost - b.now + at) & grid) : at;
-            if (g < until) until = g < at ? at : g;
-        }
+        if (ghost != 0xffffffffu && at + ghost < until) until = at + ghost;
         if (until > at) {
             body::run(b, sum + at, until - at);
             at = until;
@@ -333,11 +330,11 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             used &= ~(1u << k);
         }
         // Ghosts due within this stretch of the grid strike now.
-        if (body::ghost_due(b) < b.now + body::step) body::strike_ghosts(b, n);
+        if (body::ghost_due(b) == 0) body::strike_ghosts(b, n);
     }
     voice.t += opxy::block_frames;
     const i32 peak = finish(sum, voice.gain, output);
-    const bool waiting = voice.balls > 0 || body::ghost_due(b) != 0xffffffffu;
+    const bool waiting = voice.balls > 0 || b.due;
     voice.quiet = peak < quiet_floor && !waiting ? voice.quiet + 1 : 0;
     if (voice.quiet >= quiet_blocks) voice.done = 1;
 }
