@@ -237,15 +237,17 @@ struct Ice {
         u32 r = hrng;
         const u32 gp = grain_p;
         const i32 hk = hiss.k, gk = grain.k;
-        i32 y1 = nz.y1, y2 = nz.y2;
-        const i32 c = nzk.c, r2 = nzk.r2, g = nzk.g;
-        // Each micro-crack restarts the crunch, which then dies away. The
-        // band is the resonator driven straight (unity at its peak).
+        i32 y1 = nz.y1, y2 = nz.y2, x1 = nz.x1, x2 = nz.x2;
+        const i32 c = nzk.c, r2 = nzk.r2, g = nzk.b;   // a band-pass: no response at 0 Hz
+        // Each micro-crack restarts the crunch, which then dies away.
         for (u32 j = 0; j < m; ++j) {
             const i32 gd = mul(gv, gk);
             gv = r < gp ? one : gd;
             hv = mul(hv, hk);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
+            const i32 in = mul(noise(r), g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
             y2 = y1;
             y1 = o;
             hb[j] += lev(o, hv + lev(hv, gv));
@@ -255,6 +257,8 @@ struct Ice {
         hrng = r;
         nz.y1 = y1;
         nz.y2 = y2;
+        nz.x1 = x1;
+        nz.x2 = x2;
     }
     // n half-rate samples between events: the chirps (the newest carries
     // a band of noise riding its pitch) into xh, the lake and the surface
@@ -410,9 +414,9 @@ struct Sheet {
         const i32 normq = static_cast<i32>(((static_cast<u32>(1) << 31) / static_cast<u32>(sum >> 9)) << 12);   // Q28
         // At half level: the sheet's loudest blows and shakes ring far over unity.
         // (At half the rate a mode's peak is half as tall over the same
-        // bandwidth and the noise twice as dense: 1.5 times the drive keeps
-        // its ring's level, measured on a model of one mode.)
-        for (u32 m = 0; m < modes; ++m) gain[m] = mul(mul(lev(amp[m], normq), modek[m].s) >> 1, F(0.75)) << 1;
+        // bandwidth and the noise twice as dense: 1.2 times the drive keeps
+        // the presets' crash and snare at their loudness.)
+        for (u32 m = 0; m < modes; ++m) gain[m] = mul(mul(lev(amp[m], normq), modek[m].s) >> 1, F(0.6)) << 1;
         // The blow: an impulse and 20 ms of noise, louder for an iron rod.
         burst.v = U(0.2) + sc(U(2.0), c[6]);
         // The beater's blow: a felt mallet's is dull, an iron rod's bright.
@@ -795,7 +799,7 @@ struct Spark {
         // The ozone tail, swelling in as the cracks go on.
         const i32 lpo = lpc + 563;   // 1.1
         band_half(ozk, lpo, C(1.1));
-        ozgain = gn(ozk.g, band_gain(lpo + (1 << 12), C(1.1)));   // driven straight: unity at its peak, unit RMS
+        ozgain = gn(ozk.b, band_gain(lpo + (1 << 12), C(1.1)));   // a band-pass at unity, unit RMS
         oz = Res();
         const i32 to = 22000 + sc(480000, pw(c[3], C(2.0)));
         to_k = decay(static_cast<u32>(to) >> 1);
@@ -880,12 +884,15 @@ struct Spark {
     // Ozone, swelling in as the cracks go on, then dying away.
     template <bool rising> __attribute__((noinline)) void ozone_run(i32* y, u32 n) {
         u32 r = orng;
-        i32 lv = oz_level, y1 = oz.y1, y2 = oz.y2;
-        const i32 ramp = oz_ramp, k = to_k, c = ozk.c, r2 = ozk.r2, g = ozgain;
+        i32 lv = oz_level, y1 = oz.y1, y2 = oz.y2, x1 = oz.x1, x2 = oz.x2;
+        const i32 ramp = oz_ramp, k = to_k, c = ozk.c, r2 = ozk.r2, g = ozgain;   // a band-pass: no response at 0 Hz
         for (u32 j = 0; j < n; ++j) {
             if (rising) lv += ramp;
             else lv = mul(lv, k);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
+            const i32 in = mul(noise(r), g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
             y2 = y1;
             y1 = o;
             y[j] += lev(o, lv);
@@ -894,6 +901,8 @@ struct Spark {
         oz_level = lv;
         oz.y1 = y1;
         oz.y2 = y2;
+        oz.x1 = x1;
+        oz.x2 = x2;
     }
     void ozone_pass(i32* y, u32 tt, u32 n) {
         // It rises through the last crack (tt <= end), then falls; n half-rate steps from tt.

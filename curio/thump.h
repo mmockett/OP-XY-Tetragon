@@ -668,12 +668,15 @@ struct Stone {
     }
     // The dust's patter at half the rate, its own noise, while it lasts.
     __attribute__((noinline)) void dust_pass(i32* y) {
-        i32 d = dust.v, y1 = dustr.y1, y2 = dustr.y2;
-        const i32 k = dust.k, c = dustk.c, r2 = dustk.r2, g = dustk.g, dg = dust_gain << 12;
+        i32 d = dust.v, y1 = dustr.y1, y2 = dustr.y2, x1 = dustr.x1, x2 = dustr.x2;
+        const i32 k = dust.k, c = dustk.c, r2 = dustk.r2, g = dustk.b, dg = dust_gain << 12;
         u32 r = drng;
         for (u32 j = 0; j < frames / 2; ++j) {
             d = mul(d, k);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
+            const i32 in = mul(noise(r), g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
             y2 = y1;
             y1 = o;
             y[j] += mul(mul(o, dg) << 3, d << 3);
@@ -681,6 +684,8 @@ struct Stone {
         dust.v = d;
         dustr.y1 = y1;
         dustr.y2 = y2;
+        dustr.x1 = x1;
+        dustr.x2 = x2;
         drng = r;
     }
     void run(i32* out) {

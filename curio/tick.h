@@ -273,11 +273,10 @@ struct Cicada {
     // The sizzle, driven into a soft clip: denser and less peaky, so a hat
     // carries its loudness under the kit's ceiling.
     __attribute__((noinline)) void sizzle_pass(i32* y, u32 n) {
-        i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2;
+        i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2, x1 = hi.x1, x2 = hi.x2;
         u32 r = srng;
-        // The band driven straight (unity at its peak), its loudness gain and
-        // the sizzle's level taken at its input, Q28.
-        const i32 gq = dsp::lo(lev(gn(hik.g >> 3, band_gain_now), sizzle_level), U(7.9));
+        // The band's loudness gain and the sizzle's level taken at its input, Q28.
+        const i32 gq = dsp::lo(lev(gn(hik.b >> 3, band_gain_now), sizzle_level), U(7.9));
         const i32 ek = env[0].k, c = hik.c, r2 = hik.r2;
         if (ev <= 4096) {   // under its floor until the next click: only the envelope moves
             for (u32 j = 0; j < n; ++j) ev = mul(ev, ek);
@@ -290,7 +289,10 @@ struct Cicada {
         if (lev(lev(ev, U(4.0)), sizzle_level) < U(0.15)) {
             for (u32 j = 0; j < n; ++j) {
                 ev = mul(ev, ek);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + lev(noise(r), gq);
+                const i32 in = lev(noise(r), gq);
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+                x2 = x1;
+                x1 = in;
                 y2 = y1;
                 y1 = o;
                 y[j] += lev(o, ev);
@@ -298,7 +300,10 @@ struct Cicada {
         } else {
             for (u32 j = 0; j < n; ++j) {
                 ev = mul(ev, ek);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + lev(noise(r), gq);
+                const i32 in = lev(noise(r), gq);
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+                x2 = x1;
+                x1 = in;
                 y2 = y1;
                 y1 = o;
                 y[j] += soft(lev(o, ev) << 1) >> 1;   // flat from 0.75
@@ -308,17 +313,22 @@ struct Cicada {
         srng = r;
         hi.y1 = y1;
         hi.y2 = y2;
+        hi.x1 = x1;
+        hi.x2 = x2;
     }
     // The wing's flick.
     __attribute__((noinline)) void wing_pass(i32* y) {
-        i32 wv = wing.v, av = wingatt.v, y1 = wingr.y1, y2 = wingr.y2;
+        i32 wv = wing.v, av = wingatt.v, y1 = wingr.y1, y2 = wingr.y2, x1 = wingr.x1, x2 = wingr.x2;
         u32 r = wrng;
-        const i32 wk = wing.k, ak = wingatt.k, c = wingk.c, r2 = wingk.r2, g = gn(wingk.g, wing_gain);   // driven straight, unit RMS
+        const i32 wk = wing.k, ak = wingatt.k, c = wingk.c, r2 = wingk.r2, g = gn(wingk.b, wing_gain);   // a band-pass: no response at 0 Hz
         i32 h[frames / 2];
         for (u32 j = 0; j < frames / 2; ++j) {
             wv = mul(wv, wk);
             av = mul(av, ak);
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
+            const i32 in = mul(noise(r), g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
             y2 = y1;
             y1 = o;
             h[j] = lev(o, wv - av);
@@ -328,6 +338,8 @@ struct Cicada {
         wrng = r;
         wingr.y1 = y1;
         wingr.y2 = y2;
+        wingr.x1 = x1;
+        wingr.x2 = x2;
         up_into(h, y, wlast);
     }
 };
@@ -620,25 +632,31 @@ struct Pod {
     // The swish of the shake: its level (with the band's gain) glided
     // across the block from its two ends.
     __attribute__((noinline)) void swish_pass(i32* y, const i32* eb, const i32* bb) {
-        i32 y1 = sw.y1, y2 = sw.y2;
+        i32 y1 = sw.y1, y2 = sw.y2, x1 = sw.x1, x2 = sw.x2;
         u32 r = srng;
-        // The band driven straight (unity at its peak), its loudness gain in the level.
-        const i32 c = swk.c, r2 = swk.r2, g = swk.g, sg = sw_gain, amp = sw_amp;
+        // The band's loudness gain in the level.
+        const i32 c = swk.c, r2 = swk.r2, b = swk.b, sg = sw_gain, amp = sw_amp;
         const i32 l0 = gn(lev(amp, (eb[0] >> 3) + (bb[0] >> 1)), sg);
         const i32 l1 = gn(lev(amp, (eb[frames - 1] >> 3) + (bb[frames - 1] >> 1)), sg);
         const i32 dl = (l1 - l0) >> 6;
         i32 l = l0;
         for (u32 j = 0; j < frames; j += 2) {   // two samples a turn: the states trade places
-            y2 = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
+            const i32 i0 = mul(noise(r), b);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+            x2 = i0;
             y[j] += lev(y2, l);
             l += dl;
-            y1 = twice(mul(c, y2) - mul(r2, y1)) + mul(noise(r), g);
+            const i32 i1 = mul(noise(r), b);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+            x1 = i1;
             y[j + 1] += lev(y1, l);
             l += dl;
         }
         srng = r;
         sw.y1 = y1;
         sw.y2 = y2;
+        sw.x1 = x1;
+        sw.x2 = x2;
     }
     // Scatter: stragglers after 50 ms, ringing their own resonance.
     __attribute__((noinline)) void late_pass(i32* y, const i32* lb) {

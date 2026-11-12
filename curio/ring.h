@@ -142,12 +142,15 @@ struct Glass {
     }
     // The crack's buzz, gated at 90 Hz, at half the rate.
     __attribute__((noinline)) void crack_pass(i32* y) {
-        i32 cv = crk.v, y1 = crackr.y1, y2 = crackr.y2;
+        i32 cv = crk.v, y1 = crackr.y1, y2 = crackr.y2, x1 = crackr.x1, x2 = crackr.x2;
         u32 p = ph90, r = rng;
-        const i32 ck = crk.k, c = crackk.c, r2 = crackk.r2, g = crackk.g;
+        const i32 ck = crk.k, c = crackk.c, r2 = crackk.r2, g = crackk.b;   // a band-pass: no response at 0 Hz
         for (u32 j = 0; j < frames / 2; ++j) {
             p += 2 * 8765280u;   // 90 Hz
-            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + mul(noise(r), g);
+            const i32 in = mul(noise(r), g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
             y2 = y1;
             y1 = o;
             if (static_cast<i32>(p) >= 0) y[j] += lev(o, cv);
@@ -158,6 +161,8 @@ struct Glass {
         rng = r;
         crackr.y1 = y1;
         crackr.y2 = y2;
+        crackr.x1 = x1;
+        crackr.x2 = x2;
     }
     void run(i32* out) {
         // The water's slosh, once a block.
