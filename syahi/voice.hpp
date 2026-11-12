@@ -213,10 +213,11 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     }
     // The wash's pairs ring as long as their two modes on average: the
     // geometric mean of the two rings, so the spray lasts as the modes do.
-    for (u32 j = 0; j < wash_pairs; ++j) v.pair_decay[j] = per_block((lives[wash_a[j]] + lives[wash_b[j]]) >> 1);
+    // (Only METAL's wash reads them, its flow and its lift: the other models skip them.)
     v.tilt = v.model == metal ? q31(0.5) : 0;
-    // The strike's flow into the pairs, and the level that slower flow gives back.
-    {
+    if (v.tilt) {
+        for (u32 j = 0; j < wash_pairs; ++j) v.pair_decay[j] = per_block((lives[wash_a[j]] + lives[wash_b[j]]) >> 1);
+        // The strike's flow into the pairs, and the level that slower flow gives back.
         const i32 flow = clamp(s.decay + lg(0.3), lg(0.04), lg(0.15));
         v.pair_flow = one - per_block(flow);
         v.wash_lift = exp2q_cold(flow - s.decay < 0 ? flow - s.decay : 0);
@@ -226,17 +227,21 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     b.rest = s.body_pitch;
     b.weight = multiply(s.body, q31(0.9 / 16.0)) << 0;   // Q28 -> units: * 2^-4
     b.weight = multiply(b.weight, v.velocity);
-    b.decay = per_block(s.body_decay);
-    v.body_rise_decay = multiply(b.decay, per_block(lg(0.002 * 6.9078)));
-    v.body_bend = multiply(bend, q31(0.28));
+    if (b.weight) {
+        b.decay = per_block(s.body_decay);
+        v.body_rise_decay = multiply(b.decay, per_block(lg(0.002 * 6.9078)));
+        v.body_bend = multiply(bend, q31(0.28));
+    }
     // The air: a 48 Hz push, a cycle and a half long.
     Partial& air = v.part[air_mode];
     air.rest = lg(48);
     air.weight = multiply(multiply(s.air >> 4, q31(1.1 / 2)) << 1, v.velocity);
-    const i32 air_log = log2u(static_cast<u32>(s.air_cycles)) - 16 * octave + lg(44100.0 / 48.0);
-    v.air_length = exp2i_cold(air_log);
-    v.air_step = exp2i_cold(31 * octave - air_log);
-    v.count_trim = -multiply(log2u(s.count), q31(0.25));
+    if (air.weight) {
+        const i32 air_log = log2u(static_cast<u32>(s.air_cycles)) - 16 * octave + lg(44100.0 / 48.0);
+        v.air_length = exp2i_cold(air_log);
+        v.air_step = exp2i_cold(31 * octave - air_log);
+    }
+    v.count_trim = s.count > 1 ? -multiply(log2u(s.count), q31(0.25)) : 0;
     // METAL: the wash takes over from the modes as WASH rises; together they
     // keep one level (1 / (1 + 4 WASH^2)), so WASH changes the colour, not the loudness.
     if (s.dense) {
@@ -247,25 +252,31 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
         v.wash_trim = one;
     }
     // The struck energy and the glide.
+    // (The energy also lifts the body and sets the wires' and the wash's first
+    // strike: every model keeps it. The glide and the swell only where they move.)
     v.energy_decay = per_block(s.bend_time + lg(6.9078));
-    v.glide_decay = per_block(s.glide_time + lg(6.9078));
-    v.swell_decay = per_block(lg(0.18 * 6.9078));
+    if (s.glide) v.glide_decay = per_block(s.glide_time + lg(6.9078));
+    if (s.swell) v.swell_decay = per_block(lg(0.18 * 6.9078));
     // The contact's raised cosine.
     v.ramp_step = exp2i_cold(clamp(31 * octave - (s.contact + lg(44100)), 0, 31 * octave - 1));
     // Noise: its band, cascaded twice, and the two lowest modes' rings.
-    v.cn.set(s.noise_q, s.noise_tone < lg(9000) ? s.noise_tone : lg(9000));
-    v.r0.set(q_drum, v.part[0].rest);
-    v.nd = one - one_pole(s.noise_length);
-    v.nd_tail = one - one_pole(s.noise_length + s.tail);
-    v.nstep = static_cast<i32>(exp2i_cold(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
+    if (s.noise) {
+        v.cn.set(s.noise_q, s.noise_tone < lg(9000) ? s.noise_tone : lg(9000));
+        if (s.noise_ring) v.r0.set(q_drum, v.part[0].rest);
+        v.nd = one - one_pole(s.noise_length);
+        v.nd_tail = s.tail ? one - one_pole(s.noise_length + s.tail) : v.nd;
+        v.nstep = static_cast<i32>(exp2i_cold(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
+    }
     // The rattle.
-    v.cwb.set(q_wires, s.wire_tone + octave);   // (the buzz runs at half rate)
-    // The follower (0.6 ms), the buzz's rise (0.3 ms) and its fall over WIRE's
-    // time, each as its share of the way a block moves (1 - (1 - c)^64).
-    v.wire_top_c = one_pole(-(s.wire_top + lg(2 * 3.14159265)) - octave);
-    v.follow_c = one - power(one - one_pole(lg(0.0006)), 64);
-    v.wire_high_c = one - power(one - q31(0.073), 64);
-    v.drive_c = one - power(one - one_pole(s.wire_time - lg(4.5)), 64);
+    if (s.wires) {
+        v.cwb.set(q_wires, s.wire_tone + octave);   // (the buzz runs at half rate)
+        // The follower (0.6 ms), the buzz's rise (0.3 ms) and its fall over WIRE's
+        // time, each as its share of the way a block moves (1 - (1 - c)^64).
+        v.wire_top_c = one_pole(-(s.wire_top + lg(2 * 3.14159265)) - octave);
+        v.follow_c = one - power(one - one_pole(lg(0.0006)), 64);
+        v.wire_high_c = one - power(one - q31(0.073), 64);
+        v.drive_c = one - power(one - one_pole(s.wire_time - lg(4.5)), 64);
+    }
     // 40 x the threshold-passed motion, through noise of a third of its swing.
     v.wire_gain = multiply(s.wires, q31(0.4 * wire_drive * 1.732 / 32 * 0.7071));   // Q28 * 2^-5 -> Q23; -3 dB at half rate
     // The wash.
