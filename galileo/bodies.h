@@ -95,9 +95,17 @@ struct Struck {
 };
 // Tunes a struck mode: log2 Hz, decay, share (Q15) and the contact's width in
 // samples (Q8) at velocity 0 and 1.
+// A mode over 15 kHz (a kick's hard beater, a clock's tick, a tine's high
+// overtones) is left out: struck at 0, it never rings, so it costs nothing.
+const i32 log2_top_hz = 909160;   // log2 15,000 Hz, Q16
 inline void tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 width0, u32 width1) {
     const u32 inc = dsp::increment(log2_hz);
     s.m.tune(inc, r);
+    if (log2_hz >= log2_top_hz) {
+        s.soft = s.hard = 0;
+        s.m.y1 = s.m.y2 = 0;
+        return;
+    }
     s.soft = dsp::m15(share, dsp::contact(inc, width0));
     s.hard = dsp::m15(share, dsp::contact(inc, width1));
 }
@@ -593,7 +601,7 @@ inline const u16* tine_contact(Body& b, u32 steps, i32 lf) {
         const u32 w = static_cast<u32>(b.pc[3]), w0 = w & 0xffffu, w1 = w >> 16;
         const i32 at[3] = {lf, lf + OCT(2.756), lf + OCT(5.404)};
         for (u32 k = 0; k < 3; ++k) {
-            if (k == 2 && at[k] >= dsp::log2_cap_hz) { c[4] = c[5] = 0; continue; }   // no glint there
+            if (at[k] >= log2_top_hz) { c[2 * k] = c[2 * k + 1] = 0; continue; }   // left out over 15 kHz
             const u32 inc = dsp::increment(at[k]);
             c[2 * k] = static_cast<u16>(dsp::contact(inc, w0));
             c[2 * k + 1] = static_cast<u16>(dsp::contact(inc, w1));
@@ -606,6 +614,7 @@ inline void tine_tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 soft, u32 ha
     s.m.tune(dsp::increment(log2_hz), r);
     s.soft = dsp::m15(share, static_cast<i32>(soft));
     s.hard = dsp::m15(share, static_cast<i32>(hard));
+    if (!soft && !hard) s.m.y1 = s.m.y2 = 0;   // left out
 }
 // An impact at sample b.now + late (the struck modes ring from then on, the
 // rest strikes at b.now); ghost: a strike the body scheduled itself.
