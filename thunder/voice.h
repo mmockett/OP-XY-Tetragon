@@ -17,11 +17,11 @@ const unsigned half = frames / 2;   // a block at half the sample rate
 // A low mode of the sheet: a Chamberlin resonator scaled so that it sounds at
 // its weight: the force enters its band state times its weight (gw, Q31), and
 // its band state is its sound.
-struct Mode { i32 lp, bp, f, r, gw; u32 inc; };   // r: its decay over 8 samples, Q31
-const u32 field_samples = 1024;
-const u32 line_samples = 256;   // each of the four lines' ring
-const u32 swing_samples = 128;
-const u32 swing_keep = 76;      // the swing's delay is 11..72 samples: it keeps the last 76
+struct Mode { i32 lp, bp, f, r, gw; u32 inc; };   // r: its decay over 8 samples, Q31 (over 16 at its rate once split_modes has run)
+const u32 field_samples = 512;
+const u32 wide_stride = 128;    // a wide field's four rings
+const u32 small_stride = 256;   // a small field's two rings
+const u32 swing_keep = 38;      // the swing's delay is 5.5..36.4 half-rate samples: it keeps the last 38
 
 struct Voice {
     u32 owner, model, next, pending, done, quiet;
@@ -43,10 +43,8 @@ struct Voice {
     u32 fd[4];                // the four lines' lengths
     i32 flp[4];               // their low-passes
     u32 fdiff, dpos;          // the input smeared by two all-passes for a strike's first blocks (crisper, less comb)
-    u32 floop;                // 1: an all-pass in the first line's loop; 2: the rings clip (field_clip); 4: two lines (field_small); 8: heard at half rate (field_raw)
+    u32 floop;                // 2: the rings clip (field_clip); 4: two lines (a small field); 8: heard at half rate (field_raw)
     i32 dbuf[23 + 41];
-    u32 apos;                 // the first line also passes an all-pass in its loop (37 samples)
-    i32 abuf[37];
     // the mallet: a raised-cosine contact
     u32 pphase, pinc;
     i32 pamp;
@@ -58,12 +56,11 @@ struct Voice {
     u32 at, left;
     i32 samp, samp_k, sgap, sgap_k;   // amplitude and its factor; gap (samples, Q8) and its factor
     // the chain: a contact rattle
-    i32 c_amount, c_p, c_env, c_rel, c_thr, c_hpk, c_lpk, c_l1, c_l2, c_f1, c_q;
-    Svf c_r1;
+    i32 c_amount, c_p, c_env, c_rel, c_thr, c_hpk, c_lpk, c_l1, c_l2;   // (c_l1: the band's low-pass; c_l2: its last half-rate sample)
     OnePole c_hp;
     // the swaying sheet: a comb whose delay swings
-    i32 sw_depth;
-    u32 sw_phase, sw_inc, sw_pos;   // (sw_pos unused: the swing keeps its buffer in order)
+    i32 sw_depth, sw_wet, sw_turn;
+    u32 sw_phase, sw_inc;
     // each model's own coefficients and states
     i32 k[24];
     i32 s[9];                 // (9 keeps the voice its declared size)
@@ -75,7 +72,7 @@ struct Voice {
     Svf sv[4];
     OnePole op[6];
     Ramp env[4];
-    i16 sw_buf[swing_samples];
+    i32 sw_buf[swing_keep];
     i32 buf[field_samples];
 };
 
@@ -138,7 +135,8 @@ inline i32 beater_lift(const Voice& v, i32 lf0, i32 ltc, i32 lbend, i32 lt0, i32
 // log2 of how far a pitch glide of bend (Q28, over 1) lifts the modes.
 inline i32 bend_log(i32 bend) { return log2q(static_cast<u32>((1 << 28) + bend)) - 28 * octave; }
 // first: the lowest mode to sound (a model that high-passes its body can skip the fundamental)
-inline void setup_modes(Voice& v, i32 lf0, i32 tension, i32 spot, i32 ltau0, i32 tau_exp, i32 tilt, u32 n, i32 ltc, u32 first = 0) {
+// top: the highest a mode may ring (log2 Hz)
+inline void setup_modes(Voice& v, i32 lf0, i32 tension, i32 spot, i32 ltau0, i32 tau_exp, i32 tilt, u32 n, i32 ltc, u32 first = 0, i32 top = L(6800.0)) {
     const i32 tt = clamp(tension, 0, 65535) * 32;
     const u32 idx = static_cast<u32>(tt) >> 16;
     const i32 fr = tt & 0xffff;
@@ -149,7 +147,7 @@ inline void setup_modes(Voice& v, i32 lf0, i32 tension, i32 spot, i32 ltau0, i32
     i32 sum = 0;
     for (u32 k = 0; k < n && k < 8; ++k) {
         const i32 r = mix(tables::mode_ratio[idx][k] << 4, tables::mode_ratio[idx + (idx < 32)][k] << 4, fr);
-        if (lf0 + r > L(6800.0)) break;
+        if (lf0 + r > top) break;
         const i32 wa = shape_weight(tables::mode_m[idx][k], tables::mode_n[idx][k], x, y);
         const i32 wb = shape_weight(tables::mode_m[idx + (idx < 32)][k], tables::mode_n[idx + (idx < 32)][k], x, y);
         i32 wk = wa + multiply(wb - wa, fr << 15);
@@ -216,14 +214,17 @@ inline void split_modes(Voice& v, bool quarter_ok = true) {
         if (pass == 1) v.nhalf = n;
     }
     for (u32 k = 0; k < n; ++k) {
+        // its decay over 16 samples at its rate (r is over 8 at the full rate)
+        i32 r = multiply(m[k].r, m[k].r);
         if (k < v.nquarter) {
             m[k].f = svf_f(quarter_inc(m[k].inc));
-            const i32 r2 = multiply(m[k].r, m[k].r);
-            m[k].r = multiply(r2, r2);   // its decay over 8 quarter-rate samples
+            r = multiply(r, r);
+            r = multiply(r, r);
         } else if (k < v.nhalf) {
             m[k].f = svf_f(half_inc(m[k].inc));
-            m[k].r = multiply(m[k].r, m[k].r);   // its decay over 8 half-rate samples
+            r = multiply(r, r);
         }
+        m[k].r = r;
         v.mode[k] = m[k];
     }
 }
@@ -233,7 +234,8 @@ inline i32 mode_f(const Voice& v, u32 k, u32 inc) {
 }
 // CAMBER: every mode's pitch rises by bend * env, which falls away each block.
 inline void glide_modes(Voice& v) {
-    if (!v.bend) return;
+    if (!v.bend || !v.bend_env) return;
+    if (v.bend_env < (1 << 21)) v.bend_env = 0;   // settled (under a thousandth of its rise): at its own pitch from now on
     const i32 m28 = (1 << 28) + multiply(v.bend, v.bend_env);   // 1 + bend env, Q28
     for (u32 k = 0; k < v.nmodes; ++k) {
         Mode& m = v.mode[k];
@@ -244,41 +246,34 @@ inline void glide_modes(Voice& v) {
 }
 // Runs the modes over a block of force x, adding their sound to out. Each
 // mode is a lossless state-variable pair (its exact pitch, f = 2 sin(pi fc /
-// SR)), decayed every 8 samples; two modes share a pass. A mode that has
+// SR)), decayed every 16 samples; two modes share a pass. A mode that has
 // rung down under about -100 dB with nothing driving it is stopped: fixed
 // point would otherwise keep it circling a few steps above zero. A pass runs
-// over count samples (the block, or its 32 half-rate samples), and adds to
-// out, or with add false writes it.
-template <u32 count, bool add>
-__attribute__((noinline)) inline void run_pair(Mode& a, Mode& b, const i32* x, i32* out, bool drive) {
+// over count samples (the block, or its 32 half-rate or 16 quarter-rate
+// samples), and adds to out, or with add false writes it; driven, the block's
+// force goes in.
+template <u32 count, bool add, bool driven>
+__attribute__((noinline)) inline void run_pair(Mode& a, Mode& b, const i32* x, i32* out) {
     i32 al = a.lp, ab = a.bp, bl = b.lp, bb = b.bp;
-    const i32 af = a.f, bf = b.f, ag = a.gw, bg = b.gw, ar = a.r, br = b.r;
-    for (unsigned s = 0; s < count; s += 8) {
-        i32 touch = 0;
-        if (drive) for (unsigned i = s; i < s + 8; ++i) touch |= x[i];
-        if (touch) {
-            for (unsigned i = s; i < s + 8; ++i) {
-                al += multiply(af, ab);
-                ab += multiply(x[i], ag) - multiply(af, al);
-                bl += multiply(bf, bb);
-                bb += multiply(x[i], bg) - multiply(bf, bl);
-                out[i] = add ? out[i] + ab + bb : ab + bb;
-            }
-        } else {
-            for (unsigned i = s; i < s + 8; ++i) {
-                al += multiply(af, ab);
-                ab -= multiply(af, al);
-                bl += multiply(bf, bb);
-                bb -= multiply(bf, bl);
-                out[i] = add ? out[i] + ab + bb : ab + bb;
-            }
+    const i32 af = a.f, bf = b.f, ar = a.r, br = b.r;
+    const i32 ag = driven ? a.gw : 0, bg = driven ? b.gw : 0;
+    for (unsigned s = 0; s < count; s += 16) {
+        for (unsigned i = 0; i < 16; ++i) {
+            al += multiply(af, ab);
+            if (driven) ab += multiply(*x, ag) - multiply(af, al);
+            else ab -= multiply(af, al);
+            bl += multiply(bf, bb);
+            if (driven) bb += multiply(*x++, bg) - multiply(bf, bl);
+            else bb -= multiply(bf, bl);
+            *out = add ? *out + ab + bb : ab + bb;
+            ++out;
         }
         al = multiply(al, ar);
         ab = multiply(ab, ar);
         bl = multiply(bl, br);
         bb = multiply(bb, br);
     }
-    if (!drive) {
+    if (!driven) {
         if (absolute(al) + absolute(ab) < (1 << 11)) al = ab = 0;
         if (absolute(bl) + absolute(bb) < (1 << 11)) bl = bb = 0;
     }
@@ -286,6 +281,16 @@ __attribute__((noinline)) inline void run_pair(Mode& a, Mode& b, const i32* x, i
     a.bp = ab;
     b.lp = bl;
     b.bp = bb;
+}
+template <u32 count>
+inline void run_pair_into(Mode& a, Mode& b, const i32* x, i32* out, bool drive, bool sounding) {
+    if (drive) {
+        if (sounding) run_pair<count, true, true>(a, b, x, out);
+        else run_pair<count, false, true>(a, b, x, out);
+    } else {
+        if (sounding) run_pair<count, true, false>(a, b, x, out);
+        else run_pair<count, false, false>(a, b, x, out);
+    }
 }
 // The quarter-rate modes' sound back at the full rate: from each sample to the
 // next in four steps.
@@ -314,7 +319,7 @@ __attribute__((noinline)) inline i32 modes_up(const i32* y, i32* out, i32 prev) 
     return prev;
 }
 inline void run_modes(Voice& v, const i32* x, i32* out) {
-    const i32 drive = block_or(x);
+    const bool drive = block_or(x) != 0;
     // an odd mode out is paired with a silent one
     Mode spare = {0, 0, 0, one, 0, 0};
     const u32 nq = v.nquarter, nh = v.nhalf;
@@ -327,8 +332,7 @@ inline void run_modes(Voice& v, const i32* x, i32* out) {
             Mode& a = v.mode[k];
             Mode& b = k + 1 < nq ? v.mode[k + 1] : spare;
             if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
-            if (sounding) run_pair<frames / 4, true>(a, b, x4, y4, drive != 0);
-            else run_pair<frames / 4, false>(a, b, x4, y4, drive != 0);
+            run_pair_into<frames / 4>(a, b, x4, y4, drive, sounding);
             sounding = true;
         }
         if (!sounding) for (u32 i = 0; i < frames / 4; ++i) y4[i] = 0;
@@ -343,8 +347,7 @@ inline void run_modes(Voice& v, const i32* x, i32* out) {
             Mode& a = v.mode[k];
             Mode& b = k + 1 < nh ? v.mode[k + 1] : spare;
             if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
-            if (sounding) run_pair<half, true>(a, b, x2, y2, drive != 0);
-            else run_pair<half, false>(a, b, x2, y2, drive != 0);
+            run_pair_into<half>(a, b, x2, y2, drive, sounding);
             sounding = true;
         }
         if (!sounding) for (u32 i = 0; i < half; ++i) y2[i] = 0;
@@ -354,14 +357,14 @@ inline void run_modes(Voice& v, const i32* x, i32* out) {
         Mode& a = v.mode[k];
         Mode& b = k + 1 < v.nmodes ? v.mode[k + 1] : spare;
         if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
-        run_pair<frames, true>(a, b, x, out, drive != 0);
+        run_pair_into<frames>(a, b, x, out, drive, true);
     }
 }
 
 // For a voice whose modes all run at half rate: their sound at half rate, as
 // it is, into y2 (32 values), for the model to filter there and bring up.
 inline void run_modes_half(Voice& v, const i32* x, i32* y2) {
-    const i32 drive = block_or(x);
+    const bool drive = block_or(x) != 0;
     Mode spare = {0, 0, 0, one, 0, 0};
     const u32 nh = v.nhalf;
     i32 x2[half];
@@ -371,35 +374,37 @@ inline void run_modes_half(Voice& v, const i32* x, i32* y2) {
         Mode& a = v.mode[k];
         Mode& b = k + 1 < nh ? v.mode[k + 1] : spare;
         if (!drive && !a.lp && !a.bp && !b.lp && !b.bp) continue;
-        if (sounding) run_pair<half, true>(a, b, x2, y2, drive != 0);
-        else run_pair<half, false>(a, b, x2, y2, drive != 0);
+        run_pair_into<half>(a, b, x2, y2, drive, sounding);
         sounding = true;
     }
     if (!sounding) for (u32 i = 0; i < half; ++i) y2[i] = 0;
 }
 
 // ------------------------------------------------------------ the high modes
-// Four delay lines through a Hadamard mix (adds only), each with a low-pass
-// in its loop, after two all-passes that smear what goes in: the dense,
-// even forest of modes a slack sheet has above a few kHz. It runs at half
-// the sample rate, and each of its samples is held for two: the images that
+// Delay lines through an orthogonal mix (adds only), each with a low-pass in
+// its loop, after two all-passes that smear what goes in: the dense, even
+// forest of modes a slack sheet has above a few kHz. It runs at half the
+// sample rate, and each of its samples is held for two: the images that
 // leaves above 11 kHz are more of the same forest, its sizzle.
+// A wide field (a cymbal's wash, a hat's ring, a bearing's and the thunder's
+// shimmer) has four lines of up to 127 places through a Hadamard mix; every
+// other sheet's high modes are a small field of two lines of up to 255
+// places, turned through 45 degrees each pass: half the work, and half the
+// memory a voice touches.
 // lbase: log2 Hz of the base line; spread: Q16, how unequal the lines are;
 // lt60: log2 s; bright: Q16 (the loop's low-pass, dark to open).
 const i32 lhalf = lsr - octave;   // log2 of the half rate
 // diffuse: 1 for a field struck by an impulse (its first 6 blocks' input is
-// smeared), 2 for one fed noise (no smearing needed); either puts an all-pass
-// in a line's loop.
-inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u32 diffuse = 0) {
+// smeared).
+inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u32 diffuse = 0, bool wide = false) {
     static const i32 ratio[4] = {Q16(0.0), Q16(0.29), Q16(0.6), Q16(0.87)};
-    v.floop = diffuse != 0;
+    const u32 stride = wide ? wide_stride : small_stride;
+    v.floop = wide ? 0u : 4u;
     v.fdiff = diffuse == 1 ? 7 : 0;
     v.dpos = 0;
     for (u32 i = 0; i < 64; ++i) v.dbuf[i] = 0;
-    v.apos = 0;
-    for (u32 i = 0; i < 37; ++i) v.abuf[i] = 0;
     i32 ld0 = lhalf - lbase;                                   // log2 half-rate samples
-    const i32 most = L((line_samples - 2) / 1.87);
+    const i32 most = wide ? L((wide_stride - 2) / 1.87) : L((small_stride - 2) / 1.87);
     if (ld0 > most) ld0 = most;
     if (ld0 < L(32.0)) ld0 = L(32.0);   // half a block at least
     const i32 d0 = static_cast<i32>(pow2(ld0 + 8 * octave));   // Q8 samples
@@ -409,26 +414,34 @@ inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u
         if (d < 32) d = 32;
         if (i && d <= prev) d = prev + 1;
         d |= 1u;   // odd lengths, so no two share a factor of two
-        if (d >= line_samples) d = line_samples - 1;
+        if (d >= stride) d = stride - 1;
         prev = d;
         v.fd[i] = d;
         v.flp[i] = 0;
         total += d;
     }
+    if (!wide) {
+        // the second and the fourth, so the spread stays
+        v.fd[0] = v.fd[1];
+        v.fd[1] = v.fd[3];
+    }
     // the first lap reads only each ring's last d places before it writes them
-    for (u32 l = 0; l < 4; ++l) {
-        i32* b = v.buf + (l + 1) * line_samples - v.fd[l];
+    for (u32 l = 0; l < (wide ? 4u : 2u); ++l) {
+        i32* b = v.buf + (l + 1) * stride - v.fd[l];
         for (u32 n = 0; n < v.fd[l]; ++n) b[n] = 0;
     }
     v.fw = 0;
     v.fprev = 0;
     v.fquiet = 0;
     // one loop gain for the mean line: 10^(-3 d / (t60 SR)) = exp(-6.9078 d / (t60 SR))
-    v.fg = expneg(L(6.907755) + log2q(total) - 2 * octave - lt60 - lhalf);
+    if (wide) v.fg = expneg(L(6.907755) + log2q(total) - 2 * octave - lt60 - lhalf);
+    else v.fg = multiply(expneg(L(6.907755) + log2q(v.fd[0] + v.fd[1]) - octave - lt60 - lhalf), Q31(0.70710678));   // (over sqrt 2 for the turn)
     // the loop's low-pass: a pole of 0.85 (dark) to 0.12 (open) at the full rate, squared at half
     const i32 a = frac2(2 * mix(L(0.85), L(0.12), bright));
     v.fk = one - a;
     v.fin = static_cast<i32>(pow2(55 * octave - log2q(static_cast<u32>(v.fk))));   // 1 / k, Q24
+    // two lines take half the energy four do: their input is lifted by sqrt 2
+    if (!wide) v.fin = multiply(v.fin, Q31(0.70710678)) << 1;
     v.fon = 1;
 }
 // A field driven hard enough to fill its rings clips them (ZAP's chirp does).
@@ -448,24 +461,23 @@ __attribute__((noinline)) inline i32 up_add(const i32* r, i32* out, i32 prev) {
     }
     return prev;
 }
-// A small field: two of the four lines (the second and the fourth, so the
-// spread stays), for a sheet whose high modes are a faint shimmer over its
-// body (a kick's, a tom's): half the work. (Its 45-degree turn puts a mode
-// near 40 Hz; under a kick's or a tom's body it doesn't show, under a
-// bearing's or the thunder's it did, so those keep four lines.) Its
-// gain per pass is set for the two, over sqrt 2 for their mix, and its input
-// is lifted by sqrt 2, as two lines take half the energy four do.
-inline void field_small(Voice& v, i32 lt60) {
-    v.floop |= 4u;
-    v.fd[0] = v.fd[1];
-    v.fd[1] = v.fd[3];
-    for (u32 l = 0; l < 2; ++l) {
-        i32* b = v.buf + (l + 1) * line_samples - v.fd[l];
-        for (u32 n = 0; n < v.fd[l]; ++n) b[n] = 0;
-        v.flp[l] = 0;
+// A half-rate signal written to a block at the full rate, as up_add adds it.
+// It runs from the end back, so r may be out (its first half).
+__attribute__((noinline)) inline i32 up_write(const i32* r, i32* out, i32 prev) {
+    const i32 last = r[half - 1];
+    const i32* p = r + half - 1;
+    i32* o = out + frames - 1;
+    i32 x = *p;
+    for (u32 n = 1; n < half; ++n) {
+        const i32 before = *--p;
+        o[0] = x;
+        o[-1] = (before + x) >> 1;
+        o -= 2;
+        x = before;
     }
-    v.fg = multiply(expneg(L(6.907755) + log2q(v.fd[0] + v.fd[1]) - octave - lt60 - lhalf), Q31(0.70710678));
-    v.fin = multiply(v.fin, Q31(0.70710678)) << 1;
+    out[1] = x;
+    out[0] = (prev + x) >> 1;
+    return last;
 }
 // The network's passes, each over the block's 32 half-rate samples with its
 // state in locals (noinline: inlined into one function they spill). The
@@ -480,75 +492,35 @@ __attribute__((noinline)) inline void field_input(const i32* in, i32* x, i32 gin
         in += 2;
     }
 }
-// The 16-bit rings' step at this scale, 2^13: a value rounded toward zero to
-// it, as those rings stored every write. Rounding toward zero takes a little
-// energy out of every pass, which matters only when the field is quiet, but
-// there it sets how its tail falls away: a quiet field reads its rings so.
-inline i32 ring_step(i32 v) { return (v + ((v >> 31) & 0x1fff)) & ~0x1fff; }
-// One line read from ring position at (0..255) and low-passed into o (step:
-// each value rounded to the 16-bit rings' step).
-template <bool step>
-inline i32 field_read(const i32* ring, u32 at, i32 lp, i32 k, i32* o) {
-    const u32 first = line_samples - at < half ? line_samples - at : half;
+// One line read from ring position at and low-passed into o.
+inline i32 field_read(const i32* ring, u32 at, u32 stride, i32 lp, i32 k, i32* o) {
+    const u32 first = stride - at < half ? stride - at : half;
     const i32* p = ring + at;
     for (u32 n = 0; n < first; ++n) {
-        lp += multiply((step ? ring_step(*p++) : *p++) - lp, k);
+        lp += multiply(*p++ - lp, k);
         *o++ = lp;
     }
     p = ring;
     const u32 rest = half - first;
     for (u32 n = 0; n < rest; ++n) {
-        lp += multiply((step ? ring_step(*p++) : *p++) - lp, k);
+        lp += multiply(*p++ - lp, k);
         *o++ = lp;
     }
     return lp;
 }
-// The four lines (or two), each read and low-passed (one call for them all);
-// a quiet field (its lines' low-passes all under 2^24, some 66 dB over the
-// 16-bit step) reads them at the 16-bit rings' step.
-__attribute__((noinline)) inline void field_reads(Voice& v, i32* r, u32 w, u32 mask, i32 k, u32 lines) {
-    i32 most = 0;
-    for (u32 l = 0; l < lines; ++l) most |= absolute(v.flp[l]);
-    if (most < (1 << 24)) {
-        for (u32 l = 0; l < lines; ++l) v.flp[l] = field_read<true>(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
-    } else {
-        for (u32 l = 0; l < lines; ++l) v.flp[l] = field_read<false>(v.buf + l * line_samples, (w - v.fd[l]) & mask, v.flp[l], k, r + l * half);
-    }
+// The lines, each read and low-passed (one call for them all).
+__attribute__((noinline)) inline void field_reads(Voice& v, i32* r, u32 w, u32 stride, i32 k, u32 lines) {
+    for (u32 l = 0; l < lines; ++l)
+        v.flp[l] = field_read(v.buf + l * stride, (w - v.fd[l]) & (stride - 1), stride, v.flp[l], k, r + l * half);
 }
-// The all-pass (g 0.5, 37 samples) in the first line's loop, from position p.
-inline void field_loop_run(i32* ap, i32* o, u32 count) {
-    for (u32 n = 0; n < count; ++n) {
-        const i32 y = *ap - (*o >> 1);
-        const i32 t = *o + (y >> 1);
-        *ap++ = t - (t >> 12);   // a little loss, so it cannot circle for ever
-        *o++ = y;
-    }
-}
-__attribute__((noinline)) inline u32 field_loop(i32* ap, u32 p, i32* o) {
-    u32 left = half;
-    while (left) {
-        const u32 run = 37 - p < left ? 37 - p : left;
-        field_loop_run(ap + p, o, run);
-        o += run;
-        left -= run;
-        p += run;
-        if (p == 37) p = 0;
-    }
-    return p;
-}
-// The mix: the four lines' sum is heard (back at the full rate, each
+// The wide mix: the four lines' sum is heard (back at the full rate, each
 // half-rate sample and the step from the last), and the Hadamard pairs go back
 // in, halved, with the loop's gain (g, already halved), plus the input
 // (+ + + -). r: the four lines read, 32 apart; w: the first ring's write
-// position (the others 256, 512 and 768 on). The rings hold 32-bit values,
-// so a write needs no rounding or clamp; a field driven hard enough to fill
-// them (ZAP's) clips them where 16-bit rings once did (clip).
-const i32 ring_top = 32767 << 13, ring_bottom = -32768 * (1 << 13);
-template <bool fed, bool clip>
-inline i32 ring_write(i32 h) { return clip ? clamp(h, ring_bottom, ring_top) : h; }
+// position (the others a stride on each).
 // raw: the sum heard is written at half rate (one value a pass), as it is,
 // for a model that filters it there before bringing it back to the full rate.
-template <bool fed, bool clip, bool raw>
+template <bool fed, bool raw>
 inline i32 field_mix_run(const i32* r, const i32* x, i32* out, i32* w, u32 count, i32 g, i32 level, i32 prev) {
     for (u32 n = 0; n < count; ++n) {
         const i32 r0 = r[0], r1 = r[half], r2 = r[2 * half], r3 = r[3 * half];
@@ -563,64 +535,74 @@ inline i32 field_mix_run(const i32* r, const i32* x, i32* out, i32* w, u32 count
             out += 2;
         }
         const i32 xs = fed ? *x++ : 0;
-        w[0] = ring_write<fed, clip>(multiply(a0 + a2, g) + xs);
-        w[line_samples] = ring_write<fed, clip>(multiply(a1 + a3, g) + xs);
-        w[2 * line_samples] = ring_write<fed, clip>(multiply(a0 - a2, g) + xs);
-        w[3 * line_samples] = ring_write<fed, clip>(multiply(a1 - a3, g) - xs);
+        w[0] = multiply(a0 + a2, g) + xs;
+        w[wide_stride] = multiply(a1 + a3, g) + xs;
+        w[2 * wide_stride] = multiply(a0 - a2, g) + xs;
+        w[3 * wide_stride] = multiply(a1 - a3, g) - xs;
         ++r;
         ++w;
     }
     return prev;
 }
-template <bool fed, bool clip, bool raw = false>
+template <bool fed, bool raw>
 __attribute__((noinline)) inline i32 field_mix(const i32* r, const i32* x, i32* out, i32* b, u32 at, i32 g, i32 level, i32 prev) {
-    const u32 first = line_samples - at < half ? line_samples - at : half;
-    prev = field_mix_run<fed, clip, raw>(r, x, out, b + at, first, g, level, prev);
-    return field_mix_run<fed, clip, raw>(r + first, x + first, out + (raw ? 1 : 2) * first, b, half - first, g, level, prev);
+    const u32 first = wide_stride - at < half ? wide_stride - at : half;
+    prev = field_mix_run<fed, raw>(r, x, out, b + at, first, g, level, prev);
+    return field_mix_run<fed, raw>(r + first, x + first, out + (raw ? 1 : 2) * first, b, half - first, g, level, prev);
 }
 // The small field's mix: two lines turned through 45 degrees each pass (their
 // sum and difference over sqrt 2, which keeps the energy and, unlike a
 // Hadamard pair, has no resonance at DC), the sum heard, the input into both.
-// g: the loop's gain over sqrt 2.
-template <bool fed>
+// g: the loop's gain over sqrt 2. A field driven hard enough to fill them
+// (ZAP's) clips its rings where 16-bit rings once did (clip).
+const i32 ring_top = 32767 << 13, ring_bottom = -32768 * (1 << 13);
+template <bool clip>
+inline i32 ring_write(i32 h) { return clip ? clamp(h, ring_bottom, ring_top) : h; }
+template <bool fed, bool clip, bool raw>
 inline i32 field_mix2_run(const i32* r, const i32* x, i32* out, i32* w, u32 count, i32 g, i32 level, i32 prev) {
     for (u32 n = 0; n < count; ++n) {
         const i32 r0 = r[0], r1 = r[half];
         const i32 a = r0 + r1;
         const i32 y = multiply(a, level) << 1;
-        out[0] += prev + y;
-        out[1] += y << 1;
-        prev = y;
+        if (raw) {
+            *out++ = y;
+        } else {
+            out[0] += prev + y;
+            out[1] += y << 1;
+            prev = y;
+            out += 2;
+        }
         const i32 xs = fed ? *x++ : 0;
-        w[0] = multiply(a, g) + xs;
-        w[line_samples] = multiply(r1 - r0, g) + xs;
+        w[0] = ring_write<clip>(multiply(a, g) + xs);
+        w[small_stride] = ring_write<clip>(multiply(r1 - r0, g) + xs);
         ++r;
-        out += 2;
         ++w;
     }
     return prev;
 }
-template <bool fed>
+template <bool fed, bool clip, bool raw>
 __attribute__((noinline)) inline i32 field_mix2(const i32* r, const i32* x, i32* out, i32* b, u32 at, i32 g, i32 level, i32 prev) {
-    const u32 first = line_samples - at < half ? line_samples - at : half;
-    prev = field_mix2_run<fed>(r, x, out, b + at, first, g, level, prev);
-    return field_mix2_run<fed>(r + first, x + first, out + 2 * first, b, half - first, g, level, prev);
+    const u32 first = small_stride - at < half ? small_stride - at : half;
+    prev = field_mix2_run<fed, clip, raw>(r, x, out, b + at, first, g, level, prev);
+    return field_mix2_run<fed, clip, raw>(r + first, x + first, out + (raw ? 1 : 2) * first, b, half - first, g, level, prev);
 }
 // Runs the network over a block of input, adding level (Q31, x2) of its sound to
 // out. Every line is at least half a block long, so a block's reads only see
 // what earlier blocks wrote: each line is read and low-passed in a pass of its
-// own, then the four are mixed and written back.
+// own, then the lines are mixed and written back.
 // x: the block's input at half rate, at the lines' scale (field_input's), or
 // none (drive false).
 __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i32* out, i32 level) {
+    const bool small = (v.floop & 4u) != 0;
+    const u32 lines = small ? 2 : 4, stride = small ? small_stride : wide_stride;
     if (!drive && !v.dpos) {
         // with nothing driving it, stop once it has rung down for longer than
         // its longest line (fixed point would otherwise keep it circling just
         // above zero)
         i32 most = 0;
-        for (u32 l = 0; l < 4; ++l) most |= absolute(v.flp[l]);
+        for (u32 l = 0; l < lines; ++l) most |= absolute(v.flp[l]);
         v.fquiet = most < (1 << 12) ? v.fquiet + 1 : 0;
-        if (v.fquiet > line_samples / half + 1) { v.fon = 0; v.fprev = 0; return; }
+        if (v.fquiet > stride / half + 1) { v.fon = 0; v.fprev = 0; return; }
     } else {
         v.fquiet = 0;
     }
@@ -651,29 +633,34 @@ __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i3
     }
     // each line, read and low-passed
     i32 r[4 * half];
-    const u32 mask = line_samples - 1, w = v.fw;
-    const i32 k = v.fk;
-    const bool small = (v.floop & 4u) != 0;
-    field_reads(v, r, w, mask, k, small ? 2 : 4);
-    // the first line passes an all-pass (g 0.5) in its loop, so its echoes
-    // never line up: a crisp forest, not a comb
-    if (v.floop & 1u) v.apos = field_loop(v.abuf, v.apos, r);
+    const u32 w = v.fw & (stride - 1);
+    field_reads(v, r, w, stride, v.fk, lines);
     // mixed, heard and written back
-    const i32 g = v.fg >> 1;
-    if (small) v.fprev = fed ? field_mix2<true>(r, x, out, v.buf, w & mask, v.fg, level, v.fprev)
-                             : field_mix2<false>(r, x, out, v.buf, w & mask, v.fg, level, v.fprev);
-    else if (v.floop & 8u) {
-        if (v.floop & 2u) {
-            if (fed) field_mix<true, true, true>(r, x, out, v.buf, w & mask, g, level, 0);
-            else field_mix<false, true, true>(r, x, out, v.buf, w & mask, g, level, 0);
+    const bool raw = (v.floop & 8u) != 0;
+    if (small) {
+        const i32 g = v.fg;
+        if (raw) {
+            if (v.floop & 2u) {
+                if (fed) field_mix2<true, true, true>(r, x, out, v.buf, w, g, level, 0);
+                else field_mix2<false, true, true>(r, x, out, v.buf, w, g, level, 0);
+            } else {
+                if (fed) field_mix2<true, false, true>(r, x, out, v.buf, w, g, level, 0);
+                else field_mix2<false, false, true>(r, x, out, v.buf, w, g, level, 0);
+            }
         } else {
-            if (fed) field_mix<true, false, true>(r, x, out, v.buf, w & mask, g, level, 0);
-            else field_mix<false, false, true>(r, x, out, v.buf, w & mask, g, level, 0);
+            v.fprev = fed ? field_mix2<true, false, false>(r, x, out, v.buf, w, g, level, v.fprev)
+                          : field_mix2<false, false, false>(r, x, out, v.buf, w, g, level, v.fprev);
         }
-    } else if (v.floop & 2u) v.fprev = fed ? field_mix<true, true>(r, x, out, v.buf, w & mask, g, level, v.fprev)
-                                    : field_mix<false, true>(r, x, out, v.buf, w & mask, g, level, v.fprev);
-    else v.fprev = fed ? field_mix<true, false>(r, x, out, v.buf, w & mask, g, level, v.fprev)
-                       : field_mix<false, false>(r, x, out, v.buf, w & mask, g, level, v.fprev);
+    } else {
+        const i32 g = v.fg >> 1;
+        if (raw) {
+            if (fed) field_mix<true, true>(r, x, out, v.buf, w, g, level, 0);
+            else field_mix<false, true>(r, x, out, v.buf, w, g, level, 0);
+        } else {
+            v.fprev = fed ? field_mix<true, false>(r, x, out, v.buf, w, g, level, v.fprev)
+                          : field_mix<false, false>(r, x, out, v.buf, w, g, level, v.fprev);
+        }
+    }
     v.fw = w + half;
 }
 inline void run_field(Voice& v, const i32* in, i32* out, i32 level) {
@@ -789,10 +776,11 @@ inline i32 q31_root(i32 t) {
     return frac2((log2q(static_cast<u32>(t)) - 16 * octave) / 2);
 }
 // A loose chain lying on the sheet: wherever the sheet moves harder than the
-// links weigh, they lift and slap down. Each slap rings the links' band,
-// low-passed twice at its top so nothing fizzes above it. amount: Q31 x 2 (0..2); links: Q16,
-// tight to loose (how often a lifted link slaps); lrel: log2 s, how long they
-// keep slapping; lo, hi: log2 Hz of the links' band.
+// links weigh, they lift and slap down. Each slap is a click through the
+// links' band, lo..hi: high-passed at its foot and low-passed at its top,
+// all at half the sample rate. amount: Q31 x 2 (0..2); links: Q16, tight to
+// loose (how often a lifted link slaps); lrel: log2 s, how long they keep
+// slapping; lo, hi: log2 Hz of the links' band.
 inline void setup_chain(Voice& v, i32 most, i32 links, i32 lrel, i32 lo, i32 hi, i32 count) {
     // count: CHAIN, how many links lie on the sheet (Q16): more of them slap
     // more often, louder and for longer.
@@ -803,28 +791,23 @@ inline void setup_chain(Voice& v, i32 most, i32 links, i32 lrel, i32 lo, i32 hi,
     v.c_rel = block_decay(lrel);            // how the links keep slapping as the lift falls away
     v.c_thr = Q31(0.08) >> 4;               // the links' weight, of U
     v.c_env = 0;
-    // a link's ring: one band across lo..hi, centred between them
-    const i32 lc = (lo + hi) >> 1;
-    v.c_f1 = svf_f(increment(lc > L(6500.0) ? L(6500.0) : lc));
-    // its damping 1 / Q = sqrt(hi / lo) - sqrt(lo / hi), Q30
-    const i32 q = exp16(lc - lo) - exp16(lo - lc);
-    v.c_q = clamp(q, Q16(0.2), Q16(1.9)) << 14;
-    v.c_hpk = onepole_k(lo - octave);
-    v.c_lpk = onepole_k(hi);
+    v.c_hpk = onepole_k(lo + octave);       // (the half rate's coefficients)
+    v.c_lpk = onepole_k(hi + octave);
+    // at the loudness the resonant band (a state-variable band across lo..hi,
+    // high-passed an octave under it and low-passed twice at hi) gave the slaps
+    const i32 dl = hi - lo;
+    const i32 lg = mul16(lo, Q16(1.73527)) - mul16(hi, Q16(1.18484)) + mul16(mul16(dl, dl), Q16(0.191346)) - Q16(5.80208);
+    v.c_amount = multiply(v.c_amount, frac2(lg < 0 ? lg : 0));
     v.c_l1 = v.c_l2 = 0;
-    v.c_r1.lp = v.c_r1.bp = 0;
     v.c_hp.s = 0;
 }
 // The chain's passes (noinline, their state in locals: together they spill).
-// (Run at half the sample rate, its band, wide and high, loses its resonance:
-// the state-variable band is only a resonance for f q under 1. It stays at
-// the full rate.)
 // The dice: a slap, 0.4..1 of U / 16, either way, when they fall under the
-// chance; thrown every other sample, the odd samples taking what passes
+// chance; thrown once a half-rate sample, a second slap taking what passes
 // certainty (both: any do).
 template <bool both>
 __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra, i32* hit) {
-    for (u32 n = 0; n < frames / 2; ++n) {
+    for (u32 n = 0; n < half; ++n) {
         seed ^= seed << 13;
         seed ^= seed >> 17;
         seed ^= seed << 5;
@@ -832,42 +815,33 @@ __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra
         // (without branches: s0, s1 flip a's sign; m0, m1 keep it or not)
         const i32 s0 = static_cast<i32>(seed & 1u) - 1;
         const i32 m0 = -static_cast<i32>(static_cast<i32>(seed >> 1) < chance2);
-        hit[0] = ((a ^ s0) - s0) & m0;
+        i32 h = ((a ^ s0) - s0) & m0;
         if (both) {
             const i32 s1 = static_cast<i32>((seed >> 1) & 1u) - 1;
             const i32 m1 = -static_cast<i32>(static_cast<i32>((seed << 7) >> 1) < extra);
-            hit[1] = ((a ^ s1) - s1) & m1;
-        } else {
-            hit[1] = 0;
+            h += ((a ^ s1) - s1) & m1;
         }
-        hit += 2;
+        *hit++ = h;
     }
     return seed;
 }
-// Each slap rings the links' band, high-passed: x in, the band out.
-__attribute__((noinline)) inline void chain_ring(i32* x, i32 f, i32 q, i32 hk, i32& lp_, i32& bp_, i32& hs_) {
-    i32 lp = lp_, bp = bp_, hs = hs_;
-    for (u32 n = 0; n < frames; ++n) {
-        lp += multiply(f, bp);
-        const i32 hp = *x - lp - (multiply(q, bp) << 1);
-        bp += multiply(f, hp);
-        hs += multiply(bp - hs, hk);
-        *x++ = bp - hs;
+// The slaps through the band, at the chain's gain, added to out at the full
+// rate (each half-rate sample, and between two their mean).
+__attribute__((noinline)) inline i32 chain_band(const i32* x, i32* out, i32 hk, i32 lk, i32 gain, i32& hs_, i32& lp_, i32 prev) {
+    i32 hs = hs_, lp = lp_;
+    for (u32 n = 0; n < half; ++n) {
+        const i32 xi = *x++;
+        hs += multiply(xi - hs, hk);
+        lp += multiply(xi - hs - lp, lk);
+        const i32 y = multiply(lp, gain) << 7;
+        out[0] += (prev + y) >> 1;
+        out[1] += y;
+        prev = y;
+        out += 2;
     }
-    lp_ = lp;
-    bp_ = bp;
     hs_ = hs;
-}
-// and low-passed twice at its top, added to out at the chain's gain.
-__attribute__((noinline)) inline void chain_low(const i32* x, i32* out, i32 lk, i32 gain, i32& l1_, i32& l2_) {
-    i32 l1 = l1_, l2 = l2_;
-    for (u32 n = 0; n < frames; ++n) {
-        l1 += multiply(*x++ - l1, lk);
-        l2 += multiply(l1 - l2, lk);
-        *out++ += multiply(l2, gain) << 7;
-    }
-    l1_ = l1;
-    l2_ = l2;
+    lp_ = lp;
+    return prev;
 }
 // How far the sheet moves this block (its largest |disp|), for a model that
 // knows it without a pass over the block (a ramp's: the larger end).
@@ -897,90 +871,72 @@ inline void chain_most(Voice& v, i32 most, i32* out) {
     i32 env1 = (c << 4) + multiply(env0 - (c << 4), v.c_rel);   // Q29
     if (env1 > (3 << 28)) env1 = 3 << 28;
     v.c_env = env1;
-    if (!env0 && !env1 && !v.c_r1.bp && !v.c_r1.lp) return;
-    // A slap with probability p * env, each 0.4..1 as hard, ringing the band.
+    if (!env0 && !env1 && !v.c_hp.s && !v.c_l1 && !v.c_l2) return;
+    // A slap with probability p * env, each 0.4..1 as hard, through the band.
     const i32 chance = multiply(v.c_p, (env0 + env1) >> 1) << 2;
     const i32 gain = multiply(v.c_amount, env1) << 2;   // Q29 x Q29: of U / 16 hits
-    const i32 f = v.c_f1, q = v.c_q, hk = v.c_hpk, lk = v.c_lpk;
-    i32 lp = v.c_r1.lp, bp = v.c_r1.bp, hs = v.c_hp.s, l1 = v.c_l1, l2 = v.c_l2;
+    i32 hs = v.c_hp.s, lp = v.c_l1;
     u32 seed = v.seed ? v.seed : 1u;
-    // the dice thrown every other sample, at twice the chance; past certainty
-    // the odd samples take the rest
+    // the dice at twice the chance; past certainty a second slap takes the rest
     const i32 chance2 = chance > (one >> 1) ? one : chance << 1;
     const i32 extra = chance > (one >> 1) ? (chance - (one >> 1)) << 1 : 0;
-    i32 hits[frames];
+    i32 hits[half];
     seed = extra ? chain_dice<true>(seed, chance2, extra, hits) : chain_dice<false>(seed, chance2, extra, hits);
-    chain_ring(hits, f, q, hk, lp, bp, hs);
-    chain_low(hits, out, lk, gain, l1, l2);
-    if (!env1 && absolute(lp) + absolute(bp) + absolute(l1) + absolute(l2) < (1 << 10)) lp = bp = hs = l1 = l2 = 0;
-    v.c_l1 = l1;
-    v.c_l2 = l2;
-    v.c_r1.lp = lp;
-    v.c_r1.bp = bp;
+    i32 prev = chain_band(hits, out, v.c_hpk, v.c_lpk, gain, hs, lp, v.c_l2);
+    if (!env1 && absolute(hs) + absolute(lp) + absolute(prev) < (1 << 10)) hs = lp = prev = 0;
+    v.c_l1 = lp;
+    v.c_l2 = prev;
     v.c_hp.s = hs;
     v.seed = seed;
 }
 
 // ------------------------------------------------------------ the swaying sheet
-// The sheet swinging on its chains: a comb whose delay swings 0.25..1.65 ms.
+// The sheet swinging on its chains: a comb whose delay swings 0.25..1.65 ms,
+// run at half the sample rate on the sheet's ring (the strike's click passes
+// it by).
 inline void setup_swing(Voice& v, i32 depth, i32 lrate) {
     v.sw_depth = depth;
     if (!depth) return;
     v.sw_inc = increment(lrate) << 6;   // a block's worth
     v.sw_phase = v.seed;
-    v.sw_pos = 0;
+    v.sw_wet = multiply(Q31(0.9), q31_root(depth));
+    v.sw_turn = multiply(q31(depth), Q31(0.65));
     for (u32 i = 0; i < swing_keep; ++i) v.sw_buf[i] = 0;
 }
 // The comb and the turn in one pass (noinline, its state in locals). The
-// delay is 11..72 samples, so the pass keeps the last 76 samples heard (the
-// first 76 places of the buffer, in order) and works in a straight line: the
-// 76 kept, then the block's own.
-typedef u32 __attribute__((may_alias)) word;
-// up: the result shifted up.
-template <u32 up>
-__attribute__((noinline)) inline void swing_run(i16* kept, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
-    word line_words[(swing_keep + frames) / 2];
-    i16* line = reinterpret_cast<i16*>(line_words);
-    const word* from = reinterpret_cast<const word*>(kept);
-    word* in = line_words;
-    for (u32 n = 0; n < swing_keep / 2; ++n) *in++ = *from++;
-    i16* at = line + swing_keep;
-    for (u32 n = 0; n < frames; ++n) {
+// delay is 5.5..36.4 half-rate samples, so the pass keeps the last 38 (in
+// order) and works in a straight line: the 38 kept, then the block's own.
+__attribute__((noinline)) inline void swing_run(i32* kept, i32* x, i32 d, i32 step, i32 wet, i32 g, i32 gs) {
+    i32 line[swing_keep + half];
+    for (u32 n = 0; n < swing_keep; ++n) line[n] = kept[n];
+    i32* at = line + swing_keep;
+    for (u32 n = 0; n < half; ++n) {
         const i32 xi = *x;
-        *at = static_cast<i16>(clamp(xi >> 14, -32768, 32767));
-        const i16* back = at - (static_cast<u32>(d) >> 8);
-        const i32 s0 = back[0], s1 = back[-1];
-        const i32 delayed = (s0 << 8) + (s1 - s0) * (d & 0xff);   // Q8 of the stored scale
-        // Kept as it is, overflow and all: on a loud hit, delayed * wet can
-        // pass 2^31 and wrap (key 62's default does). Apple clang -O2 wraps it
-        // too here, so the host renders, the calibration and the OP-XY all
-        // agree; computing the unwrapped product would change the calibrated
-        // sound (UB audit, 2026-11-06). UBSan reports it; it is known.
-        *x++ = multiply(xi + ((delayed * wet) >> 10), g) << up;       // back to signal: << 14 >> 8 >> 16
+        *at = xi;
+        const i32* back = at - (d >> 8);
+        const i32 s0 = back[0];
+        const i32 delayed = s0 + multiply(back[-1] - s0, (d & 0xff) << 23);
+        *x++ = multiply(xi + multiply(delayed, wet), g);
         ++at;
         d += step;
         g += gs;
     }
-    word* to = reinterpret_cast<word*>(kept);
-    const word* back = line_words + frames / 2;
-    for (u32 n = 0; n < swing_keep / 2; ++n) *to++ = *back++;
+    for (u32 n = 0; n < swing_keep; ++n) kept[n] = line[half + n];
 }
-template <u32 up = 0>
-inline void run_swing(Voice& v, i32* x) {
+// y: the block's 32 half-rate samples, swung in place.
+inline void run_swing_half(Voice& v, i32* y) {
     if (!v.sw_depth) return;
-    // The delay (samples, Q8) at the block's start and end: (0.25 + 1.4 depth swing) ms.
+    // The delay (half-rate samples, Q8) at the block's start and end: (0.25 + 1.4 depth swing) ms.
     const i32 depth = v.sw_depth;   // Q16
     const i32 a = (1 << 15) + (sine(v.sw_phase) >> 16);   // 0..65535
     v.sw_phase += v.sw_inc;
     const i32 b = (1 << 15) + (sine(v.sw_phase) >> 16);
-    i32 d = 2822 + multiply(15805, multiply(depth << 15, a << 15));
-    const i32 d1 = 2822 + multiply(15805, multiply(depth << 15, b << 15));
-    const i32 step = (d1 - d) >> 6;
-    const i32 wet = multiply(Q31(0.9), q31_root(depth)) >> 15;   // Q16
+    const i32 d = 1411 + multiply(7902, multiply(depth << 15, a << 15));
+    const i32 d1 = 1411 + multiply(7902, multiply(depth << 15, b << 15));
     // and the sheet turning away as it swings: up to 9 dB quieter at the far end of its swing
-    const i32 turn = multiply(q31(depth), Q31(0.65));
+    const i32 turn = v.sw_turn;
     const i32 g = one - multiply(turn, a << 15);
-    const i32 gs = ((one - multiply(turn, b << 15)) - g) >> 6;
-    swing_run<up>(v.sw_buf, x, d, step, wet, g, gs);
+    const i32 gs = ((one - multiply(turn, b << 15)) - g) >> 5;
+    swing_run(v.sw_buf, y, d, (d1 - d) >> 5, v.sw_wet, g, gs);
 }
 }
