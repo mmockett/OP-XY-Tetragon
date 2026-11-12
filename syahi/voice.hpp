@@ -81,7 +81,10 @@ struct Core {
     i32 pair[wash_pairs], pair_decay[wash_pairs];   // and their rings, each the geometric mean of its two modes'
     i32 pair_in, pair_flow;       // a strike's share still coupling into the pairs, and its flow a block (Q31)
     i32 wash_lift;                // the flow's time over the ring's, Q31: the level the slower flow gives back
-    i32 tilt, tilt_last;          // METAL's zero at Nyquist (Q31, 0.5) and the last sample it saw
+    i32 tilt, tilt_last;          // METAL's zero at Nyquist (Q31, 0.5) and the wash's last sample, before it
+    // METAL's wash gain (Q28, at least half), what its inputs keep of it (Q31)
+    // and SIZZLE's noise in the wash for a unit of the wires' drive (Q26).
+    i32 wash_gain, wash_in, sizzle_k;
 };
 
 // Mode k's resting phase: the prototype's k * 1.3 radians.
@@ -267,6 +270,30 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     // hat sprays from 3 kHz to the top octave.
     v.xh.set(q_butter, clamp(pitch + lg(2), lg(900), lg(3000)));
     v.wash_c = one_pole(-(clamp(pitch + lg(10), lg(5000), lg(12000)) + lg(2 * 3.14159265)));
+    // The wash's level: 1.5 x WASH, rising faster near the top (the prototype had 1.4 x): it rings
+    // as long as its modes, so it needs less than twice. A slow flow (a hat's) is given back its level.
+    const i32 dense = multiply(s.dense, v.velocity);
+    i32 wash_gain = multiply(multiply(multiply(dense, q31(2.0 / 8)) * 8 + (multiply(multiply(dense, s.dense) << 3, q31(3.0 / 4)) << 2), v.wash_trim), q31(0.76));
+    wash_gain += multiply(wash_gain, v.wash_lift);
+    // At least half (Q28), so SIZZLE's noise, which runs in the wash's band, has
+    // headroom; a lower wash scales its inputs instead.
+    v.wash_gain = wash_gain > (1 << 27) ? wash_gain : 1 << 27;
+    v.wash_in = wash_gain > (1 << 27) ? one : wash_gain << 4;
+    // METAL's SIZZLE: the rivets' noise, in the wash's band, at the level the
+    // half-rate band-pass gave it (tables::sizzle_in, by the band's pitch). The
+    // wires follow the head's swing alone, which falls as WASH takes the modes'
+    // energy (s.head): divided by it, the drive stays as the whole cymbal's was.
+    v.sizzle_k = 0;
+    if (v.model == metal && s.wires > 0) {
+        const i32 x = clamp(pitch - lg(100), 0, 9 * (octave / 2) - 1);
+        const u32 i = static_cast<u32>(x) >> 15;
+        const i32 f = x & 0x7fff;
+        const i32 t = tables::sizzle_in[i] + (((tables::sizzle_in[i + 1] - tables::sizzle_in[i]) * f) >> 15);   // Q14
+        const u32 ratio = (static_cast<u32>(v.wire_gain) << 4) / (static_cast<u32>(v.wash_gain) >> 8);       // wire / wash gain, Q12
+        const u32 k = ratio * static_cast<u32>(t);                                                          // Q26
+        const u32 head = static_cast<u32>(s.head > (1 << 26) ? s.head : 1 << 26) >> 14;
+        v.sizzle_k = static_cast<i32>((k / head) << 14);
+    }
 }
 
 // ---- strikes
@@ -428,6 +455,23 @@ __attribute__((noinline)) static void head_up(const i32* __restrict h, i32* __re
     }
     last = prev;
 }
+// METAL's head: the same with its tilt, a zero at Nyquist (the mean of each
+// sample and the last), which on the interpolated head is 3/4 and 1/4 of the
+// two half-samples; and, for the wires, the head's mean swing |h|.
+template <bool swing>
+__attribute__((noinline)) static i32 head_up_tilted(const i32* __restrict h, i32* __restrict out, i32& last) {
+    i32 prev = last, sum = 0;
+    for (u32 i = 0; i < 32; ++i) {
+        const i32 y = h[i];
+        const i32 d = (y - prev) >> 2;
+        out[2 * i] = prev + d;
+        out[2 * i + 1] = y - d;
+        if (swing) sum += absolute(y) >> 5;
+        prev = y;
+    }
+    last = prev;
+    return sum;
+}
 static inline bool quiet(const Partial& m) {
     return absolute(m.a) < silent && absolute(m.p) < silent && absolute(m.g) < silent && absolute(m.dg) < 2;
 }
@@ -485,40 +529,43 @@ __attribute__((noinline)) static void wash_squares(const Wash& w, i32* __restric
         x[n] = ((e4 ^ m4) - m4) + ((e5 ^ m5) - m5);
     }
 }
-__attribute__((noinline)) static void wash_pass(Core& v, const Wash& w, i32* __restrict out) {
+// With `sizzle` the rivets' noise, in the wash's band, from level sz to
+// sz + 64 step through the block. METAL's tilt on the wash's output.
+template <bool sizzle>
+__attribute__((noinline)) static void wash_pass(Core& v, const Wash& w, i32* __restrict out, i32 sz, i32 step) {
     const i32* end = v.pair;
-    const Spec& s = v.spec;
     // The wash pairs' envelopes at the block's middle: they move slowly.
     i32 e[wash_pairs];
     for (u32 j = 0; j < wash_pairs; ++j) {
         e[j] = (v.e_start[j] + end[j]) >> 1;
         v.e_start[j] = end[j];
     }
-    const i32 dense = multiply(s.dense, v.velocity);
-    // The wash's level: 1.5 x WASH, rising faster near the top (the prototype had 1.4 x): it rings
-    // as long as its modes, so it needs less than twice. A slow flow (a hat's) is given back its level.
-    i32 wash_gain = multiply(multiply(multiply(dense, q31(2.0 / 8)) * 8 + (multiply(multiply(dense, s.dense) << 3, q31(3.0 / 4)) << 2), v.wash_trim), q31(0.76));
-    wash_gain += multiply(wash_gain, v.wash_lift);
+    const i32 dense = multiply(v.spec.dense, v.velocity);
     // Noise in the wash, as loud as modes 1 and 4 together and as dense: 0.7 x a unit normal.
     const i32 hiss = multiply(multiply((v.part[1].u + v.part[4].u) >> 1, q31(0.7 * 1.732 / 2)), dense << 2) << 1;
     // One noise for the hiss and the sine pairs' spray, at their summed power
     // (a pair of unit sines' product has RMS 1/2; the noise, RMS 1.155 of its gain).
     const i32 parts[5] = {e[0] >> 1, e[1] >> 1, e[2] >> 1, e[3] >> 1, multiply(hiss, q31(1.155 / 2)) << 1};
-    const i32 spray = multiply(root_sum_squares(parts, 5), q31(1 / 1.155));
-    const i32 e4 = e[4] >> 1, e5 = e[5] >> 1;
+    const i32 in = v.wash_in;
+    const i32 spray = multiply(multiply(root_sum_squares(parts, 5), q31(1 / 1.155)), in);
+    const i32 e4 = multiply(e[4] >> 1, in), e5 = multiply(e[5] >> 1, in);
     i32 x[64];
     wash_squares(w, x, e4, e5);
     u32 seed = v.seed;
     Chamberlin high = v.xh;
-    i32 low = v.wash_low;
-    const i32 c = v.wash_c;
+    i32 low = v.wash_low, last = v.tilt_last, amp = spray + sz;
+    const i32 c = v.wash_c, gain = v.wash_gain;
     for (u32 n = 0; n < 64; ++n) {
-        low += multiply(high.highpass(x[n] + (multiply(noise(seed), spray) << 1)) - low, c);
-        out[n] += multiply(low, wash_gain) << 3;
+        low = opxy::q31::add(low, multiply(high.highpass(opxy::q31::add(x[n], multiply(noise(seed), amp) << 1)) - low, c));
+        if (sizzle) amp += step;
+        // The tilt: the mean of this sample and the last.
+        out[n] += multiply((low >> 1) + (last >> 1), gain) << 3;
+        last = low;
     }
     v.seed = seed;
     v.xh = high;
     v.wash_low = low;
+    v.tilt_last = last;
 }
 // The burst between strikes, samples [begin, begin + count): one band (its
 // low part's leftover is the air) and, when the model rings it, one ring on
@@ -537,9 +584,9 @@ __attribute__((noinline)) static void ring_run(Chamberlin& g, const i32* __restr
     i32 lo = g.low, bd = g.band;
     const i32 f = g.f, dm = g.damping;
     for (u32 n = 0; n < count; ++n) {
-        lo += multiply(f, bd) * 2;
+        lo = opxy::q31::add(lo, multiply(f, bd) * 2);
         const i32 hi = x[n] - lo - multiply(dm, bd) * 2;
-        bd += multiply(f, hi) * 2;
+        bd = opxy::q31::add(bd, multiply(f, hi) * 2);
         o[n] += multiply(multiply(dm, bd) * 2, rg) << 1;
     }
     g.low = lo;
@@ -684,8 +731,7 @@ static inline void rattle_pass(Core& v, i32* out) {
     // The wires follow the head's swing a block at a time (0.6 ms, so they slap
     // with the stick); past the gap they buzz, answering at once (a 0.3 ms
     // rise) and settling over WIRE's time.
-    const i32 swing = v.tilt ? swing_pass<true>(out, v.tilt, v.tilt_last) : swing_pass<false>(out, 0, v.tilt_last);
-    if (!s.wires) return;
+    const i32 swing = swing_pass<false>(out, 0, v.tilt_last);
     v.follow += multiply(swing - v.follow, v.follow_c);
     if (v.follow > v.peak) v.peak = v.follow;
     const i32 past = positive(v.follow - multiply(v.peak, s.wire_gap));
@@ -832,17 +878,35 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         run_half<false>(air, h, r, 0, 32);
     }
     v.air_time += 64;
-    head_up(h, out, v.head_last);
-    // The wash, the noise and the rattle, a sample at a time.
     const Spec& s = v.spec;
+    // METAL: its head tilted; the wires (SIZZLE) follow the head's swing and
+    // buzz in the wash's band, so the wash runs whenever either sounds.
+    const bool metal = v.tilt != 0, sizzling = metal && s.wires > 0;
+    i32 sz = 0, sz_step = 0;
+    if (!metal) {
+        head_up(h, out, v.head_last);
+    } else if (!sizzling) {
+        head_up_tilted<false>(h, out, v.head_last);
+    } else {
+        const i32 swing = head_up_tilted<true>(h, out, v.head_last);
+        v.follow += multiply(swing - v.follow, v.follow_c);
+        if (v.follow > v.peak) v.peak = v.follow;
+        const i32 past = positive(v.follow - multiply(v.peak, s.wire_gap));
+        const i32 drive = v.drive + multiply(past - v.drive, past > v.drive ? v.wire_high_c : v.drive_c);
+        sz = shl_clamp(multiply(v.drive, v.sizzle_k), 5);
+        sz_step = (shl_clamp(multiply(drive, v.sizzle_k), 5) - sz) >> 6;
+        v.drive = drive;
+    }
+    // The wash, the noise and the rattle, a sample at a time.
     // The burst runs on 4 blocks after it falls quiet for its band to settle,
     // 40 when it also rings a mode (a narrow resonance takes that long).
     const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < (s.noise_ring ? 40u : 4u));
-    const bool rattling = s.wires > 0 || v.tilt;   // METAL always passes through: its tilt is there
-    // The wash and the noise add to the head; the wires then follow all of it.
-    if (metal_wash) {
+    const bool rattling = s.wires > 0 && !metal;   // the snare's wires
+    // The wash and the noise add to the head; the snare's wires then follow all of it.
+    if (metal_wash || sizzling) {
         wash_envelopes(v, strikes);
-        wash_pass(v, wash, out);
+        if (sizzling) wash_pass<true>(v, wash, out, sz, sz_step);
+        else wash_pass<false>(v, wash, out, 0, 0);
     }
     if (noisy) noise_pass(v, strikes, out);
     if (rattling) rattle_pass(v, out);

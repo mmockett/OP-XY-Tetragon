@@ -167,16 +167,19 @@ struct Chamberlin {
     i32 low, band;
     i32 f, damping;
     void set(QClass q, i32 log2_hz);
+    // The states' sums by opxy::q31::add (the same sums: they never come near
+    // full scale), so GCC keeps them in data registers, not in address
+    // registers whose moves stall the Blackfin's pipeline.
     i32 bandpass(i32 x) {
-        low += multiply(f, band) * 2;
+        low = opxy::q31::add(low, multiply(f, band) * 2);
         const i32 high = x - low - multiply(damping, band) * 2;
-        band += multiply(f, high) * 2;
+        band = opxy::q31::add(band, multiply(f, high) * 2);
         return multiply(damping, band) * 2;
     }
     i32 highpass(i32 x) {
-        low += multiply(f, band) * 2;
+        low = opxy::q31::add(low, multiply(f, band) * 2);
         const i32 high = x - low - multiply(damping, band) * 2;
-        band += multiply(f, high) * 2;
+        band = opxy::q31::add(band, multiply(f, high) * 2);
         return high;
     }
 };

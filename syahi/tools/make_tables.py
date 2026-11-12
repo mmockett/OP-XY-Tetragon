@@ -90,6 +90,34 @@ def main():
             parts.append("        " + ", ".join(entries[i:i + 4]) + ",")
         parts.append("    },")
     parts += ["};"]
+    # METAL's SIZZLE through the wash's band: the wash's noise gain on white
+    # noise (its Chamberlin high-pass at twice the pitch, 900..3000 Hz; its
+    # one-pole low-pass at ten times, 5..12 kHz; the tilt's two-sample mean),
+    # from the impulse response's energy. Each entry is 8.016 / that gain, Q14,
+    # at pitches 100 * 2^(i / 2) Hz: the input level that gives the rivets the
+    # level the half-rate band-pass (RMS gain 0.501 on white noise) gave them.
+    def wash_gain(pitch):
+        fh = min(3000.0, max(900.0, 2 * pitch))
+        fl = min(12000.0, max(5000.0, 10 * pitch))
+        f = 2 * math.sin(math.pi * min(fh, 8000.0) / SR)
+        d = 2 * 0.5 / 0.7071
+        c = 1 - math.exp(-2 * math.pi * fl / SR)
+        low = band = lp = last = 0.0
+        energy = 0.0
+        for n in range(16384):
+            x = 1.0 if n == 0 else 0.0
+            low += f * band
+            high = x - low - d * band
+            band += f * high
+            lp += (high - lp) * c
+            y = (lp + last) / 2
+            last = lp
+            energy += y * y
+        return math.sqrt(energy)
+    sizzle = [int(round(8.016 / wash_gain(100 * 2 ** (i / 2)) * 16384)) for i in range(10)]
+    parts += ["// METAL's SIZZLE through the wash's band: the input level (Q14) that keeps the",
+              "// rivets' level, at pitches 100 * 2^(i / 2) Hz (tools/make_tables.py).",
+              "const i32 sizzle_in[10] = {" + ", ".join(map(str, sizzle)) + "};"]
     parts += ["}", "}", ""]
     (HERE / "tables.h").write_text("\n".join(parts))
     print("wrote", HERE / "tables.h")
