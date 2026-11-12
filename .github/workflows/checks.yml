@@ -6,10 +6,7 @@ on:
 permissions:
   contents: read
 env:
-  # The kits' per-key mixer channels (padMix, SDK 1.10) are on the SDK's
-  # staging branch. GALILEO builds there too: it follows the project's tempo
-  # where an SDK passes one to drum kits (drum_transport), and learns the beat
-  # from its own notes where none does, as on staging today.
+  # Per-key sends in 1% steps (SDK 1.15) are in staging since etcetc000/open-xy#518.
   OPEN_XY_REPO: etcetc000/open-xy
   OPEN_XY_REF: staging
   KITS: thunder curio galileo syahi

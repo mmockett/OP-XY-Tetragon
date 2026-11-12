@@ -1011,8 +1011,9 @@ inline void display(DisplayState& state, const opxy::draw::Input& input, Frame& 
         if (lv < 0) caption::number(level, sizeof(level), "-", static_cast<u32>(-lv), "dB");
         else caption::number(level, sizeof(level), "", static_cast<u32>(lv), "dB");
         for (u32 s = 0; s < 2; ++s) {
-            const i32 code = input.pad[2 + s];
-            if (code > 0) caption::number(sends[s], sizeof(sends[s]), "", static_cast<u32>((((code > 7 ? 7 : code) - 1) * 100 + 3) / 6), "");
+            // SDK 1.15: 0 follows the track's send (TRK), else the key's percent + 1.
+            const i32 percent = input.pad[2 + s] - 1;
+            if (percent >= 0) caption::number(sends[s], sizeof(sends[s]), "", static_cast<u32>(percent > 100 ? 100 : percent), "");
             else caption::put(sends[s], sizeof(sends[s]), "TRK");
         }
         caption::space(space_text, sizeof(space_text), space);

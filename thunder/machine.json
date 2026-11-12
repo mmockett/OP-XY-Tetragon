@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "sdk": "1.10",
+  "sdk": "1.15",
   "kind": "drum",
   "description": "A theatre thunder sheet as a drum kit: each key plays the one sheet its own way, struck, flicked, snapped, poured on, bowed or shaken.",
   "presetDefaults": {

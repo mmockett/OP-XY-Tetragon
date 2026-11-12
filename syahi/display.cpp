@@ -944,8 +944,9 @@ inline void display(DisplayState& state, const opxy::draw::Input& input, Frame& 
         n = put_number(level, 0, input.level);
         level[n++] = 'd'; level[n++] = 'B'; level[n] = 0;
         for (u32 s = 0; s < 2; ++s) {
-            const i32 code = input.pad[2 + s];
-            if (code > 0) { n = put_number(sends[s], 0, (((code > 7 ? 7 : code) - 1) * 100 + 3) / 6); sends[s][n] = 0; }
+            // SDK 1.15: 0 follows the track's send (TRK), else the key's percent + 1.
+            const i32 percent = input.pad[2 + s] - 1;
+            if (percent >= 0) { n = put_number(sends[s], 0, percent > 100 ? 100 : percent); sends[s][n] = 0; }
             else copy(sends[s], sizeof(sends[s]), "TRK");
         }
         pad_caption(0, input.pad[0], human);
