@@ -48,7 +48,8 @@ struct Cicada {
     u32 fall_q, fall_rq, amp_q, amp_rq;
     i32 chirp, len;
     i32 wlast;   // the wing's last half-rate sample
-    i32 swarm_lp;   // the swarm shell's pitch for the next block
+    i32 swarm_lp, main_lp;   // the shells' pitches for the next block
+    i32 tone_g;              // a rib's strike of the shell, before its size
 
     __attribute__((noinline)) void tune_shell(int s, i32 lp) {
         // A train that doesn't fall keeps its shell's tuning from rib to rib.
@@ -81,15 +82,15 @@ struct Cicada {
         k.g = mul(full - r, sn) << 2;
         k.b = full - r;
     }
-    __attribute__((noinline)) void click(u32 who) {
+    __attribute__((noinline)) i32 click(u32 who) {
         const int s = who ? 1 : 0;
         // The train falls up to 1.2 octaves by its last rib: fall_k[who] is
         // 1.2 chirp k / (n - 1), carried from rib to rib without a division.
         const i32 fall = n > 1 ? static_cast<i32>(fall_k[who]) : sc(C(0.6), chirp);
-        // The main cicada retunes its shell rib by rib; the swarm's shared
-        // shell takes the latest swarm rib's pitch once a block.
+        // Each shell takes its latest rib's pitch once a block (the swarm's
+        // is shared by all the swarm).
         if (s) swarm_lp = lcf[1] - fall;
-        else tune_shell(0, lcf[0] - fall);
+        else main_lp = lcf[0] - fall;
         const i32 a = mul(full - static_cast<i32>(amp_k[who] << 8), F(0.8) + sc(F(0.2), draw(rng)));   // 0.45 k / n
         // The next rib's quotients: q + x / d, the remainders carried.
         fall_k[who] += fall_q;
@@ -99,14 +100,11 @@ struct Cicada {
         amp_r[who] += amp_rq;
         if (amp_r[who] >= n) { amp_r[who] -= n; ++amp_k[who]; }
         const i32 g = who ? mul(a, F(0.7)) : a;
-        dsp::strike(shell[s * 2], shellk[s * 2], mul(lev(tone_amp, tone_norm), g));
-        dsp::strike(shell[s * 2 + 1], shellk[s * 2 + 1], mul(mul(lev(tone_amp, tone_norm), F(0.6)), g));
         // The swarm's clicks feed the same envelope, an eighth of a unit a click:
         // a long tail piles up to about 0.8 n of them, which a whole unit would
         // overflow; a swarm's pile stops at seven units.
         const i32 add = mul(one >> 3, g);
         env[0].v = env[0].v < 7 * one - add ? env[0].v + add : 7 * one;
-        tick.v += mul(U(0.18), g);
         ++kk[who];
         if (kk[who] < n) {
             // Each rib a little early or late, +-6% of the period.
@@ -114,6 +112,7 @@ struct Cicada {
             const i32 at = static_cast<i32>(start_at[who]) + (period * static_cast<i32>(kk[who]) >> 8) + (dp >> 8);
             next_at[who] = at > static_cast<i32>(t) ? static_cast<u32>(at) : t + 1;
         }
+        return g;
     }
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
@@ -138,6 +137,7 @@ struct Cicada {
         tune_shell(0, lcf[0]);
         tune_shell(1, lcf[1]);
         swarm_lp = lcf[1];
+        main_lp = lcf[0];
         // The tail: 12..412 ms.
         const i32 tl = 12000 + sc(400000, pw(c[4], C(1.7)));
         env[0].v = env[1].v = 0;
@@ -159,6 +159,7 @@ struct Cicada {
         // A pile of p clicks reaches about 0.8 p; noise peaks near 3.5 sigma.
         sizzle_norm = static_cast<i32>(static_cast<u32>(U(1.2)) / static_cast<u32>(pile));
         tone_amp = U(0.25) + sc(U(0.6), c[3]);
+        tone_g = lev(tone_amp, tone_norm);
         sizzle_amp = U(1.0) - sc(U(0.45), c[3]);
         band(hik, lcf[0] + 826, C(0.9));      // 1.15
         band(lok, lcf[0] - 3533, C(0.9));     // 0.55
@@ -219,20 +220,28 @@ struct Cicada {
             band_gain_now = static_cast<i32>(ex2(((56431 + lq9 - lp) >> 1) + (16 << 12)));
             last_pos = pos;
         }
+        tune_shell(0, main_lp);
         if (cicadas > 1) tune_shell(1, swarm_lp);
-        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        // The block's ribs, every cicada's in time order, gathered first:
+        // where each falls, its size, and whose shell it strikes.
+        u32 at[32], who[32], ribs = 0;
+        i32 size[32];
         const u32 t0 = t;
-        for (u32 i = 0;;) {
-            // The next rib's click of any cicada in this block.
+        for (;;) {
             u32 e = frames;
             for (u32 w = 0; w < cicadas; ++w)
-                if (kk[w] < n) { const u32 d = next_at[w] - t0; if (d < e && d >= i) e = d; }
-            if (e > i) span(out + i, e - i);
-            i = e;
-            if (i >= frames) break;
-            t = t0 + i;
-            clicks();
+                if (kk[w] < n) { const u32 d = next_at[w] - t0; if (d < e) e = d; }
+            if (e >= frames) break;
+            t = t0 + e;
+            for (u32 w = 0; w < cicadas; ++w)
+                if (kk[w] < n && t == next_at[w]) {
+                    const i32 g = click(w);
+                    if (ribs < 32) { at[ribs] = e; size[ribs] = g; who[ribs] = w ? 1 : 0; ++ribs; }
+                }
         }
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        shells_pass(out, at, size, who, ribs);
+        tick_pass(out, at, size, ribs);
         // The sizzle and the wing run over the whole block, the clicks'
         // swells taken from its start: a click's sizzle sounds at most a
         // block (1.5 ms) early, its shell and tick on the sample.
@@ -241,31 +250,44 @@ struct Cicada {
         if (wing.v > 4096) wing_pass(out);
         t = t0 + frames;
     }
-    // Each cicada whose rib clicks at t.
-    __attribute__((noinline)) void clicks() {
-        for (u32 w = 0; w < cicadas; ++w)
-            if (kk[w] < n && t == next_at[w]) click(w);
-    }
-    // n samples between clicks, each part in its own pass with its state in
-    // registers; the noise is drawn in the same order as ever.
-    __attribute__((noinline)) void span(i32* out, u32 n) {
-        ring_bank(shell, shellk, cicadas > 1 ? 4 : 2, out, n);
-        // The tick, once under its floor, stays there until the next click.
-        if (tick.v > 4096) tick_pass(out, n);
-    }
-    // Each rib's tick.
-    __attribute__((noinline)) void tick_pass(i32* y, u32 n) {
-        i32 tv = tick.v, lp = tick_lp;
-        const i32 tk = tick.k, ta = tick_a;
-        u32 r = rng;
-        for (u32 j = 0; j < n; ++j) {
-            if (CURIO_LIKELY(tv > 4096)) {
-                tv = mul(tv, tk);
-                const i32 x = lev(noise(r), tv);
-                lp += mul(ta, x - lp);
-                y[j] += x - lp;
+    // The shells through the block, each struck by its own cicadas' ribs
+    // where they fall (rung between them in one call).
+    __attribute__((noinline)) void shells_pass(i32* y, const u32* at, const i32* size, const u32* who, u32 ribs) {
+        const u32 count = cicadas > 1 ? 4 : 2;
+        for (u32 m = 0; m < count; ++m) {
+            Res& z = shell[m];
+            const ResK& k = shellk[m];
+            const u32 pair = m >> 1;
+            const i32 g = m & 1 ? mul(tone_g, F(0.6)) : tone_g;
+            u32 i = 0;
+            for (u32 q = 0; q < ribs; ++q) {
+                if (who[q] != pair) continue;
+                if (at[q] > i) ring_into(z, k, y + i, at[q] - i);
+                i = at[q];
+                dsp::strike(z, k, mul(g, size[q]));
             }
+            if (frames > i) ring_into(z, k, y + i, frames - i);
         }
+    }
+    // Each rib's tick: high-passed noise, rung by every rib where it falls.
+    __attribute__((always_inline)) void tick_run(i32* y, u32 n, i32& tv, i32& lp, u32& r) {
+        const i32 tk = tick.k, ta = tick_a;
+        for (u32 j = 0; j < n; ++j) {
+            tv = mul(tv, tk);
+            const i32 x = lev(noise(r), tv);
+            lp += mul(ta, x - lp);
+            y[j] += x - lp;
+        }
+    }
+    __attribute__((noinline)) void tick_pass(i32* y, const u32* at, const i32* size, u32 ribs) {
+        i32 tv = tick.v, lp = tick_lp;
+        u32 r = rng, i = 0;
+        for (u32 q = 0; q < ribs; ++q) {
+            if (at[q] > i && tv > 4096) tick_run(y + i, at[q] - i, tv, lp, r);
+            i = at[q];
+            tv += mul(U(0.18), size[q]);
+        }
+        if (frames > i && tv > 4096) tick_run(y + i, frames - i, tv, lp, r);
         tick.v = tv;
         tick_lp = lp;
         rng = r;
