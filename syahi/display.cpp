@@ -225,7 +225,7 @@ inline void draw_striker(F& frame, const Look& k, i32 x, i32 y, i32 tenths, u32 
                 top = py < top ? py : top;
                 left = qx < left ? qx : left;
             }
-            const i32 above = 41 * U - (y - qy0 + top), off = 2 * U - (x - qx0 + left);
+            const i32 above = 46 * U - (y - qy0 + top), off = 2 * U - (x - qx0 + left);   // 8 px clear of the header
             const i32 miss = (above > 0 ? above : 0) + (off > 0 ? off : 0);
             // A striker whose far end rises less than 12 px over its contact has
             // swung down beside or under the head: count the shortfall as a miss.
