@@ -1,6 +1,6 @@
 # Curio
 
-![Curio's screen: a cabinet drawer pulled open, a small drum on a felt bed and a ball over it on its release clamp](docs/screen.png)
+![Curio's screen: a cabinet drawer pulled open, a small drum on a felt bed and the key's specimen held over it in the release clamp](docs/screen.png)
 
 A Victorian cabinet of curiosities as a drum kit. Each of its sixteen
 specimens is one object from the bench and shelves behind a lecture on sound
@@ -216,26 +216,29 @@ and no division in any sample loop (`dsp.h`).
 
 The cabinet itself, in the OP-XY's own isometric look: a drawer pulled
 open below two closed ones, a small drum on its felt bed, and the release
-clamp on its stand holding a ball over the head on a fine plumb line. Every
-key's specimen shares the drawer; the brass card holder on its front carries
-the selected specimen's symbol. Each part's grey is its encoder's, as on the
-stock screens: the clamp 323232, the bounce marks 4B4B4B, the drum's head
-and rods 969696, the ball CDCDCD.
+clamp on its stand holding the key's own specimen over the head on a fine
+plumb line. Each specimen is there in silhouette, so you see at a glance
+what a key plays: the ball, the cask, the ringing stone, the drop, the shard
+of ice, the thunder sheet, the Leyden jar, the cork and its corkscrew, the
+cicada, the watchman's rattle, the seed pod, the lit match, the wine glass,
+the bell in its jar, chalk on its slate and the bull-roarer. Each part's
+grey is its encoder's, as on the stock screens: the clamp 323232, the
+bounce marks 4B4B4B, the drum's head and rods 969696, the specimen CDCDCD.
 
 | Encoder | First row | Second row |
 | --- | --- | --- |
 | 1 | the clamp rises on its stand, the plumb line longer | a felt damper slides out to the head's rim |
 | 2 | a mark at the top of each bounce, higher and more of them | a crate slides toward the drum |
 | 3 | 4 to 10 rods round the drum | a ring on the head moves from its middle to the rim |
-| 4 | the ball, in five sizes | 0 to 10 grains on the head |
+| 4 | the specimen, in five sizes | 0 to 10 grains on the head |
 
 The ball's controls name them (drop, bounce, skin, ball; decay, floor,
 spot, grit); every other specimen's controls move the same parts in their
 places.
 
-- **A hit drops the ball** down the plumb line onto the head. It bounces to
-  each mark, rests on the head while the sound lasts and is back under the
-  clamp a moment after.
+- **A hit drops the specimen** down the plumb line onto the head. It
+  bounces to each mark, rests on the head while the sound lasts and is back
+  in the clamp a moment after.
 - **A hit's motion lasts as long as its sound**, reckoned from the
   specimen's own decay controls. A drum kit's voices play until their sound
   ends: the drum renderer applies neither the track's amp envelope nor
