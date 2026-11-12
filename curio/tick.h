@@ -545,7 +545,7 @@ struct Pod {
     // Seeds: a strike when the draw falls under the envelope's share of the
     // rate, planned once a block from its middle; a straggler when it falls
     // in the scatter's share just above. One draw a sample.
-    __attribute__((noinline)) void seed_pass(const i32* eb, const i32* bb, i32* ib) {
+    __attribute__((noinline)) void seed_pass(const i32* eb, const i32* bb, i32* ib, i32* lb) {
         u32 r = rng;
         const i32 rp = static_cast<i32>(rate_p >> 1), pi = peak_inv << 16;
         const u32 p = (static_cast<u32>(mul(rp, mul(eb[frames / 2], pi) << 1)) << 1) +
@@ -554,16 +554,20 @@ struct Pod {
         i32 la = 0;
         if (late_p && t + frames / 2 > 2205 && t + frames / 2 < late_end) {
             q = p + late_p;
-            // A straggler rings the shell as the lone late resonance did:
-            // its level spread over the three shells' weights.
-            la = mul(lev(late_env.v >> 3, late_norm), F(0.45));
+            // A straggler rings the lowest shell (at half weight) where the
+            // lone late resonance rang.
+            la = lev(late_env.v >> 1, late_norm);
         }
         for (u32 j = 0; j < frames; ++j) {
             noise(r);
             const u32 x = r;
-            i32 imp = 0;
-            if (CURIO_UNLIKELY(x < q)) imp = x < p ? one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r)) : la;   // 0.5 .. 1.5
+            i32 imp = 0, late = 0;
+            if (CURIO_UNLIKELY(x < q)) {
+                if (x < p) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r));   // 0.5 .. 1.5
+                else late = la;
+            }
             ib[j] = imp;
+            lb[j] = late;
         }
         rng = r;
         if (t + frames > 2205) late_env.v = mul(late_env.v, late_k64);
@@ -646,18 +650,19 @@ struct Pod {
         }
     }
     void run(i32* out) {
-        i32 eb[frames], bb[frames], ib[frames];
+        i32 eb[frames], bb[frames], ib[frames], lb[frames];
         // Sample by sample only where the tilt's pulse starts or the shake
         // fades out.
         const bool bumping = bump_amp && bump_at - t < frames;
         const bool fading = t + frames - 1 + 882 > stop && t < stop;
         if (bumping || fading) env_pass(eb, bb);
         else ramp_pass(eb, bb, t < stop);
-        seed_pass(eb, bb, ib);
+        seed_pass(eb, bb, ib, lb);
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
         shell_pass<false>(r[0], rk[0], ib, out, 0);
         shell_pass<true>(r[1], rk[1], ib, out, F(0.7));
-        shell_pass<true>(r[2], rk[2], ib, out, F(0.5));
+        for (u32 i = 0; i < frames; ++i) lb[i] += ib[i];   // the stragglers ring the lowest shell
+        shell_pass<true>(r[2], rk[2], lb, out, F(0.5));
         dry_pass(out);
         swish_pass(out, eb, bb);
         t += frames;
