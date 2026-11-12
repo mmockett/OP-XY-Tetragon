@@ -446,8 +446,8 @@ struct Pod {
     u32 bump_at;
     i32 bump_amp, peak_inv;
     u32 rate_p;
-    Res r[3], sw;
-    ResK rk[3], swk;
+    Res r[3], sw, late;
+    ResK rk[3], swk, latek;
     i32 norm, dry_lp, dry_a, sw_gain, sw_amp, late_norm;
     u32 late_p;
     Env late_env;
@@ -512,6 +512,8 @@ struct Pod {
         sw_amp = U(0.1) + sc(U(1.4), c[6]);
         sw = Res();
         // Scatter: stragglers after 50 ms, for up to 0.3 s more.
+        dsp::tune(latek, inc(lps - 623), decay(ex2(74875 - (lps - 623) - (lg2(static_cast<u32>(bwr)) - (12 << 12)))));
+        late = Res();
         late_p = c[7] > 0 ? per_sample(static_cast<u32>(40 + sc(400, c[7]))) : 0;
         late_env.v = full;
         late_env.k = decay(250000);
@@ -557,9 +559,8 @@ struct Pod {
         i32 la = 0;
         if (late_p && t + frames / 2 > 2205 && t + frames / 2 < late_end) {
             q = p + late_p;
-            // A straggler rings the lowest shell (at half weight) where the
-            // lone late resonance rang.
-            la = lev(late_env.v >> 1, late_norm);
+            // A straggler rings its own resonance, a little under the shell's.
+            la = late_env.v >> 3;
         }
         for (u32 j = 0; j < frames; ++j) {
             noise(r);
@@ -634,6 +635,12 @@ struct Pod {
         sw.x1 = x1;
         sw.x2 = x2;
     }
+    // Scatter: stragglers after 50 ms, ringing their own resonance.
+    __attribute__((noinline)) void late_pass(i32* y, const i32* lb) {
+        const i32 nm = norm, ln = late_norm;
+        drive_run(late, latek, y, frames, [&lb, this](i32) { return mul(*lb++, latek.g); },
+                  [nm, ln](i32& to, i32 o) { to += lev(gn(o, nm), ln); });
+    }
     // The shake's envelope and the tilt's pulse planned at the block's ends
     // and glided between them (they move slowly).
     __attribute__((noinline)) void ramp_pass(i32* eb, i32* bb, bool shaking) {
@@ -664,10 +671,11 @@ struct Pod {
         for (u32 i = 0; i < frames; ++i) out[i] = 0;
         shell_pass<false>(r[0], rk[0], ib, out, 0);
         shell_pass<true>(r[1], rk[1], ib, out, F(0.7));
-        for (u32 i = 0; i < frames; ++i) lb[i] += ib[i];   // the stragglers ring the lowest shell
-        shell_pass<true>(r[2], rk[2], lb, out, F(0.5));
+        shell_pass<true>(r[2], rk[2], ib, out, F(0.5));
         dry_pass(out);
         swish_pass(out, eb, bb);
+        // Scatter: the stragglers' resonance, while they come and ring on.
+        if (late_p && t + frames > 2205 && t < late_end + 4410) late_pass(out, lb);
         t += frames;
     }
 };
