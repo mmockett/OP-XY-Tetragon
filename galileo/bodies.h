@@ -262,18 +262,21 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 shares[3] = {32767, GQ15(0.42) + dsp::m15(GQ15(0.3), p3 >> 16), GQ15(0.22) + dsp::m15(GQ15(0.38), p3 >> 16)};
         skin(b.skin[0], lf, GQ16(0.6), dsp::decay(ms(12 * 256)), 3, ratios, decays, shares, GQ16(1.2));
         b.env[0].r = decay_ms(70 * 256, 370 * 256, p2);                      // the wires
-        // The wires' band: broad (0.59 to 1.7 of its centre, a one-pole high-pass
-        // and low-pass), from a dark 1.4 kHz to a bright 4.5 kHz, which keeps the
-        // noise out of the head's low end.
+        // The wires' band: broad (0.59 to 1.4 of its centre, a one-pole high-pass
+        // and low-pass, over noise with a zero at Nyquist), from a dark 1.4 kHz to
+        // a bright 4.5 kHz, which keeps the noise out of the head's low end.
         const i32 wires = dsp::mix(q16(1400), q16(4500), p3);
         b.pc[0] = dsp::pole(wires - OCT(1.0 / 0.59));
-        b.pc[1] = dsp::pole(wires + OCT(1.7));
+        b.pc[1] = dsp::pole(wires + OCT(1.4));
         prepare_click(b.click[0], 500, 3000);                               // the stick, and the
         b.cg[0] = GQ28(0.2);
         prepare_click(b.click[1], 2600, 3000);                              // crack, through one high-pass
         b.cg[1] = GQ28(0.05) + multiply(GQ28(0.45), p3);
         b.g[0] = GQ28(1.1) - multiply(GQ28(0.45), p1);                       // head
-        b.g[1] = multiply(GQ28(1.75 * 1.35), p1);                            // wires (the band's 2.6 dB back)
+        // The wires, their level matched to the two-pole band's (0.3 dB more at
+        // a dark tone, 3 dB at a bright one).
+        b.g[1] = multiply(multiply(GQ28(1.75), p1), GQ31(1.04 / 1.5) + multiply(GQ31(0.38 / 1.5), p3));
+        b.g[1] += b.g[1] >> 1;
         break;
     }
     case tom: case fill: {   // tune, decay, bend (tom) or spread (fill), skin
@@ -371,9 +374,10 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         // corners are tuned an octave up of the full rate's.
         b.band[0].tune(q16(3800) + dsp::octave, OCT(0.7));
         b.pc[0] = dsp::pole(q16(1800) + dsp::octave);
-        // The wash's band: 3.2 to 9.4 kHz around 5.5 (a one-pole high-pass and low-pass).
+        // The wash's band: 3.2 to 9.9 kHz around 5.5 (a one-pole high-pass and
+        // low-pass, over noise with a zero at Nyquist).
         b.pc[2] = dsp::pole(q16(3250));
-        b.pc[3] = dsp::pole(q16(9350));
+        b.pc[3] = dsp::pole(q16(9900));
         u32 w0, w1;
         widths(GQ31(0.8), w0, w1);
         const i32 lbell = lb + OCT(2.1);
@@ -382,7 +386,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         // stick's contact: left out.)
         tune(b.mode[0], lbell, dsp::decay(tau + OCT(0.7)), 32767, w0, w1);
         tune(b.mode[1], lbell + OCT(2.0), dsp::decay(tau + OCT(0.45)), GQ15(0.4), w0, w1);
-        b.g[0] = multiply(GQ28(0.6 * 1.35), p3);
+        b.g[0] = multiply(GQ28(0.6 * 1.1), p3);
         b.g[1] = multiply(GQ28(0.55), p2);
         prepare_click(b.click[0], 300, 5000);
         b.cg[0] = GQ28(0.15);
@@ -1147,7 +1151,8 @@ inline i32 decay_over(i32 r, u32 n) {
     }
     return y;
 }
-// Noise under an envelope (swelling with a half-rate swing if SWELL, as
+// Noise, each sample the mean of two draws (a zero at Nyquist), under an
+// envelope (swelling with a half-rate swing if SWELL, as
 // 0.55 + 0.45 swing, which it overwrites) through a one-pole high-pass at ch and a one-pole
 // low-pass at cl, a broad band, added into out at gain g (Q28, under 2.5): one
 // pass. The gain rides on the envelope's level; the level itself is decayed
@@ -1167,17 +1172,19 @@ __attribute__((noinline)) void noise_hl_add(Energy& env, u32& seed, i32* __restr
             ag = multiply(ag, r2);
         }
         for (u32 i = 0; i < n; ++i) {
+            const i32 x0 = static_cast<i32>(x) >> 3;
             x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-            const i32 v = multiply(static_cast<i32>(x) >> 2, swing[i >> 1]) * 8;
+            const i32 v = multiply((static_cast<i32>(x) >> 3) + x0, swing[i >> 1]) * 8;
             h += multiply(v - h, ch);
             l += multiply(v - h - l, cl);
             out[i] += l;
         }
     } else {
         for (u32 i = 0; i < n; ++i) {
+            const i32 x0 = static_cast<i32>(x) >> 3;
             x ^= x << 13; x ^= x >> 17; x ^= x << 5;
             ag = multiply(ag, r);
-            const i32 v = multiply(static_cast<i32>(x) >> 2, ag) * 8;
+            const i32 v = multiply((static_cast<i32>(x) >> 3) + x0, ag) * 8;
             h += multiply(v - h, ch);
             l += multiply(v - h - l, cl);
             out[i] += l;
@@ -1374,11 +1381,11 @@ __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32
         const i32 r = multiply(b.env[0].r, b.env[0].r);
         for (u32 i = 0; i < m; ++i) {
             p0 += d4; p1 += d5; p2 += d6; p3 += d7;
-            // -count of negative squares, -8..0: the bank is (8 + 2 sum) * 2^25, at 0.8
+            // -count of negative squares, -8..0: the bank is (8 + 2 sum) * 2^25, at its gain
             const i32 sum = sh[i] + (static_cast<i32>(p0) >> 31) + (static_cast<i32>(p1) >> 31) + (static_cast<i32>(p2) >> 31) +
                             (static_cast<i32>(p3) >> 31);
             a = multiply(a, r);
-            sh[i] = multiply((8 + 2 * sum) * GQ28(0.8 / 8), a) * 8;
+            sh[i] = multiply((8 + 2 * sum) * GQ28(0.95 / 8), a) * 8;   // 0.8, and 1.5 dB for what half the rate loses
         }
         b.sq[4] = p0; b.sq[5] = p1; b.sq[6] = p2; b.sq[7] = p3;
         b.env[0].a = a;
