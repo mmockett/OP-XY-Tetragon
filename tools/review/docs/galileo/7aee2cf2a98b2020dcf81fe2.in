@@ -1,0 +1,72 @@
+scene CLOCKd
+model 10
+slots 57 38 51 44 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLOCK00
+model 10
+slots 0 38 51 44 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLOCK0127
+model 10
+slots 127 38 51 44 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLOCK10
+model 10
+slots 57 0 51 44 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLOCK1127
+model 10
+slots 57 127 51 44 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLOCK20
+model 10
+slots 57 38 0 44 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLOCK2127
+model 10
+slots 57 38 127 44 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLOCK30
+model 10
+slots 57 38 51 0 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLOCK3127
+model 10
+slots 57 38 51 127 57 24 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

@@ -1,0 +1,72 @@
+scene KICKd
+model 0
+slots 44 57 44 38 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene KICK00
+model 0
+slots 0 57 44 38 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene KICK0127
+model 0
+slots 127 57 44 38 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene KICK10
+model 0
+slots 44 0 44 38 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene KICK1127
+model 0
+slots 44 127 44 38 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene KICK20
+model 0
+slots 44 57 0 38 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene KICK2127
+model 0
+slots 44 57 127 38 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene KICK30
+model 0
+slots 44 57 44 0 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene KICK3127
+model 0
+slots 44 57 44 127 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

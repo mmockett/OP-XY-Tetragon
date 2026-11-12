@@ -38,6 +38,16 @@ jobs:
             echo "$kit: $(wc -l < out/$kit.jsonl) frames for $(wc -l < out/$kit.names) scenes"
           done
           git -C tetragon rev-parse HEAD > out/commit.txt
+      - name: Frames for the docs tools (tools/review/replay.py)
+        run: |
+          for kit in thunder curio syahi galileo; do
+            mkdir -p out/docs/$kit
+            for ask in tetragon/tools/review/docs/$kit/*.in; do
+              [ -e "$ask" ] || continue
+              ./frames-$kit < "$ask" > out/docs/$kit/$(basename "$ask" .in).out
+            done
+            echo "$kit: $(ls out/docs/$kit | wc -l) answers"
+          done
       - name: CURIO's extents (tests/clear.cpp)
         run: |
           g++ -std=c++11 -O2 -Iopen-xy/sdk/include -Itetragon/curio tetragon/curio/tests/clear.cpp -o clear-curio

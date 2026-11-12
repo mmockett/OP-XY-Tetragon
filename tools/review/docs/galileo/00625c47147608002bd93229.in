@@ -1,0 +1,72 @@
+scene RIMd
+model 5
+slots 51 76 38 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIM00
+model 5
+slots 0 76 38 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIM0127
+model 5
+slots 127 76 38 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIM10
+model 5
+slots 51 0 38 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIM1127
+model 5
+slots 51 127 38 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIM20
+model 5
+slots 51 76 0 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIM2127
+model 5
+slots 51 76 127 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIM30
+model 5
+slots 51 76 38 0 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIM3127
+model 5
+slots 51 76 38 127 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

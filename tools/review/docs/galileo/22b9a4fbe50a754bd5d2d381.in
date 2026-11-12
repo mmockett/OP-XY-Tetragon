@@ -1,0 +1,30 @@
+scene m0
+model 1
+slots 57 76 44 64 88 64 30 0
+pad 0 0 0 0
+row 1
+
+run 0.1 60
+note
+run 0.12 60
+emit
+scene m1
+model 1
+slots 57 76 44 64 88 64 30 0
+pad 0 0 0 0
+row 1
+
+run 0.1 60
+note
+run 0.42 60
+emit
+scene m2
+model 1
+slots 57 76 44 64 88 64 30 0
+pad 0 0 0 0
+row 1
+
+run 0.1 60
+note
+run 0.7 60
+emit

@@ -1,0 +1,72 @@
+scene HATd
+model 6
+slots 64 23 70 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene HAT00
+model 6
+slots 0 23 70 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene HAT0127
+model 6
+slots 127 23 70 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene HAT10
+model 6
+slots 64 0 70 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene HAT1127
+model 6
+slots 64 127 70 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene HAT20
+model 6
+slots 64 23 0 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene HAT2127
+model 6
+slots 64 23 127 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene HAT30
+model 6
+slots 64 23 70 0 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene HAT3127
+model 6
+slots 64 23 70 127 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

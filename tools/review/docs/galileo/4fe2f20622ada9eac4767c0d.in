@@ -1,0 +1,72 @@
+scene SNAREd
+model 1
+slots 57 76 44 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SNARE00
+model 1
+slots 0 76 44 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SNARE0127
+model 1
+slots 127 76 44 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SNARE10
+model 1
+slots 57 0 44 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SNARE1127
+model 1
+slots 57 127 44 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SNARE20
+model 1
+slots 57 76 0 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SNARE2127
+model 1
+slots 57 76 127 64 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SNARE30
+model 1
+slots 57 76 44 0 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SNARE3127
+model 1
+slots 57 76 44 127 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

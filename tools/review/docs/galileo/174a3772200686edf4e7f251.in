@@ -1,0 +1,72 @@
+scene RIDEd
+model 7
+slots 57 57 44 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIDE00
+model 7
+slots 0 57 44 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIDE0127
+model 7
+slots 127 57 44 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIDE10
+model 7
+slots 57 0 44 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIDE1127
+model 7
+slots 57 127 44 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIDE20
+model 7
+slots 57 57 0 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIDE2127
+model 7
+slots 57 57 127 51 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIDE30
+model 7
+slots 57 57 44 0 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RIDE3127
+model 7
+slots 57 57 44 127 88 0 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

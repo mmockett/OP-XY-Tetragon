@@ -1,0 +1,72 @@
+scene CLAPd
+model 12
+slots 57 44 38 64 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLAP00
+model 12
+slots 0 44 38 64 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLAP0127
+model 12
+slots 127 44 38 64 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLAP10
+model 12
+slots 57 0 38 64 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLAP1127
+model 12
+slots 57 127 38 64 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLAP20
+model 12
+slots 57 44 0 64 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLAP2127
+model 12
+slots 57 44 127 64 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLAP30
+model 12
+slots 57 44 38 0 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene CLAP3127
+model 12
+slots 57 44 38 127 88 0 0 36
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
