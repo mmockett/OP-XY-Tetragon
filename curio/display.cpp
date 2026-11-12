@@ -649,15 +649,23 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
         band(frame.paths[0], pts, u / 2);
         show_path(frame, m, 0, 165 * u, (base - h) * u, 4);
         used[0] = true;
-        // Its cut: a band of mitred facets round the lower bowl.
+        // Its cut: a band of mitred facets round the lower bowl. A facet's
+        // lower point that would fall outside the bowl at 42 px rises up the
+        // bowl's side until it is inside, rather than squeezing in sideways:
+        // a squeezed V turns sharper than the device draws (a spike).
         const i32 ww = w + v, cut = ww * root(h * h - 30 * 30) / h - 2;
         const i32 n = clamp(cut / 5, 3, 6);
         Point corner[13];
         for (i32 j = 0; j <= 2 * n; ++j) {
             const i32 x = -cut * 1024 + 2 * cut * 1024 * j / (2 * n);
-            const i32 low = (ww * root(h * h - 42 * 42) / h - 1) * u;
-            corner[j].x = j % 2 ? clamp(x, -low, low) * 9 / 10 : x;
-            corner[j].y = (j % 2 ? 42 : 30) * u;
+            corner[j].x = j % 2 ? x * 9 / 10 : x;
+            i32 y = 30;
+            if (j % 2) {
+                const i32 ax = (corner[j].x < 0 ? -corner[j].x : corner[j].x) >> 10;
+                const i32 q = h * (ax + 1) / (ww > 1 ? ww : 1);
+                y = clamp(q < h ? root(h * h - q * q) : 0, 34, 42);
+            }
+            corner[j].y = y * u;
         }
         resample(corner, 2 * n + 1, pts);
         band(frame.paths[3], pts, u / 2);
