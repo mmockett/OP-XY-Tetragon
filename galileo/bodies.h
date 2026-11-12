@@ -1228,7 +1228,7 @@ __attribute__((noinline)) void kick_drive(i32* __restrict io, u32 n, i32 g28, i3
         i32 u = gain(io[i], g28);
         u = u > hi ? hi : u < lo ? lo : u;
         const i32 sq = multiply(u << 2, u << 1);                  // u^2, units 2^28
-        const i32 y = u - multiply(u, multiply(sq << 2, GQ31(4.0 / 27.0)) << 1);
+        const i32 y = u - multiply(u, multiply(sq, GQ31(4.0 / 27.0)) << 3);   // 4/27 u^2 (Q31, at most 1/3)
         io[i] = multiply(y, makeup) << 3;
     }
 }
