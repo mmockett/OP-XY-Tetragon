@@ -1576,7 +1576,8 @@ __attribute__((noinline)) inline void run_clap(Body& b, i32* __restrict out, u32
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         const i32 hand = multiply(static_cast<i32>(x) >> 2, burst) * 8;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        h[j] = hand + gain(multiply(static_cast<i32>(x) >> 2, e2) * 8, room);
+        // 3 dB down: noise at half the rate puts twice its density in the band.
+        h[j] = multiply(hand + gain(multiply(static_cast<i32>(x) >> 2, e2) * 8, room), GQ31(0.7071));
     }
     b.seed = x;
     b.env[0].a = e0; b.env[1].a = e1; b.env[2].a = e2;
