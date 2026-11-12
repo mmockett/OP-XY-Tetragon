@@ -168,7 +168,7 @@ inline i32 trimmed_gain(u32 model, const i32* p) {
     return static_cast<i32>(dsp::exp2(t));
 }
 
-inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters) {
+__attribute__((noinline)) void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters) {
     voice.pending = 0;
     voice.done = voice.quiet = voice.kept = 0;
     voice.model = voice.next;
@@ -206,7 +206,7 @@ inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters
 
 // The block's impacts, gathered into the grid's cells (2^shift samples each):
 // returns which cells hold one (bit k: cell k).
-inline u32 gather(Voice& voice, Cell* cells, u32 shift) {
+__attribute__((noinline)) u32 gather(Voice& voice, Cell* cells, u32 shift) {
     const u32 end = voice.t + opxy::block_frames;
     const u32 lax = motion::feel(voice.feel).lax;
     u32 used = 0;
@@ -333,7 +333,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             used &= ~(1u << k);
         }
         // Ghosts due within this stretch of the grid strike now.
-        body::strike_ghosts(b, n);
+        if (body::ghost_due(b) < b.now + body::step) body::strike_ghosts(b, n);
     }
     voice.t += opxy::block_frames;
     const i32 peak = finish(sum, voice.gain, output);

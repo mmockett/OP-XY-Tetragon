@@ -726,7 +726,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
 }
 // Plays the ghosts due in the grid's step from b.now as one strike (their
 // forces together), its modes from the strongest one's 8-sample step.
-inline void strike_ghosts(Body& b, u32 n) {
+__attribute__((noinline)) void strike_ghosts(Body& b, u32 n) {
     const u32 end = b.now + step - 1;
     if (b.due > end) return;
     // One walk over the slots held: the due ones gathered, the rest give the
