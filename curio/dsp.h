@@ -53,8 +53,13 @@ static __attribute__((noinline)) inline u32 ex2(i32 x) {
 // log2(v) in Q12, for v >= 1 (0 gives -32 octaves).
 static __attribute__((noinline)) inline i32 lg2(u32 v) {
     if (!v) return -(32 << 12);
+    // The top bit in five halvings, not a step a bit.
     i32 o = 31;
-    while (!(v & 0x80000000u)) { v <<= 1; --o; }
+    if (!(v >> 16)) { v <<= 16; o -= 16; }
+    if (!(v >> 24)) { v <<= 8; o -= 8; }
+    if (!(v >> 28)) { v <<= 4; o -= 4; }
+    if (!(v >> 30)) { v <<= 2; o -= 2; }
+    if (!(v >> 31)) { v <<= 1; o -= 1; }
     const u32 i = (v >> 23) & 255u, r = (v >> 15) & 255u;
     const u32 a = table::log2[i], b = table::log2[i + 1];
     return (o << 12) + static_cast<i32>(a + (((b - a) * r) >> 8));
