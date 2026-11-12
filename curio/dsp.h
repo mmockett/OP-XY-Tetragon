@@ -199,7 +199,15 @@ __attribute__((always_inline)) inline void ring_free(Res& z, const ResK& k, i32*
     z.y1 = a;
     z.y2 = b;
 }
-static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) { ring_free(z, k, y, n); }
+// Whether a free resonator still rings: its last two outputs over -108 dB
+// of a unit (a rung-out one is set still, and costs nothing until struck).
+inline bool ringing(Res& z) {
+    const i32 e = (z.y1 < 0 ? -z.y1 : z.y1) + (z.y2 < 0 ? -z.y2 : z.y2);
+    if (CURIO_LIKELY(e > 2048)) return true;
+    z.y1 = z.y2 = 0;
+    return false;
+}
+static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) { if (ringing(z)) ring_free(z, k, y, n); }
 // A band-pass (bp) through n samples of x, each output o handed with its
 // place in y to emit(y[j], o): two samples a turn so the states trade
 // places (a hardware loop), the odd one first.
@@ -255,7 +263,8 @@ template <class In, class Emit> __attribute__((always_inline)) inline void drive
 }
 // A bank of free resonators in one call, each rung in turn.
 static __attribute__((noinline)) inline void ring_bank(Res* z, const ResK* k, u32 count, i32* y, u32 n) {
-    for (u32 m = 0; m < count; ++m) ring_free(z[m], k[m], y, n);
+    for (u32 m = 0; m < count; ++m)
+        if (ringing(z[m])) ring_free(z[m], k[m], y, n);
 }
 
 // Half-rate parts drawn back up to the full rate: each new sample halfway
