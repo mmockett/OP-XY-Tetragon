@@ -102,6 +102,58 @@ def dedupe(points):
     return out
 
 
+SHARPEST = 150.0   # degrees: the sharpest turn an outline may make
+
+
+def turns(points):
+    """Each corner's turn, degrees."""
+    n, out = len(points), []
+    for i in range(n):
+        (ax, ay), (bx, by), (cx, cy) = points[i - 1], points[i], points[(i + 1) % n]
+        ux, uy, vx, vy = bx - ax, by - ay, cx - bx, cy - by
+        out.append(math.degrees(math.atan2(abs(ux * vy - uy * vx), ux * vx + uy * vy)))
+    return out
+
+
+def blunt(points, cut=0.4):
+    """Each corner sharper than SHARPEST cut across back along both its edges, so
+    the device's mitred join (it has no mitre limit) draws no spike: the one sharp
+    turn becomes two gentle ones, the cut's ends at least 1/8 px apart. A cusp
+    between edges too short to cut loses its point."""
+    for _ in range(4):
+        out, n, changed = [], len(points), False
+        for i in range(n):
+            p0, p1, p2 = points[i - 1], points[i], points[(i + 1) % n]
+            v1 = (p1[0] - p0[0], p1[1] - p0[1])
+            v2 = (p2[0] - p1[0], p2[1] - p1[1])
+            l1, l2 = math.hypot(*v1), math.hypot(*v2)
+            turn = math.degrees(math.atan2(abs(v1[0] * v2[1] - v1[1] * v2[0]), v1[0] * v2[0] + v1[1] * v2[1]))
+            need = 0.3 / max(1e-6, 2 * math.sin(math.radians(180 - turn) / 2))
+            c = min(max(cut, need), 0.48 * l1, 0.48 * l2, l1 - 0.3, l2 - 0.3)
+            if turn > SHARPEST - 1 and c >= need:
+                out += [(p1[0] - v1[0] / l1 * c, p1[1] - v1[1] / l1 * c), (p1[0] + v2[0] / l2 * c, p1[1] + v2[1] / l2 * c)]
+                changed = True
+            elif turn > SHARPEST - 1 and n > 3:
+                changed = True   # edges too short to cut across (a cusp): the corner's point goes
+            else:
+                out.append(p1)
+        points = out
+        if not changed:
+            break
+    return points
+
+
+def written(points):
+    """The outline as d_of writes it (to a tenth), checked against the device's rules."""
+    pts = [(float(num(x)), float(num(y))) for x, y in points]
+    for i in range(len(pts)):
+        a, b = pts[i - 1], pts[i]
+        assert math.hypot(b[0] - a[0], b[1] - a[1]) >= 0.125, ("points merge", i)
+    sharp = [round(t) for t in turns(pts) if t > SHARPEST]
+    assert not sharp, ("turns sharper than SHARPEST", sharp)
+    return pts
+
+
 def rect(x0, y0, x1, y1):
     return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
 
@@ -147,14 +199,20 @@ def comb(spine, teeth, w=RIBBON):
         for tip in tips:
             h = w / 2
             out += [(x - tx * h, y - ty * h), (tip[0] - tx * h, tip[1] - ty * h), (tip[0] + tx * h, tip[1] + ty * h), (x + tx * h, y + ty * h)]
-    # back along the spine's other side
+    # back along the spine's other side: the side away from the ticks, so its
+    # end caps run straight on from the end ticks' edges
+    (ax, ay), (bx, by) = spine[0], spine[1]
+    k0, tip0 = teeth[0]
+    away = -1 if (tip0[0] - spine[k0][0]) * (by - ay) - (tip0[1] - spine[k0][1]) * (bx - ax) > 0 else 1
     back = []
     for i, (x, y) in enumerate(spine):
         a = spine[max(0, i - 1)]
         b = spine[min(len(spine) - 1, i + 1)]
         dx, dy = b[0] - a[0], b[1] - a[1]
         L = math.hypot(dx, dy) or 1
-        back.append((x + dy / L * w, y - dx / L * w))
+        back.append((x + away * dy / L * w, y - away * dx / L * w))
+    for j in (0, -1):
+        back[j] = (back[j][0] + out[j][0] - spine[j][0], back[j][1] + out[j][1] - spine[j][1])
     # a straight run of the spine needs only its ends
     keep = [back[0]]
     for i in range(1, len(back) - 1):
@@ -180,14 +238,19 @@ def paint(stroke, width, fill):
 
 
 def static(points, stroke=MID, width=W_STRUCT, fill="none", layer="back"):
-    pts = dedupe(points)
+    pts = dedupe(blunt(dedupe(points)))
     assert 3 <= len(pts) <= 64, len(pts)
+    written(pts)
     STATIC.append((layer, f'<path d="{d_of(pts)}" {paint(stroke, width, fill)}/>'))
 
 
 def node(name, points, origin=(640, 320), stroke=MID, width=W_STRUCT, fill="none", layer="body"):
-    pts = dedupe(points)
+    pts = dedupe(blunt(dedupe(points)))
     assert 3 <= len(pts) <= 64, (name, len(pts))
+    try:
+        written(pts)
+    except AssertionError as e:
+        raise AssertionError((name,) + e.args)
     NAMES[name] = len(NODES)
     NODES.append((name, f'<path d="{d_of(pts)}" {paint(stroke, width, fill)}/>', origin, layer))
 

@@ -26,6 +26,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 ID = "curio"
 PATHS, POINTS = 4, 64
 PALETTE = 9
+SHARPEST = 150.0   # degrees: the sharpest turn an outline may make
+SHARP = []         # outlines that turn sharper, reported and refused
 
 # Greys and weights, by role (few, used consistently): brightest is what the
 # sound is doing; the object's body a step down; its structure, then engraving.
@@ -759,10 +761,12 @@ P(m, "wind 2", (238, 176), ribbon([(x, 2.5 * (1 - (x / 28) ** 2)) for x in range
 # Each specimen stands alone on the black, its picture centred in the screen
 # below the header: every part moves by its specimen's (dx, dy), px, and the
 # display moves its reshaped outlines by the same (art.h's ox, oy). Measured
-# by tests/clear.cpp, which prints each specimen's extent at its defaults:
-# its box there centred on (240, 129), as far as every sweep stays on screen.
-OFFSET = [(100, 8), (44, 1), (55, 4), (47, 2), (14, 6), (49, 9), (33, 3), (54, -3),
-          (54, 20), (41, -18), (60, -7), (70, -17), (35, -3), (65, -5), (70, -7), (60, -4)]
+# by tests/clear.cpp, which prints each specimen's extent at its defaults.
+# Each specimen's box at rest is centred on (240, 130), as far as its every
+# sweep stays between y 46 (clear of the two-row header) and 214 and between
+# x 6 and 474.
+OFFSET = [(100, 9), (44, 7), (55, 5), (47, 3), (14, 7), (49, 6), (33, 5), (54, 3),
+          (54, 21), (41, -17), (60, -6), (70, -16), (35, -2), (65, 1), (70, -6), (60, -1)]
 for prt in parts:
     dx, dy = OFFSET[prt["model"]]
     prt["pivot"] = (prt["pivot"][0] + dx, prt["pivot"][1] + dy)
@@ -795,14 +799,16 @@ def check(pts, name):
         assert d >= 0.125, (name, i, d)
         if i == n - 1:
             assert d >= 0.25, (name, "closing", d)
-    # No turn straight back.
+    # No turn sharper than SHARPEST: the OP-XY strokes with mitred joins and no
+    # mitre limit, so a turn near straight back draws a long spike.
     for i in range(n):
         p0, p1, p2 = pts[i - 1], pts[i], pts[(i + 1) % n]
         v1 = (p1[0] - p0[0], p1[1] - p0[1])
         v2 = (p2[0] - p1[0], p2[1] - p1[1])
-        L1, L2 = math.hypot(*v1), math.hypot(*v2)
-        cosang = (v1[0] * v2[0] + v1[1] * v2[1]) / (L1 * L2)
-        assert cosang > -0.999, (name, "turns straight back at", i)
+        turn = math.degrees(math.atan2(abs(v1[0] * v2[1] - v1[1] * v2[0]), v1[0] * v2[0] + v1[1] * v2[1]))
+        if turn > SHARPEST:
+            assert name != "snap", "snapping sharpens a turn"
+            SHARP.append((name, i, round(turn)))
     if len(set((round(x * 1024), round(y * 1024)) for x, y in pts)) != n:
         raise AssertionError((name, "repeats a point"))
 
@@ -817,6 +823,33 @@ def rounded(pts, k=1):
 
 
 SNAP = 0.25   # px on screen
+
+
+def blunt(pts, k=1, cut=0.4):
+    """Each corner sharper than SHARPEST cut across, a quarter pixel or so back
+    along both its edges, so the device's mitred join draws no spike: the one
+    sharp turn becomes two gentle ones."""
+    for _ in range(4):
+        out, n, changed = [], len(pts), False
+        for i in range(n):
+            p0, p1, p2 = pts[i - 1], pts[i], pts[(i + 1) % n]
+            v1 = (p1[0] - p0[0], p1[1] - p0[1])
+            v2 = (p2[0] - p1[0], p2[1] - p1[1])
+            L1, L2 = math.hypot(*v1), math.hypot(*v2)
+            turn = math.degrees(math.atan2(abs(v1[0] * v2[1] - v1[1] * v2[0]), v1[0] * v2[0] + v1[1] * v2[1]))
+            # the cut's two points must stand 1/8 px apart however narrow the tip
+            need = 0.17 * k / max(1e-6, 2 * math.sin(math.radians(180 - turn) / 2))
+            c = min(max(cut * k, need), 0.48 * L1, 0.48 * L2, L1 - 0.16 * k, L2 - 0.16 * k)
+            if turn > SHARPEST - 1 and c >= need:
+                out.append((p1[0] - v1[0] / L1 * c, p1[1] - v1[1] / L1 * c))
+                out.append((p1[0] + v2[0] / L2 * c, p1[1] + v2[1] / L2 * c))
+                changed = True
+            else:
+                out.append(p1)
+        pts = out
+        if not changed:
+            break
+    return pts
 
 
 def snapped(pts, k=1):
@@ -873,7 +906,7 @@ def main():
             shape = prt["shape"]
             if len(shape) >= 12:   # a long outline: drop points the eye can't place (a ribbon's are dropped already)
                 shape = simplify(shape + [shape[0]], 0.25)[:-1]
-            pts = snapped(shape, kk)
+            pts = snapped(blunt(shape, kk), kk)
             check(pts, name)
             out.append(f'<path id="{ID}_node_{i}" d="{d_of(pts)}" fill="{fill}" stroke="{st}" stroke-width="{sw}"/>')
             bounds.append((min(x for x, _ in pts), min(y for _, y in pts), max(x for x, _ in pts), max(y for _, y in pts)))
@@ -1003,6 +1036,7 @@ const float node[{len(bounds)}][4] = {{
             per[nodes[int(mm.group(1))]["model"]] += len(line) + 1
     print(f"{node_count} nodes ({len(rows)} specimen parts), {len(svg)} bytes of artwork")
     print("bytes by specimen:", ", ".join(f"{MODELS[i]} {per[i]} ({counts[i]})" for i in range(16)))
+    assert not SHARP, f"outlines turning sharper than {SHARPEST} degrees: {SHARP}"
 
 
 if __name__ == "__main__":

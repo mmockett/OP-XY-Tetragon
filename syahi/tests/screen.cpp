@@ -55,7 +55,7 @@ void outline_rules(const char* what, unsigned path) {
         const double dot = dx * ex + dy * ey, cross = dx * ey - dy * ex;
         if (dot < 0) {
             const double turn = std::atan2(std::fabs(cross), -dot) * 180 / M_PI;
-            CHECK(turn >= 2.5, "%s: path %u turns back %.2f degrees at point %u", what, path, turn, (i + 1) % 64);
+            CHECK(turn >= 29.5, "%s: path %u turns sharper than 150 degrees (%.1f short of straight back) at point %u", what, path, turn, (i + 1) % 64);
         }
         area += a.x / 1024.0 * b.y / 1024.0 - b.x / 1024.0 * a.y / 1024.0;
     }

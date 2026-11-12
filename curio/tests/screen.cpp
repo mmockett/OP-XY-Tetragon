@@ -1,7 +1,7 @@
 // CURIO's screen checks, run by sdk.py test: every frame valid and every
 // reshaped outline drawable on the device over every control's whole travel
 // (points at least 1/8 px apart, a closing edge of at least 1/4 px, no turn
-// straight back), still at rest, light on churn while a hit plays, every
+// sharper than 150 degrees), still at rest, light on churn while a hit plays, every
 // control moving the picture, a hit's motion its sound's own length, and
 // every caption fitting its column in the OP-XY's face.
 #include "../engine.cpp"
@@ -49,7 +49,7 @@ bool outlines_ok(const curio::Frame& f, const char* what) {
             const long long ux = b.x - a.x, uy = b.y - a.y;
             const double dot = static_cast<double>(ux * dx + uy * dy);
             const double n1 = static_cast<double>(ux * ux + uy * uy), n2 = static_cast<double>(d2);
-            if ((a.x == c.x && a.y == c.y) || (dot < 0 && dot * dot > 0.998 * n1 * n2)) { std::printf("FAIL outline %u turns straight back at %d: %s\n", p, i, what); ok = false; break; }
+            if ((a.x == c.x && a.y == c.y) || (dot < 0 && dot * dot > 0.75 * n1 * n2)) { std::printf("FAIL outline %u turns sharper than 150 degrees at %d: %s\n", p, i, what); ok = false; break; }
         }
     }
     if (!ok) ++failures;

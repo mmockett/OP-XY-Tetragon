@@ -220,7 +220,29 @@ inline void park(Frame& frame, u32 p) {
 // outlines' 64 px reach is drawn at half size and shown at twice it, in a
 // palette entry of half the stroke (7: the hero's, 8: structure's). Each is
 // moved by its specimen's offset to the screen's middle (art.h's ox, oy).
+// Any corner of an outline turning sharper than 150 degrees eased onto the
+// midpoint of its neighbours: the OP-XY strokes with mitred joins and no mitre
+// limit, so a turn near straight back (a ribbon folding at a bend) draws a spike.
+inline void soften(Path& p) {
+    for (u32 pass = 0; pass < 3; ++pass) {
+        bool eased = false;
+        for (u32 i = 0; i < 64; ++i) {
+            const Point& a = p.points[(i + 63) % 64];
+            Point& b = p.points[i];
+            const Point& c = p.points[(i + 1) % 64];
+            const i32 ux = (b.x - a.x) >> 4, uy = (b.y - a.y) >> 4, vx = (c.x - b.x) >> 4, vy = (c.y - b.y) >> 4;
+            const i32 dot = ux * vx + uy * vy, cross = ux * vy - uy * vx;
+            if (dot < 0 && (cross < 0 ? -cross : cross) * 7 < -dot * 4) {   // tan 30 degrees, about 4/7
+                b.x = a.x + (c.x - a.x) / 2;
+                b.y = a.y + (c.y - a.y) / 2;
+                eased = true;
+            }
+        }
+        if (!eased) break;
+    }
+}
 inline void show_path(Frame& frame, u32 m, u32 p, i32 x, i32 y, u32 shade, i32 scale = u) {
+    soften(frame.paths[p]);
     frame.paths[p].key = key_of(frame.paths[p]);
     place(frame, p, x + art::ox[m] * u, y + art::oy[m] * u, scale, shade, stroke);
 }

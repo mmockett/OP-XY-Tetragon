@@ -41,9 +41,10 @@ inline void aside(Point& q, const Point& from, const Point* placed, u32 m) {
     }
 }
 
-// Squares off every turn within about 3.6 degrees of straight back, an eighth of a
-// pixel across: a stroke's mitre at such a point would run far out. An outline with no
-// room left gives up the point that bends it least for it.
+// Squares off every turn sharper than 150 degrees, an eighth of a pixel across:
+// the OP-XY strokes with mitred joins and no mitre limit, so a stroke's mitre at
+// such a point would run far out as a spike. An outline with no room left gives
+// up the point that bends it least for it.
 inline void blunt(Point* p, u32& m) {
     for (u32 i = 0; i < m && m > 3; ++i) {
         const Point& a = p[i ? i - 1 : m - 1];
@@ -51,7 +52,7 @@ inline void blunt(Point* p, u32& m) {
         const Point& c = p[i + 1 < m ? i + 1 : 0];
         const i32 ux = (b.x - a.x) >> 4, uy = (b.y - a.y) >> 4, vx = (c.x - b.x) >> 4, vy = (c.y - b.y) >> 4;
         const i32 dot = ux * vx + uy * vy, cross = ux * vy - uy * vx;
-        if (dot >= 0 || (cross < 0 ? -cross : cross) > (-dot >> 4)) continue;
+        if (dot >= 0 || (cross < 0 ? -cross : cross) * 7 > -dot * 4) continue;   // tan 30 degrees, about 4/7
         const i32 side = cross < 0 ? -1 : 1;
         Point q = b;
         q.x += side * (uy > 0 ? -apart : uy < 0 ? apart : 0);
