@@ -293,6 +293,11 @@ inline void prepare(Body& b, u32 model, const i32* p) {
             // A rack of heads: each fret the next head up; set as each strikes.
             b.k[2] = GQ16(1.5 / 12) + multiply(GQ16(3.5 / 12), p2);           // octaves a head
             b.k[3] = p3;
+            // What every head shares: its sweep's decay a grain and its second
+            // partial's share; each head's own, once a note (fill_head).
+            b.pc[0] = per_grain(dsp::decay(ms(40 * 256)));
+            b.pc[1] = GQ15(0.08) + dsp::m15(GQ15(0.8), p3 >> 16);
+            b.used = 0;
         }
         prepare_click(b.click[0], 700, 1500);
         b.cg[0] = GQ28(0.3);
@@ -609,6 +614,24 @@ inline const u16* tine_contact(Body& b, u32 steps, i32 lf) {
     }
     return c;
 }
+// A fill's head `up` steps up the rack (0..16) in a run of n frets: its
+// increment and its two partials' decays a grain, worked out at the first
+// strike on it in a note and kept in the ghost cells a fill never uses
+// (b.used marks the heads done).
+inline const u32* fill_head(Body& b, u32 up, u32 n) {
+    u32* e = b.later + up * 3;
+    if (!(b.used & (1u << up))) {
+        b.used |= 1u << up;
+        const i32 share = n ? static_cast<i32>((up * table::reciprocal[n]) >> 1) : 0;   // Q15
+        const i32 lf = b.k[1] + static_cast<i32>(up) * b.k[2];
+        const i32 tau = b.k[0] + dsp::log2(static_cast<u32>(GQ16(1) - (dsp::m15(GQ16(0.25) >> 1, share) * 2))) - 16 * dsp::octave;
+        const i32 sk = b.k[3];
+        e[0] = dsp::increment(lf);
+        e[1] = static_cast<u32>(per_grain(dsp::decay(tau + dsp::log2(static_cast<u32>(dsp::mix(GQ16(0.6), GQ16(1.0), sk))) - 16 * dsp::octave)));
+        e[2] = static_cast<u32>(per_grain(dsp::decay(tau + dsp::log2(static_cast<u32>(dsp::mix(GQ16(0.4), GQ16(0.8), sk))) - 16 * dsp::octave)));
+    }
+    return e;
+}
 // tune() with the contacts given.
 inline void tine_tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 soft, u32 hard) {
     s.m.tune(dsp::increment(log2_hz), r);
@@ -643,16 +666,18 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     case fill: {
         // Each fret is the next head up the rack; the landing and its bounces the lowest.
         Skin& s = b.skin[b.count & 1];
-        const u32 up = n > step ? n - step : 0;
-        const i32 share = n ? static_cast<i32>((up * table::reciprocal[n]) >> 1) : 0;   // Q15
-        const i32 lf = b.k[1] + static_cast<i32>(up) * b.k[2];
-        const i32 tau = b.k[0] + dsp::log2(static_cast<u32>(GQ16(1) - (dsp::m15(GQ16(0.25) >> 1, share) * 2))) - 16 * dsp::octave;
-        const i32 sk = b.k[3];
-        const i32 ratios[2] = {GQ28(1), GQ28(1.5)};
-        const i32 decays[2] = {dsp::decay(tau + dsp::log2(static_cast<u32>(dsp::mix(GQ16(0.6), GQ16(1.0), sk))) - 16 * dsp::octave),
-                               dsp::decay(tau + dsp::log2(static_cast<u32>(dsp::mix(GQ16(0.4), GQ16(0.8), sk))) - 16 * dsp::octave)};
-        const i32 shares[2] = {32767, GQ15(0.08) + dsp::m15(GQ15(0.8), sk >> 16)};
-        skin(s, lf, GQ16(0.45), dsp::decay(ms(40 * 256)), 2, ratios, decays, shares, GQ16(1.2));
+        const u32* head = fill_head(b, n > step ? n - step : 0, n);
+        s.inc = head[0];
+        s.sweep_inc = static_cast<u32>(multiply(static_cast<i32>(s.inc >> 1), GQ16(0.45) << 12)) << 4;
+        s.sr = b.pc[0];
+        s.parts = 2;
+        s.vp = GQ16(1.2);
+        s.ratio[0] = GQ28(1);
+        s.ratio[1] = GQ28(1.5);
+        s.e[0].r = static_cast<i32>(head[1]);
+        s.e[1].r = static_cast<i32>(head[2]);
+        s.share[0] = 32767;
+        s.share[1] = b.pc[1];
         s.strike(v15, vt);
         b.click[0].strike(vt);
         break;
