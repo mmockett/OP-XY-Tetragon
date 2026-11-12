@@ -85,6 +85,10 @@ struct Core {
     // METAL's wash gain (Q28, at least half), what its inputs keep of it (Q31)
     // and SIZZLE's noise in the wash for a unit of the wires' drive (Q26).
     i32 wash_gain, wash_in, sizzle_k;
+    // The modes that run at a quarter of the rate (bit k for mode k; set at
+    // the note's start), and the quarter-rate bus's last three samples.
+    u32 quarter;
+    i32 qs[3];
 };
 
 // Mode k's resting phase: the prototype's k * 1.3 radians.
@@ -355,7 +359,7 @@ static inline void schedule(Core& v, Strikes& out) {
 // ---- a block
 
 // The planned values at the block's end for partial k.
-static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 glide_now) {
+static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 glide_now, u32 most) {
     // A finished ramp's strike joins the established ring.
     if (v.ramp >= 0x80000000u && m.p) {
         m.a += m.p;
@@ -371,7 +375,6 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
     // A mode whose pitch can't move (no bend, no glide) keeps its increment
     // after the first block.
     if (m.bend || v.spec.glide || !v.air_time) {
-        const u32 most = increment(lg(10800));   // the half rate's Nyquist, 11 kHz
         u32 target = increment(pitch);
         if (target > most) target = most;
         if (m.inc > most) m.inc = most;
@@ -441,6 +444,42 @@ __attribute__((noinline)) static void run_half(Partial& a, i32* __restrict h, co
         ga += dga;
     }
     advance(a, 2 * count);
+}
+// One partial at a quarter of the rate over quarter-samples [begin, begin + count)
+// of the block's 16: quarter-sample i is full sample 4i + 3, its phase the sum
+// after 4i + 4 steps (4 inc + 6 dinc, then on by 4 inc + 22 dinc, rising by
+// 16 dinc), its level stepped four samples at a time, into q.
+template <bool ramp>
+__attribute__((noinline)) static void run_quarter(Partial& a, i32* __restrict q, const i32* __restrict r, u32 begin, u32 count) {
+    const i16* const table = tables::sine;
+    const u32 d = static_cast<u32>(a.dinc);
+    u32 pa = a.phase + 4 * a.inc + 6 * d, ia = 4 * a.inc + 22 * d;
+    const u32 da = 16 * d;
+    i32 ga = a.g + 3 * a.dg;
+    const i32 dga = 4 * a.dg, ea = ramp ? a.pe : 0;
+    const i16* ta = table + (pa >> sine_shift);
+    i32* o = q + begin;
+    const i32* rr = r + 4 * begin + 3;
+    for (u32 n = 0; n < count; ++n) {
+        const i32 xa = static_cast<i32>(*ta) << 16;
+        pa += ia;
+        ia += da;
+        ta = table + (pa >> sine_shift);
+        o[n] += ramp ? multiply(ga + multiply(ea, rr[4 * n]), xa) : multiply(ga, xa);
+        ga += dga;
+    }
+    advance(a, 4 * count);
+}
+// The quarter-rate bus up to the half rate, added into h, one quarter-sample
+// (4 samples) late: each quarter-sample as it is, and between two the 4-tap
+// half-band (9 (b + c) - (a + d)) / 16, which keeps a mode's image under
+// -58 dB below 1 kHz and -44 dB at 1.5 kHz. q holds the last block's last
+// three quarter-samples, then this block's 16.
+__attribute__((noinline)) static void quarter_up(const i32* __restrict q, i32* __restrict h) {
+    for (u32 i = 0; i < 16; ++i) {
+        h[2 * i] += ((q[i + 1] >> 4) + (q[i + 2] >> 4)) * 9 - ((q[i] >> 4) + (q[i + 3] >> 4));
+        h[2 * i + 1] += q[i + 2];
+    }
 }
 // The half-rate head back at the full rate, each half-sample's step heard
 // between (the last block's last half-sample is `last`). The block's first
@@ -778,6 +817,9 @@ static inline void rattle_pass(Core& v, i32* out) {
 // are quiet and only advance).
 __attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, i32 energy_end, i32 glide_now, u32* live) {
     u32 lives = 0;
+    // The highest a mode's increment may reach: under the half rate's Nyquist
+    // (10.8 kHz), or the quarter rate's (5 kHz).
+    const u32 most_half = increment(lg(10800)), most_quarter = increment(lg(5000));
     for (u32 k = 0; k < head_modes; ++k) {
         Partial& m = v.part[k];
         // A quiet mode with no strike only falls and moves on (its level is
@@ -790,7 +832,7 @@ __attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, 
             skip(m, 64);
             continue;
         }
-        plan_mode(v, m, k, energy_end, glide_now);
+        plan_mode(v, m, k, energy_end, glide_now, v.quarter >> k & 1u ? most_quarter : most_half);
         for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
         if (!strikes.count && quiet(m)) {
             skip(m, 64);
@@ -846,24 +888,39 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     // strikes, landing each strike as it comes.
     u32 live[head_modes];
     const u32 lives = plan_head(v, strikes, energy_end, glide_now, live);
-    // The head, the body and the air at half the rate.
-    i32 h[32];
+    // The head at half the rate, its low modes at a quarter; the body and the air at a quarter.
+    i32 h[32], qs[19];
     for (u32 i = 0; i < 32; ++i) h[i] = 0;
+    qs[0] = v.qs[0];
+    qs[1] = v.qs[1];
+    qs[2] = v.qs[2];
+    i32* const q = qs + 3;
+    for (u32 i = 0; i < 16; ++i) q[i] = 0;
+    bool quartered = qs[0] || qs[1] || qs[2];
     {
-        u32 begin = 0;
+        u32 hb = 0, qb = 0;
         for (u32 i = 0; i <= strikes.count; ++i) {
             const u32 end = i < strikes.count ? strikes.at[i] : 64;
-            // Half-samples: a strike lands on the half-sample it falls in.
-            const u32 hb = begin >> 1, he = end >> 1;
-            if (he > hb)
-                for (u32 j = 0; j < lives; ++j) {
-                    Partial& a = v.part[live[j]];
-                    if (ramping && a.pe) run_half<true>(a, h, r, hb, he - hb);
+            // A strike lands on the half-sample (quarter-sample) it falls in.
+            const u32 he = end >> 1, qe = end >> 2;
+            for (u32 j = 0; j < lives; ++j) {
+                Partial& a = v.part[live[j]];
+                const bool ramp = ramping && a.pe;
+                if (v.quarter >> live[j] & 1u) {
+                    quartered = true;
+                    if (qe > qb) {
+                        if (ramp) run_quarter<true>(a, q, r, qb, qe - qb);
+                        else run_quarter<false>(a, q, r, qb, qe - qb);
+                    }
+                } else if (he > hb) {
+                    if (ramp) run_half<true>(a, h, r, hb, he - hb);
                     else run_half<false>(a, h, r, hb, he - hb);
                 }
+            }
             if (i < strikes.count)
                 for (u32 j = 0; j < lives; ++j) land(v.part[live[j]], strikes.level[i], ramp_at[i]);
-            begin = end & ~1u;
+            hb = he;
+            qb = qe;
         }
     }
     // The body and the air (at half rate with the head; no model with wires has them).
@@ -879,8 +936,12 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         const u32 target = increment(b.rest + multiply(energy_end, v.body_bend));
         b.dinc = (static_cast<i32>(target) - static_cast<i32>(b.inc)) >> 6;
         b.dg = (b.a - v.body_rise - b.g) >> 6;
-        if (absolute(b.a) < silent && absolute(b.g) < silent) skip(b, 64);
-        else run_half<false>(b, h, r, 0, 32);
+        if (absolute(b.a) < silent && absolute(b.g) < silent) {
+            skip(b, 64);
+        } else {
+            run_quarter<false>(b, q, r, 0, 16);
+            quartered = true;
+        }
     }
     Partial& air = v.part[air_mode];
     if (air.weight && v.air_time < v.air_length + 64) {
@@ -891,9 +952,16 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         air.inc = increment(air.rest);
         air.dinc = 0;
         air.dg = (g_end - air.g) >> 6;
-        run_half<false>(air, h, r, 0, 32);
+        run_quarter<false>(air, q, r, 0, 16);
+        quartered = true;
     }
     v.air_time += 64;
+    if (quartered) {
+        quarter_up(qs, h);
+        v.qs[0] = qs[16];
+        v.qs[1] = qs[17];
+        v.qs[2] = qs[18];
+    }
     const Spec& s = v.spec;
     // METAL: its head tilted; the wires (SIZZLE) follow the head's swing and
     // buzz in the wash's band, so the wash runs whenever either sounds.

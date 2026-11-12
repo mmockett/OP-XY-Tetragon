@@ -154,6 +154,12 @@ inline void begin_note(Voice& voice, Shared& shared) {
         m.inc = increment_cold(k < head_modes ? lifted(m, one, 0) : m.rest);
     }
     core.part[body_mode].phase = core.part[air_mode].phase = 0;
+    // A mode that can't rise past 1.5 kHz (struck at full energy, and any
+    // upward glide) runs at a quarter of the rate for the whole note.
+    core.quarter = 0;
+    const i32 rise = core.spec.glide > 0 ? core.spec.glide : 0;
+    for (u32 k = 0; k < head_modes; ++k)
+        if (core.part[k].rest + core.part[k].bend + rise < lg(1500)) core.quarter |= 1u << k;
     core.glide_left = core.swell_left = one;
     core.ramp = 0x80000000u;
     core.next_event = 0;
