@@ -1420,25 +1420,54 @@ __attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc_full, i3
     const i32 up0 = clang >> 1, down0 = (-clang) >> 1;
     const i32 up1 = multiply(clang, GQ31(0.8)) >> 1, down1 = multiply(-clang, GQ31(0.8)) >> 1;
     const i32 ups = up0 + up1, d0 = down0 - up0, d1 = down1 - up1;
-    for (u32 g = 0; g < m; g += hgrain) {
-        const i32 s1 = multiply(slow, rs16), f1 = multiply(fast, rf16);
-        i32 l = slow + fast;
-        const i32 dl = (s1 + f1 - l) >> 3;
-        i32* __restrict o = out + g;
-        for (u32 i = 0; i < hgrain; ++i) {
-            p0 += inc;
-            p1 += inc2;
-            l += dl;
-            i32 wave = 0;
-            if (KIND != 2) wave = multiply(sine_of(p0), a0) + multiply(sine_of(p1), a1);
-            // The signs, without a branch: a phase's top bit, all ones from
-            // half a turn (where the sine is 0, so either reads the same but
-            // for its last bit).
-            if (KIND != 1) wave += ups + (d0 & (static_cast<i32>(p0) >> 31)) + (d1 & (static_cast<i32>(p1) >> 31));
-            o[i] += multiply(wave, l) * 2;
+    if (KIND == 2) {
+        for (u32 g = 0; g < m; g += hgrain) {
+            const i32 s1 = multiply(slow, rs16), f1 = multiply(fast, rf16);
+            i32 l = slow + fast;
+            const i32 dl = (s1 + f1 - l) >> 3;
+            i32* __restrict o = out + g;
+            for (u32 i = 0; i < hgrain; ++i) {
+                p0 += inc;
+                p1 += inc2;
+                l += dl;
+                // The signs, without a branch: a phase's top bit, all ones from
+                // half a turn (where the sine is 0, so either reads the same but
+                // for its last bit).
+                const i32 wave = ups + (d0 & (static_cast<i32>(p0) >> 31)) + (d1 & (static_cast<i32>(p1) >> 31));
+                o[i] += multiply(wave, l) * 2;
+            }
+            slow = s1;
+            fast = f1;
         }
-        slow = s1;
-        fast = f1;
+    } else {
+        // The sines by their recurrence, sin(x + w) = 2 cos w sin x - sin(x - w),
+        // from the table at the stretch's start; a sine's sign is the clang's.
+        const i32 c0 = sine_of(inc + 0x40000000u), c1 = sine_of(inc2 + 0x40000000u);
+        i32 u0 = sine_of(p0), v0 = sine_of(p0 + inc), u1 = sine_of(p1), v1 = sine_of(p1 + inc2);
+        for (u32 g = 0; g < m; g += hgrain) {
+            const i32 s1 = multiply(slow, rs16), f1 = multiply(fast, rf16);
+            i32 l = slow + fast;
+            const i32 dl = (s1 + f1 - l) >> 3;
+            i32* __restrict o = out + g;
+            for (u32 i = 0; i < hgrain; i += 2) {
+                l += dl;
+                i32 wave = multiply(v0, a0) + multiply(v1, a1);
+                if (KIND == 0) wave += ups + (d0 & (v0 >> 31)) + (d1 & (v1 >> 31));
+                o[i] += multiply(wave, l) * 2;
+                u0 = static_cast<i32>((static_cast<u32>(multiply(c0, v0)) << 1) - static_cast<u32>(u0));
+                u1 = static_cast<i32>((static_cast<u32>(multiply(c1, v1)) << 1) - static_cast<u32>(u1));
+                l += dl;
+                wave = multiply(u0, a0) + multiply(u1, a1);
+                if (KIND == 0) wave += ups + (d0 & (u0 >> 31)) + (d1 & (u1 >> 31));
+                o[i + 1] += multiply(wave, l) * 2;
+                v0 = static_cast<i32>((static_cast<u32>(multiply(c0, u0)) << 1) - static_cast<u32>(v0));
+                v1 = static_cast<i32>((static_cast<u32>(multiply(c1, u1)) << 1) - static_cast<u32>(v1));
+            }
+            slow = s1;
+            fast = f1;
+        }
+        p0 += inc * m;
+        p1 += inc2 * m;
     }
     ph[0] = p0; ph[1] = p1;
     es.a = slow; ef.a = fast;
