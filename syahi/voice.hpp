@@ -203,8 +203,9 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
             v.part[k].weight = weight;
         }
         // A mode the strike leaves 30 dB under the strongest is masked by it
-        // and isn't played. METAL keeps every mode: its wash is made of them.
-        if (v.model != metal) {
+        // and isn't played. METAL's wash reads only its modes' phases and
+        // struck energy, which a silent mode keeps, so METAL drops them too.
+        {
             i32 strongest = 0;
             for (u32 k = 0; k < head_modes; ++k) strongest = absolute(v.part[k].weight) > strongest ? absolute(v.part[k].weight) : strongest;
             for (u32 k = 0; k < head_modes; ++k)
@@ -845,7 +846,8 @@ __attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, 
         }
         plan_mode(v, m, k, energy_end, glide_now, v.quarter >> k & 1u ? most_quarter : most_half);
         for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
-        if (!strikes.count && quiet(m)) {
+        // A dropped mode (no weight) only moves on, even when struck.
+        if (!m.weight || (!strikes.count && quiet(m))) {
             skip(m, 64);
             continue;
         }
