@@ -308,7 +308,7 @@ struct Cicada {
         // The band (its RMS the sizzle's level) peaks near 4 times that;
         // driven under 0.3 the curve is a straight line (within 1.5%), so a
         // quiet block skips it.
-        if (lev(lev(ev, U(4.0)), sizzle_level) < U(0.15)) {
+        if (mul(ev, sizzle_level) < U(0.15 / 32.0)) {   // ev sl / 8 under 0.15 / 32: no overflow at a swarm's pile
             for (u32 j = 0; j < n; ++j) {
                 ev = mul(ev, ek);
                 const i32 in = lev(noise(r), gq);
