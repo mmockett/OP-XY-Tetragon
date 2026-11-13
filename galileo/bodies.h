@@ -1230,14 +1230,16 @@ __attribute__((noinline)) void noise_hl_add(Energy& env, u32& seed, i32* __restr
         // The level each two samples (the swing's rate) first, in place of the
         // swing; then the noise, two samples a turn.
         const u32 m = n >> 1;
+        i32 amp[64];
         for (u32 j = 0; j < m; ++j) {
-            swing[j] = multiply(ag, GQ31(0.55) + multiply(GQ31(0.45), swing[j]));
+            const i32 a2 = multiply(ag, GQ31(0.55) + multiply(GQ31(0.45), swing[j]));
+            amp[2 * j] = amp[2 * j + 1] = a2;
             ag = multiply(ag, r2);
         }
         for (u32 i = 0; i < n; ++i) {
             const i32 x0 = static_cast<i32>(x) >> 3;
             x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-            const i32 v = multiply((static_cast<i32>(x) >> 3) + x0, swing[i >> 1]) * 8;
+            const i32 v = multiply((static_cast<i32>(x) >> 3) + x0, amp[i]) * 8;
             h += multiply(v - h, ch);
             l += multiply(v - h - l, cl);
             out[i] += l;
