@@ -192,8 +192,8 @@ inline u32 hop_e(const Ball& ball, u32 b, u32 j) {
 enum Kind : u32 { fret = 0, landing = 1, rebound = 2 };
 struct Impact {
     u32 at;
-    i32 v;
-    u32 kind, step;
+    opxy::i16 v;      // 0..32767
+    opxy::u8 kind, step;
 };
 
 // One ball's place in its run: the engine's per-ball state, one compare a block.
@@ -219,9 +219,9 @@ inline Impact take(Cursor& c, const Run& run, u32 b, u32 jitter) {
     Impact hit;
     hit.at = c.next;
     if (c.index <= run.n) {
-        hit.v = dsp::m15(run.v[c.index], ball.gain);
-        hit.kind = c.index < run.n ? fret : landing;
-        hit.step = c.index;
+        hit.v = static_cast<opxy::i16>(dsp::m15(run.v[c.index], ball.gain));
+        hit.kind = static_cast<opxy::u8>(c.index < run.n ? fret : landing);
+        hit.step = static_cast<opxy::u8>(c.index);
         if (c.index == run.n) {
             // Leaving the landing: the first bounce.
             const u32 e1 = hop_e(ball, b, 1);
@@ -235,9 +235,9 @@ inline Impact take(Cursor& c, const Run& run, u32 b, u32 jitter) {
             return hit;
         }
     } else {
-        hit.v = dsp::m15(c.v, ball.gain);
-        hit.kind = rebound;
-        hit.step = run.n;
+        hit.v = static_cast<opxy::i16>(dsp::m15(c.v, ball.gain));
+        hit.kind = static_cast<opxy::u8>(rebound);
+        hit.step = static_cast<opxy::u8>(run.n);
         ++c.index;
         const u32 ej = hop_e(ball, b, c.index - run.n);
         c.flight = (c.flight * ej) >> 15;

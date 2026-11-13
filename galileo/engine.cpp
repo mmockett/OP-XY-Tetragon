@@ -168,7 +168,7 @@ inline i32 trimmed_gain(u32 model, const i32* p) {
     return static_cast<i32>(dsp::exp2(t));
 }
 
-inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters) {
+__attribute__((noinline)) void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters) {
     voice.pending = 0;
     voice.done = voice.quiet = voice.kept = 0;
     voice.model = voice.next;
@@ -188,7 +188,6 @@ inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters
         body::prepare(b, voice.model, p);
         voice.gain = trimmed_gain(voice.model, p);
     }
-    b.due = 0xffffffffu;
     b.seed = 0x243f6a88u ^ (shared.notes * 0x85ebca6bu) ^ voice.owner;
     const motion::Feel feel = motion::feel(voice.feel);
     // The run depends only on these: a repeat of the same key keeps the last one's.
@@ -205,7 +204,7 @@ inline void begin_note(Voice& voice, Shared& shared, opxy::Parameters parameters
 }
 
 // The block's impacts, in time order: a sort of a few.
-inline u32 gather(Voice& voice, motion::Impact* hits) {
+__attribute__((noinline)) u32 gather(Voice& voice, motion::Impact* hits) {
     const u32 end = voice.t + opxy::block_frames;
     const u32 lax = motion::feel(voice.feel).lax;
     u32 count = 0;
@@ -226,17 +225,23 @@ inline u32 gather(Voice& voice, motion::Impact* hits) {
 // The kit's soft ceiling: straight to 0.42 of full scale (1.5 dB under the
 // SDK's half-scale limit), then bending into it. Every default key peaks
 // under the bend; only a harder stroke (a steeper tilt, a control's extreme)
-// reaches it. x and the result are Q31.
+// reaches it. The bend is a cubic, 0.08 (u - 4/27 u^3) of u = over / 0.08,
+// flat at 0.5 of full scale from 0.12 over the knee: tanh's shape, without a
+// table or a branch. x and the result are Q31.
 inline i32 ceiling(i32 x) {
-    const i32 knee = 901943132;          // 0.42 of full scale
-    const i32 a = x < 0 ? -x : x;
-    if (a <= knee) return x;
-    // The 0.08 left: 0.08 tanh(over / 0.08), tanh reading 2^28 as 1, so the
-    // over is scaled by 1 / (8 x 0.08) = 1.5625.
-    const i32 over = a - knee;
-    const i32 bent = dsp::multiply(dsp::tanh(over + dsp::multiply(over, 1207959552)), 171798692);
-    const i32 y = knee + bent;
-    return x < 0 ? -y : y;
+    const i32 knee = 901943132, h = 171798692;   // 0.42, 0.08 of full scale
+    const i32 s = x >> 31;
+    const i32 a = (x ^ s) - s;                   // |x| (x is never -2^31 here)
+    i32 over = a - knee;
+    over = over < 0 ? 0 : over;
+    const i32 u = over < h + (h >> 1) ? over : h + (h >> 1);
+    const i32 d = dsp::multiply(dsp::multiply(dsp::multiply(u, u), u), GQ31(4.0 / 27.0 / 0.0064 / 32.0)) << 5;   // 4/27 u^3 / h^2
+    // The bend held a hair under its 0.08, so rounding never lifts the
+    // ceiling past half of full scale.
+    i32 bent = u - d;
+    bent = bent < h - 256 ? bent : h - 256;
+    const i32 y = a - over + bent;
+    return (y ^ s) - s;
 }
 
 // The body's sum at the model's gain, held within full scale (never wrapped
@@ -254,11 +259,13 @@ __attribute__((noinline)) i32 finish(const i32* __restrict sum, i32 g, i32* __re
     if (most <= 901943132 / 32) return most * 32;
     i32 peak = 0;
     for (u32 i = 0; i < opxy::block_frames; ++i) {
-        const i32 m = dsp::multiply(sum[i], g);
-        const i32 y = ceiling(m > 0x3ffffff ? dsp::one : m < -0x3ffffff ? -dsp::one : m * 32);
+        i32 m = dsp::multiply(sum[i], g);
+        m = m < -0x3ffffff ? -0x3ffffff : m;
+        m = m > 0x3ffffff ? 0x3ffffff : m;
+        const i32 y = ceiling(m * 32);
         output[i] = y;
         const i32 a = y < 0 ? -y : y;
-        if (a > peak) peak = a;
+        peak = a > peak ? a : peak;
     }
     return peak;
 }
@@ -286,24 +293,31 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             voice.gain = trimmed_gain(voice.model, p);
             break;
         }
+    // Impacts and ghosts strike at the block's start (body::step): the body runs
+    // the block in one stretch however many balls land in it. (Struck modes keep
+    // their 8-sample phase; a tine strikes on the 8-sample grid, a fill on 16.)
+    const u32 grid = ~(body::step_of(voice.model) - 1);
     motion::Impact hits[max_impacts];
     const u32 count = gather(voice, hits);
     i32 sum[opxy::block_frames];
     u32 at = 0, next = 0;
     const u32 n = voice.run.n;
-    // Impacts and ghosts strike on a 32-sample grid (0.73 ms): a block splits into
-    // at most two stretches however many balls land in it, and each stretch
-    // runs the body's parts once. (Struck modes keep their 8-sample phase; a
-    // tine strikes on the 8-sample grid, a fill on 16.)
-    const u32 grid = ~(body::step_of(voice.model) - 1);
+    const bool tine = voice.model == kit::tine;
     while (at < opxy::block_frames) {
+        // A tine's strike that keeps its set's pitch rings from its 8-sample step
+        // carried back (ring's late), so it needs no stretch of its own: only a
+        // retune waits for the body to reach its step.
+        if (tine)
+            while (next < count && !body::tine_retunes(b, hits[next].v, hits[next].step, n)) {
+                const u32 fine = (hits[next].at - voice.t) & ~7u;
+                body::strike(b, hits[next].v, hits[next].kind, hits[next].step, n, false, fine > at ? fine - at : 0);
+                ++next;
+            }
         u32 until = opxy::block_frames;
         if (next < count && ((hits[next].at - voice.t) & grid) < until) until = (hits[next].at - voice.t) & grid;
+        // A cell of ghosts ahead (a clap's, a ratchet's: on the 32-sample grid).
         const u32 ghost = body::ghost_due(b);
-        if (ghost != 0xffffffffu) {
-            const u32 g = ghost > b.now ? ((ghost - b.now + at) & grid) : at;
-            if (g < until) until = g < at ? at : g;
-        }
+        if (ghost != 0xffffffffu && at + ghost < until) until = at + ghost;
         if (until > at) {
             body::run(b, sum + at, until - at);
             at = until;
@@ -317,11 +331,11 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             ++next;
         }
         // Ghosts due within this stretch of the grid strike now.
-        body::strike_ghosts(b, n);
+        if (body::ghost_due(b) == 0) body::strike_ghosts(b, n);
     }
     voice.t += opxy::block_frames;
     const i32 peak = finish(sum, voice.gain, output);
-    const bool waiting = voice.balls > 0 || body::ghost_due(b) != 0xffffffffu;
+    const bool waiting = voice.balls > 0 || b.due;
     voice.quiet = peak < quiet_floor && !waiting ? voice.quiet + 1 : 0;
     if (voice.quiet >= quiet_blocks) voice.done = 1;
 }

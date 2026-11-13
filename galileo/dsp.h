@@ -39,6 +39,14 @@ inline i32 twice(i32 a) { return sat_add(a, a); }
 // r^2 < 1, so a2 y2 is never -2^31 and its negation never overflows.
 inline i32 resonate(i32 a1, i32 y1, i32 a2, i32 y2) { return sat_add(twice(multiply(a1, y1)), -multiply(a2, y2)); }
 
+// Two strikes (Q15) that land together, as one: their energies add, as the
+// larger and 3/8 of the smaller (Energy::strike's sum), held at full force.
+inline i32 together(i32 a, i32 b) {
+    const i32 hi = a > b ? a : b, lo = a > b ? b : a;
+    const i32 s = hi + ((lo >> 3) * 3);
+    return s > 32767 ? 32767 : s;
+}
+
 // Unsigned division, all ones for a zero divisor: notes and tempo changes only.
 // On the Blackfin `/` calls the SDK's ___udivsi3 (sdk/platform/blackfin), which
 // runs only the quotient's significant shift-and-subtract steps.
@@ -159,6 +167,9 @@ inline i32 noise(u32& seed) {
 }
 // Noise at unit amplitude (2^28).
 inline i32 noise_unit(u32& seed) { return noise(seed) >> 3; }
+
+// Under this (units 2^28: -96 dB of a full strike) a part has rung out and stops.
+const i32 hush = 1 << 12;
 
 // A decaying amplitude that strikes add energy to: a = sqrt(a^2 + v^2), held
 // under a cap. a is in units of 2^28; r the per-sample decay.

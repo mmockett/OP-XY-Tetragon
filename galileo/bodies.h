@@ -44,6 +44,12 @@ inline i32 corner(u32 a, u32 b, i32 p) {
 }
 inline i32 q16(u32 hz) { return dsp::log2(hz); }
 
+// r^16: a per-sample decay's grain.
+inline i32 per_grain(i32 r) {
+    for (int i = 0; i < 4; ++i) r = multiply(r, r);
+    return r;
+}
+
 // A membrane: up to three partials on one phase trajectory whose pitch rises
 // with the strike (sweep) and falls back.
 struct Skin {
@@ -52,7 +58,7 @@ struct Skin {
     i32 share[3];      // each partial's strike, Q15
     Energy e[3];
     u32 inc, sweep_inc;
-    i32 s, sr;         // the sweep envelope, Q31, and its decay
+    i32 s, sr;         // the sweep envelope, Q31, and its decay a grain (16 samples)
     i32 vp;            // strike exponent, Q16
     u32 parts;
     // v15 the strike's force; tone15 how hard it reads (the force, a little
@@ -64,20 +70,7 @@ struct Skin {
         const i32 sv = GQ31(0.4) + multiply(GQ31(0.6), tone15 << 16);
         if (sv > s) s = sv;
     }
-    // One sample.
-    i32 run() {
-        s = multiply(s, sr);
-        const i32 curve = multiply(s, GQ31(0.6) + multiply(s, GQ31(0.4)));   // ~ s^1.3
-        const u32 now = inc + static_cast<u32>(multiply(static_cast<i32>(sweep_inc), curve));
-        ph[0] += now;
-        i32 y = multiply(dsp::sine(ph[0]), e[0].step());
-        for (u32 k = 1; k < parts; ++k) {
-            ph[k] += times(now, ratio[k]);
-            y += multiply(dsp::sine(ph[k]), e[k].step());
-        }
-        return y;
-    }
-    bool quiet() const { return e[0].a < 64 && (parts < 2 || e[1].a < 64) && (parts < 3 || e[2].a < 64); }
+    bool quiet() const { return e[0].a < dsp::hush && (parts < 2 || e[1].a < dsp::hush) && (parts < 3 || e[2].a < dsp::hush); }
 };
 // Sets a skin: base log2 Hz, the sweep's depth (Q16 ratio of the base), its
 // time constant's decay, the partials' ratios (Q28), decays and shares (Q15).
@@ -85,12 +78,12 @@ inline void skin(Skin& k, i32 log2_hz, i32 depth16, i32 sweep_r, u32 parts, cons
                  const i32* shares, i32 vp) {
     k.inc = dsp::increment(log2_hz);
     k.sweep_inc = static_cast<u32>(multiply(static_cast<i32>(k.inc >> 1), (depth16 > 0 ? depth16 : 0) << 12)) << 4;
-    k.sr = sweep_r;
+    k.sr = per_grain(sweep_r);
     k.parts = parts;
     k.vp = vp;
     for (u32 i = 0; i < parts; ++i) {
         k.ratio[i] = ratios[i];
-        k.e[i].r = decays[i];
+        k.e[i].r = per_grain(decays[i]);   // a grain's (16 samples), as the skin runs
         k.share[i] = shares[i];
     }
 }
@@ -102,9 +95,17 @@ struct Struck {
 };
 // Tunes a struck mode: log2 Hz, decay, share (Q15) and the contact's width in
 // samples (Q8) at velocity 0 and 1.
+// A mode over 15 kHz (a kick's hard beater, a clock's tick, a tine's high
+// overtones) is left out: struck at 0, it never rings, so it costs nothing.
+const i32 log2_top_hz = 909160;   // log2 15,000 Hz, Q16
 inline void tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 width0, u32 width1) {
     const u32 inc = dsp::increment(log2_hz);
     s.m.tune(inc, r);
+    if (log2_hz >= log2_top_hz) {
+        s.soft = s.hard = 0;
+        s.m.y1 = s.m.y2 = 0;
+        return;
+    }
     s.soft = dsp::m15(share, dsp::contact(inc, width0));
     s.hard = dsp::m15(share, dsp::contact(inc, width1));
 }
@@ -139,20 +140,25 @@ inline void widths(i32 h, u32& w0, u32& w1) {
     w1 = (samples_q8 * 13) >> 4;           // * 0.65 (1.25 - 0.6)
 }
 
-// The grid impacts strike on (samples, a whole number of skin grains). A
-// tine's and a fill's strikes retune what may still ring (a set of modes,
-// the next head up), so where they land sets how it carries on: a tine keeps
-// the 8-sample grid, a fill (its heads need whole grains) 16.
-const u32 step = 32, tine_step = 8, fill_step = 16;
+// The grid impacts strike on (samples, a whole number of skin grains): the
+// block, so a body runs each part once a block however busy the run. A
+// strike's modes still ring from its 8-sample step (ring's late); its skin,
+// noise and click start up to 1.45 ms early. A tine's and a fill's strikes
+// retune what may still ring (a set of modes, the next head up), so where they
+// land sets how it carries on: a tine keeps the 8-sample grid, a fill (its
+// heads need whole grains) 16.
+const u32 step = 64, tine_step = 8, fill_step = 16;
 inline u32 step_of(u32 model) { return model == kit::tine ? tine_step : model == kit::fill ? fill_step : step; }
 // A pending strike the body schedules itself: a clap's reflections, a ratchet's teeth.
-struct Ghost { u32 at; i32 v; };
-const u32 ghosts = 32;
+// They gather on the grid ahead, a word a block, 64 blocks (93 ms) round a
+// ring: the block's force (Q15, its strongest ghost's), that one's force
+// again (its top 14 bits), and that one's 8-sample step in the block (bits 29..31).
+const u32 later_cells = 64;
 
 struct Body {
     u32 model;
     i32 p[4];          // the controls prepared, Q31
-    u32 used;          // which ghost slots hold one (bit i: slot i)
+    u32 used;          // a tine's steps whose contacts are kept (tine_contact)
     u32 seed;
     u32 count;         // strikes so far
     u32 now;           // samples since the note
@@ -167,10 +173,11 @@ struct Body {
     u32 sq[8], sqi[8];
     i32 g[8];          // mixing gains, Q28
     i32 k[4];          // model specifics
-    Ghost ghost[ghosts];
+    u32 later[later_cells];   // the ghosts ahead, by cell (a tine keeps its contacts here)
     u32 ready;         // model, p and the coefficients prepare() set hold
-    u32 due;           // the earliest ghost's time, or 0xffffffff for none
+    u32 due;           // cells ahead holding a ghost
     i32 tuned[2];      // a tine set's pitch as last tuned (log2 Hz), so a repeat isn't tuned again
+    i32 held;          // the skins' last half-rate sample (expand)
 };
 
 // The hat's and the ride's square banks (ratios to the base, Q28), and a
@@ -256,17 +263,21 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 shares[3] = {32767, GQ15(0.42) + dsp::m15(GQ15(0.3), p3 >> 16), GQ15(0.22) + dsp::m15(GQ15(0.38), p3 >> 16)};
         skin(b.skin[0], lf, GQ16(0.6), dsp::decay(ms(12 * 256)), 3, ratios, decays, shares, GQ16(1.2));
         b.env[0].r = decay_ms(70 * 256, 370 * 256, p2);                      // the wires
-        // The wires' band: broad (Q 0.9), from a dark 1.4 kHz to a bright 4.5 kHz,
-        // over a high-pass that keeps the noise out of the head's low end.
-        b.band[0].tune(dsp::mix(q16(1400), q16(4500), p3), -OCT(1.1));
-        b.pc[0] = dsp::pole(q16(700));
-        b.pc[1] = dsp::pole(q16(8500));
+        // The wires' band: broad (0.59 to 1.4 of its centre, a one-pole high-pass
+        // and low-pass, over noise with a zero at Nyquist), from a dark 1.4 kHz to
+        // a bright 4.5 kHz, which keeps the noise out of the head's low end.
+        const i32 wires = dsp::mix(q16(1400), q16(4500), p3);
+        b.pc[0] = dsp::pole(wires - OCT(1.0 / 0.59));
+        b.pc[1] = dsp::pole(wires + OCT(1.4));
         prepare_click(b.click[0], 500, 3000);                               // the stick, and the
         b.cg[0] = GQ28(0.2);
         prepare_click(b.click[1], 2600, 3000);                              // crack, through one high-pass
         b.cg[1] = GQ28(0.05) + multiply(GQ28(0.45), p3);
         b.g[0] = GQ28(1.1) - multiply(GQ28(0.45), p1);                       // head
-        b.g[1] = multiply(GQ28(1.75), p1);                                   // wires
+        // The wires, their level matched to the two-pole band's (0.3 dB more at
+        // a dark tone, 3 dB at a bright one).
+        b.g[1] = multiply(multiply(GQ28(1.75), p1), GQ31(1.04 / 1.5) + multiply(GQ31(0.38 / 1.5), p3));
+        b.g[1] += b.g[1] >> 1;
         break;
     }
     case tom: case fill: {   // tune, decay, bend (tom) or spread (fill), skin
@@ -286,6 +297,11 @@ inline void prepare(Body& b, u32 model, const i32* p) {
             // A rack of heads: each fret the next head up; set as each strikes.
             b.k[2] = GQ16(1.5 / 12) + multiply(GQ16(3.5 / 12), p2);           // octaves a head
             b.k[3] = p3;
+            // What every head shares: its sweep's decay a grain and its second
+            // partial's share; each head's own, once a note (fill_head).
+            b.pc[0] = per_grain(dsp::decay(ms(40 * 256)));
+            b.pc[1] = GQ15(0.08) + dsp::m15(GQ15(0.8), p3 >> 16);
+            b.used = 0;
         }
         prepare_click(b.click[0], 700, 1500);
         b.cg[0] = GQ28(0.3);
@@ -300,11 +316,15 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 shares[3] = {32767, GQ15(0.25) + dsp::m15(GQ15(0.4), p1 >> 16), dsp::m15(GQ15(0.35), p1 >> 16)};
         skin(b.skin[0], lf, GQ16(0.15), dsp::decay(ms(20 * 256)), 3, ratios, decays, shares, GQ16(1.2));
         b.env[0].r = decay_ms(12 * 256, 32 * 256, p1);
-        b.band[0].tune(q16(1800), OCT(1.2));
+        // The slap's ring: a resonator the noise drives (no zeros), at half the
+        // rate (run_hand), its input scaled by 2 sin w for unit gain at 1.8 kHz,
+        // by the slap's gain, and 3 dB down (half-rate noise is twice as dense).
+        b.band[0].tune(q16(1800) + dsp::octave, OCT(1.2));
+        b.g[1] = multiply(GQ28(1.4 * 0.7071), p1);
+        b.band[0].b = multiply(multiply(b.band[0].b, dsp::sine(dsp::increment(q16(1800) + dsp::octave))) * 2, b.g[1] << 2) << 1;
         prepare_click(b.click[0], 400, 3000);
         b.cg[0] = GQ28(0.2);
         b.g[0] = GQ28(1) - multiply(GQ28(0.4), p1);
-        b.g[1] = multiply(GQ28(1.4), p1);
         break;
     }
     case rim: {    // tune, wood, decay, body
@@ -352,12 +372,14 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 tau = dsp::samples(OCT(0.55) + multiply(3 * dsp::octave, p1));   // 0.55 .. 4.4 s
         b.env[0].r = dsp::decay(tau);
         b.env[1].r = dsp::decay(tau + OCT(0.6));
-        b.band[0].tune(q16(3800), OCT(0.7));
-        b.band[1].tune(q16(5500), OCT(0.9));
-        b.pc[0] = dsp::pole(q16(1800));
-        b.pc[1] = dsp::pole(q16(10000));
-        b.pc[2] = dsp::pole(q16(2800));
-        b.pc[3] = dsp::pole(q16(11000));
+        // The bank sounds at half the rate (squares, band and high-pass), so its
+        // corners are tuned an octave up of the full rate's.
+        b.band[0].tune(q16(3800) + dsp::octave, OCT(0.7));
+        b.pc[0] = dsp::pole(q16(1800) + dsp::octave);
+        // The wash's band: 3.2 to 9.9 kHz around 5.5 (a one-pole high-pass and
+        // low-pass, over noise with a zero at Nyquist).
+        b.pc[2] = dsp::pole(q16(3250));
+        b.pc[3] = dsp::pole(q16(9900));
         u32 w0, w1;
         widths(GQ31(0.8), w0, w1);
         const i32 lbell = lb + OCT(2.1);
@@ -366,7 +388,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         // stick's contact: left out.)
         tune(b.mode[0], lbell, dsp::decay(tau + OCT(0.7)), 32767, w0, w1);
         tune(b.mode[1], lbell + OCT(2.0), dsp::decay(tau + OCT(0.45)), GQ15(0.4), w0, w1);
-        b.g[0] = multiply(GQ28(0.6), p3);
+        b.g[0] = multiply(GQ28(0.6 * 1.1), p3);
         b.g[1] = multiply(GQ28(0.55), p2);
         prepare_click(b.click[0], 300, 5000);
         b.cg[0] = GQ28(0.15);
@@ -386,7 +408,7 @@ inline void prepare(Body& b, u32 model, const i32* p) {
             // decays at 1/tau + 1/12 ms
             b.env[2 * i + 1].r = multiply(dsp::decay(tau), dsp::decay(ms(12 * 256)));
         }
-        b.band[0].tune(lf + OCT(2.2), OCT(0.8));
+        b.band[0].tune(lf + OCT(2.2) + dsp::octave, OCT(0.8));   // at half the rate (run_bell)
         prepare_click(b.click[0], 300, 3000);
         b.cg[0] = GQ28(0.2);
         break;
@@ -397,6 +419,17 @@ inline void prepare(Body& b, u32 model, const i32* p) {
         const i32 tau = ms(static_cast<u32>(dsp::mix(250 * 256, 2450 * 256, p1)));
         b.k[2] = tau;
         b.k[3] = p3;
+        // What every strike's set shares: its modes' decays and the contact's
+        // widths; each scale step's contacts are worked out once a note (tine_contact).
+        b.pc[0] = dsp::decay(tau);
+        b.pc[1] = dsp::decay(tau + OCT(0.3));
+        b.pc[2] = dsp::decay(tau + OCT(0.12));
+        {
+            u32 w0, w1;
+            widths(p3, w0, w1);
+            b.pc[3] = static_cast<i32>(w0 | w1 << 16);
+        }
+        b.used = 0;
         prepare_click(b.click[0], 300, 3000);
         b.cg[0] = multiply(GQ28(0.12), p3);
         break;
@@ -439,7 +472,8 @@ inline void prepare(Body& b, u32 model, const i32* p) {
     }
     case clap: {   // tone, decay, room, snap
         const i32 lf = pitch(900, GQ16(1.25), p0);
-        b.band[0].tune(lf, OCT(1.15) + multiply(OCT(2.0) - OCT(1.15), p3)); // the cavity between the palms, Q 1.15 .. 2
+        // The cavity between the palms, Q 1.15 .. 2, at half the rate (run_clap).
+        b.band[0].tune(lf + dsp::octave, OCT(1.15) + multiply(OCT(2.0) - OCT(1.15), p3));
         b.env[0].r = decay_ms(10 * 256, 4 * 256, p3);                       // a burst: rises in 0.4 ms
         b.k[2] = decay_ms(16 * 256, 6 * 256, p3);                            // a soft hand's burst
         b.k[3] = decay_ms(7 * 256, 2 * 256, p3);                             // a hard one's
@@ -480,8 +514,12 @@ inline void prepare(Body& b, u32 model, const i32* p) {
              dsp::decay(tau + OCT(0.6)), GQ15(0.6), w0, w1);
         tune(b.mode[2], lf + dsp::log2(static_cast<u32>(GQ16(3.7) - multiply(GQ16(0.4), w))) - 16 * dsp::octave,
              dsp::decay(tau + OCT(0.4)), GQ15(0.35), w0, w1);
-        b.k[0] = 1 + ((static_cast<i32>(p2 >> 16) * 11 + 16384) >> 15);      // teeth a stroke
-        b.g[0] = static_cast<i32>(dsp::udiv(static_cast<u32>(GQ28(1.6)), 256 + ((38 * b.k[0]) >> 0)) << 8);   // 1.6 / (1 + .15 teeth)
+        // Teeth a stroke: 1 to 12 along the control, at most 8 (every tooth of
+        // every stroke is a ghost to lay and strike).
+        // Their level, 1.6 / (1 + .15 teeth), from the count along the control.
+        b.k[0] = 1 + ((static_cast<i32>(p2 >> 16) * 11 + 16384) >> 15);
+        b.g[0] = static_cast<i32>(dsp::udiv(static_cast<u32>(GQ28(1.6)), 256 + ((38 * b.k[0]) >> 0)) << 8);
+        if (b.k[0] > 8) b.k[0] = 8;
         {
             // A stroke drags the pawl over the teeth: 4 ms a tooth, closing up;
             // each tooth a little harder. Laid out once: when and how hard.
@@ -528,32 +566,40 @@ inline void clear_state(Body& b) {
     for (u32 i = 0; i < 2; ++i) b.click[i].e = b.click[i].hp.s = 0;
     for (u32 i = 0; i < 4; ++i) b.env[i].a = 0;
     for (u32 i = 0; i < 8; ++i) b.sq[i] = 0;
-    for (u32 i = 0; i < ghosts; ++i) b.ghost[i].at = b.ghost[i].v = 0;
+    for (u32 i = 0; i < later_cells; ++i) b.later[i] = 0;
+    b.due = 0;
     b.tuned[0] = b.tuned[1] = 0;
+    b.held = 0;
 }
 
 // ----------------------------------------------------------------- strike --
 inline void add_ghost(Body& b, u32 at, i32 v) {
-    if (b.used == 0xffffffffu) return;   // all taken: a strike past them is lost
-    if (!v) {                            // a silent one only marks its time
-        if (at < b.due) b.due = at;
-        return;
+    if (v <= 0) return;
+    // Never a lap round the ring or more ahead (a ghost is at most 44 ms off).
+    if (at - b.now >= (later_cells - 1) * step) at = b.now + (later_cells - 1) * step - 1;
+    u32& w = b.later[(at / step) % later_cells];
+    const i32 had = static_cast<i32>(w & 0x7fffu), top = static_cast<i32>((w >> 15) & 0x3fffu) << 1;
+    if (!had) {
+        // At most 12 blocks waiting (as the slots once held at most 32 ghosts):
+        // past that a ghost is lost (a ratchet struck hard by a big handful).
+        if (b.due >= 12) return;
+        ++b.due;
     }
-    // The first free slot: the lowest clear bit, found in five halvings.
-    u32 free = ~b.used & (b.used + 1), i = 0;
-    if (!(free & 0xffffu)) { i += 16; free >>= 16; }
-    if (!(free & 0xffu)) { i += 8; free >>= 8; }
-    if (!(free & 0xfu)) { i += 4; free >>= 4; }
-    if (!(free & 0x3u)) { i += 2; free >>= 2; }
-    if (!(free & 0x1u)) i += 1;
-    b.ghost[i].at = at;
-    b.ghost[i].v = v;
-    b.used |= 1u << i;
-    if (at < b.due) b.due = at;
+    const u32 fine = (at % step) >> 3;
+    // The block strikes once, as its strongest ghost (teeth and reflections
+    // that fall in one block are heard as one).
+    w = v > top ? static_cast<u32>(v > had ? v : had) | static_cast<u32>(v >> 1) << 15 | fine << 29
+                : static_cast<u32>(v > had ? v : had) | (w & ~0x7fffu);
 }
-// The next ghost due, or 0xffffffff.
-inline u32 ghost_due(const Body& b) { return b.due; }
-
+// Samples from b.now (a cell's start) to the next cell holding a ghost, if it is
+// within this cell or the next; else all ones.
+inline u32 ghost_due(const Body& b) {
+    if (!b.due) return 0xffffffffu;
+    const u32 c = b.now / step;
+    if (b.later[c % later_cells]) return 0;
+    if (b.later[(c + 1) % later_cells]) return step - b.now % step;
+    return 0xffffffffu;
+}
 // How hard a stroke reads: its force, 12% more or less at random, so no two
 // strokes of a roll or a bounce sound alike (the contact, the pitch's rise).
 inline i32 touch(const Body& b, i32 v15) {
@@ -566,6 +612,70 @@ inline void strike_modes(Body& b, u32 count, i32 v15, i32 vp, i32 tone15, u32 la
     for (u32 i = 0; i < count; ++i) ring(b.mode[i], tone15, a, late, g28);
 }
 
+// A tine's contacts (Q15, soft and hard, for its three modes) at scale step
+// `steps` (0..14) of its key, worked out at the step's first strike in a note
+// and kept, so a run over the same frets divides only once a step. Kept in
+// the ghost slots a tine has no use for; b.used marks the steps done.
+// A tine's overtone and glint, 2.756 and 5.404 times its pitch (log2, Q16).
+const i32 tine_over = 95850, tine_glint = 159516;   // OCT(2.756), OCT(5.404), as dsp::log2 reads them
+inline const u16* tine_contact(Body& b, u32 steps, i32 lf) {
+    u16* c = reinterpret_cast<u16*>(b.later) + steps * 6;
+    if (!(b.used & (1u << steps))) {
+        b.used |= 1u << steps;
+        const u32 w = static_cast<u32>(b.pc[3]), w0 = w & 0xffffu, w1 = w >> 16;
+        const i32 at[3] = {lf, lf + tine_over, lf + tine_glint};
+        for (u32 k = 0; k < 3; ++k) {
+            if (at[k] >= log2_top_hz) { c[2 * k] = c[2 * k + 1] = 0; continue; }   // left out over 15 kHz
+            const u32 inc = dsp::increment(at[k]);
+            c[2 * k] = static_cast<u16>(dsp::contact(inc, w0));
+            c[2 * k + 1] = static_cast<u16>(dsp::contact(inc, w1));
+        }
+    }
+    return c;
+}
+// A fill's head `up` steps up the rack (0..16) in a run of n frets: its
+// increment and its two partials' decays a grain, worked out at the first
+// strike on it in a note and kept in the ghost cells a fill never uses
+// (b.used marks the heads done).
+inline const u32* fill_head(Body& b, u32 up, u32 n) {
+    u32* e = b.later + up * 3;
+    if (!(b.used & (1u << up))) {
+        b.used |= 1u << up;
+        const i32 share = n ? static_cast<i32>((up * table::reciprocal[n]) >> 1) : 0;   // Q15
+        const i32 lf = b.k[1] + static_cast<i32>(up) * b.k[2];
+        const i32 tau = b.k[0] + dsp::log2(static_cast<u32>(GQ16(1) - (dsp::m15(GQ16(0.25) >> 1, share) * 2))) - 16 * dsp::octave;
+        const i32 sk = b.k[3];
+        e[0] = dsp::increment(lf);
+        e[1] = static_cast<u32>(per_grain(dsp::decay(tau + dsp::log2(static_cast<u32>(dsp::mix(GQ16(0.6), GQ16(1.0), sk))) - 16 * dsp::octave)));
+        e[2] = static_cast<u32>(per_grain(dsp::decay(tau + dsp::log2(static_cast<u32>(dsp::mix(GQ16(0.4), GQ16(0.8), sk))) - 16 * dsp::octave)));
+    }
+    return e;
+}
+// A tine strike's scale step (0..14) and pitch (log2 Hz) for its place `step`
+// in a run of n frets: each fret a step further up the scale, the landing at
+// the key's pitch.
+inline i32 tine_pitch(const Body& b, u32 step, u32 n, u32& steps) {
+    steps = static_cast<u32>(b.k[1]) * (n > step ? n - step : 0);
+    while (steps >= 15) steps -= 15;               // three octaves, then round again
+    u32 octaves = 0, degree = steps;
+    while (degree >= 5) { degree -= 5; ++octaves; }
+    return b.k[0] + static_cast<i32>(octaves) * dsp::octave + table::pentatonic[degree];
+}
+inline i32 tine_key(const Body& b, i32 lf) { return lf ^ (b.k[2] << 3) ^ (b.k[3] >> 7); }
+// Whether a tine's next strike (force v, place `step` in a run of n) retunes
+// the set it falls to: only such a strike needs the body run up to its step.
+inline bool tine_retunes(const Body& b, i32 v15, u32 step, u32 n) {
+    if (v15 <= 0) return false;
+    u32 steps;
+    return b.tuned[(b.count + 1) & 1] != tine_key(b, tine_pitch(b, step, n, steps));
+}
+// tune() with the contacts given.
+inline void tine_tune(Struck& s, i32 log2_hz, i32 r, i32 share, u32 soft, u32 hard) {
+    s.m.tune(dsp::increment(log2_hz), r);
+    s.soft = dsp::m15(share, static_cast<i32>(soft));
+    s.hard = dsp::m15(share, static_cast<i32>(hard));
+    if (!soft && !hard) s.m.y1 = s.m.y2 = 0;   // left out
+}
 // An impact at sample b.now + late (the struck modes ring from then on, the
 // rest strikes at b.now); ghost: a strike the body scheduled itself.
 inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = false, u32 late = 0) {
@@ -593,16 +703,18 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     case fill: {
         // Each fret is the next head up the rack; the landing and its bounces the lowest.
         Skin& s = b.skin[b.count & 1];
-        const u32 up = n > step ? n - step : 0;
-        const i32 share = n ? static_cast<i32>((up * table::reciprocal[n]) >> 1) : 0;   // Q15
-        const i32 lf = b.k[1] + static_cast<i32>(up) * b.k[2];
-        const i32 tau = b.k[0] + dsp::log2(static_cast<u32>(GQ16(1) - (dsp::m15(GQ16(0.25) >> 1, share) * 2))) - 16 * dsp::octave;
-        const i32 sk = b.k[3];
-        const i32 ratios[2] = {GQ28(1), GQ28(1.5)};
-        const i32 decays[2] = {dsp::decay(tau + dsp::log2(static_cast<u32>(dsp::mix(GQ16(0.6), GQ16(1.0), sk))) - 16 * dsp::octave),
-                               dsp::decay(tau + dsp::log2(static_cast<u32>(dsp::mix(GQ16(0.4), GQ16(0.8), sk))) - 16 * dsp::octave)};
-        const i32 shares[2] = {32767, GQ15(0.08) + dsp::m15(GQ15(0.8), sk >> 16)};
-        skin(s, lf, GQ16(0.45), dsp::decay(ms(40 * 256)), 2, ratios, decays, shares, GQ16(1.2));
+        const u32* head = fill_head(b, n > step ? n - step : 0, n);
+        s.inc = head[0];
+        s.sweep_inc = static_cast<u32>(multiply(static_cast<i32>(s.inc >> 1), GQ16(0.45) << 12)) << 4;
+        s.sr = b.pc[0];
+        s.parts = 2;
+        s.vp = GQ16(1.2);
+        s.ratio[0] = GQ28(1);
+        s.ratio[1] = GQ28(1.5);
+        s.e[0].r = static_cast<i32>(head[1]);
+        s.e[1].r = static_cast<i32>(head[2]);
+        s.share[0] = 32767;
+        s.share[1] = b.pc[1];
         s.strike(v15, vt);
         b.click[0].strike(vt);
         break;
@@ -633,26 +745,21 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     case tine: {
         // Each fret a step further up the scale, the landing at the key's pitch.
         const u32 set = (b.count & 1) * 3;
-        u32 steps = static_cast<u32>(b.k[1]) * (n > step ? n - step : 0);
-        while (steps >= 15) steps -= 15;               // three octaves, then round again
-        u32 octaves = 0, degree = steps;
-        while (degree >= 5) { degree -= 5; ++octaves; }
-        const i32 lf = b.k[0] + static_cast<i32>(octaves) * dsp::octave + table::pentatonic[degree];
+        u32 steps;
+        const i32 lf = tine_pitch(b, step, n, steps);
         const i32 h = b.k[3];
-        // Tuning a set costs divisions (its contact): only when its pitch moves.
-        const i32 key = lf ^ (b.k[2] << 3) ^ (h >> 7);
+        // Retuning a set only when its pitch moves.
+        const i32 key = tine_key(b, lf);
         if (b.tuned[set ? 1 : 0] != key) {
             b.tuned[set ? 1 : 0] = key;
-            u32 w0, w1;
-            widths(h, w0, w1);
-            tune(b.mode[set], lf, dsp::decay(b.k[2]), 32767, w0, w1);
-            tune(b.mode[set + 1], lf + OCT(2.756), dsp::decay(b.k[2] + OCT(0.3)),
-                 dsp::m15(GQ15(0.32), GQ15(0.3) + (h >> 16)), w0, w1);
+            const u16* c = tine_contact(b, steps, lf);
+            tine_tune(b.mode[set], lf, b.pc[0], 32767, c[0], c[1]);
+            tine_tune(b.mode[set + 1], lf + tine_over, b.pc[1], dsp::m15(GQ15(0.32), GQ15(0.3) + (h >> 16)), c[2], c[3]);
             // The tine's glint, 5.4 octaves up: over 0.45 of the rate it would only
             // sit at the cap (and its contact leaves it 30 dB under): left out there.
-            const i32 glint = lf + OCT(5.404);
+            const i32 glint = lf + tine_glint;
             if (glint < dsp::log2_cap_hz) {
-                tune(b.mode[set + 2], glint, dsp::decay(b.k[2] + OCT(0.12)), dsp::m15(GQ15(0.15), h >> 16), w0, w1);
+                tine_tune(b.mode[set + 2], glint, b.pc[2], dsp::m15(GQ15(0.15), h >> 16), c[4], c[5]);
             } else {
                 Struck& off = b.mode[set + 2];
                 off.m.y1 = off.m.y2 = 0;
@@ -705,7 +812,7 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
         if (!ghost) {
             // A stroke drags the pawl over the teeth (laid out by prepare()).
             const u32 teeth = static_cast<u32>(b.k[0]);
-            for (u32 q = 1; q < teeth && b.used != 0xffffffffu; ++q) {
+            for (u32 q = 1; q < teeth; ++q) {
                 const u32 t = static_cast<u32>(tooth(b, q - 1));
                 add_ghost(b, b.now + late + (t >> 16), dsp::m15(v15, static_cast<i32>(t & 0xffffu)));
             }
@@ -719,36 +826,23 @@ inline void strike(Body& b, i32 v15, u32 kind, u32 step, u32 n, bool ghost = fal
     }
     (void)kind;
 }
-// Plays the ghosts due in the grid's step from b.now, each one's modes from
-// its 8-sample step.
-inline void strike_ghosts(Body& b, u32 n) {
-    const u32 end = b.now + step - 1;
-    if (b.due > end) return;
-    // One walk over the slots held, in order: the due strike, the rest give
-    // the next due. (A ghost's strike lays no ghosts.)
-    u32 due = 0xffffffffu;
-    for (u32 i = 0, m = b.used; m; ++i, m >>= 1) {
-        if (!(m & 1u)) continue;
-        Ghost& g = b.ghost[i];
-        if (g.at <= end) {
-            const i32 v = g.v;
-            const u32 at = g.at & ~7u;
-            g.v = 0;
-            b.used &= ~(1u << i);
-            const u32 late = at > b.now ? at - b.now : 0;
-            if (b.model == kit::ratchet) {
-                // A tooth: what strike() does for one, without its dispatch.
-                ++b.count;
-                strike_modes(b, 3, v, GQ16(1.1), touch(b, v), late, b.g[0]);
-                b.click[0].strike(v);
-            } else {
-                strike(b, v, 0, 0, n, true, late);
-            }
-        } else if (g.at < due) {
-            due = g.at;
-        }
+// Plays the ghosts of the cell at b.now as one strike (their forces together),
+// its modes from the strongest one's 8-sample step.
+__attribute__((noinline)) void strike_ghosts(Body& b, u32 n) {
+    u32& w = b.later[(b.now / step) % later_cells];
+    const i32 v = static_cast<i32>(w & 0x7fffu);
+    const u32 late = (w >> 29) << 3;
+    w = 0;
+    if (!v) return;
+    --b.due;
+    if (b.model == kit::ratchet) {
+        // Teeth: what strike() does for one, without its dispatch.
+        ++b.count;
+        strike_modes(b, 3, v, GQ16(1.1), touch(b, v), late, b.g[0]);
+        b.click[0].strike(v);
+    } else {
+        strike(b, v, 0, 0, n, true, late);
     }
-    b.due = due;
 }
 
 // -------------------------------------------------------------------- run --
@@ -762,44 +856,61 @@ inline void strike_ghosts(Body& b, u32 n) {
 const u32 grain = 16;
 // The sweep's curve, ~ s^1.3.
 inline i32 sweep_curve(i32 s) { return multiply(s, GQ31(0.6) + multiply(s, GQ31(0.4))); }
-// r^16: a per-sample decay's grain.
-inline i32 per_grain(i32 r) {
-    for (int i = 0; i < 4; ++i) r = multiply(r, r);
-    return r;
-}
 // An interpolated sine of a 32-bit phase (dsp::sine, its fraction by shifts).
 inline i32 sine_of(u32 x) {
     const i32* t = table::sine + (x >> 23);
     const i32 lo = t[0];
     return lo + multiply(t[1] - lo, static_cast<i32>((x << 9) >> 1));
 }
-// One partial over n samples (n a whole number of grains): its increment at
-// each grain's edge (inc[0] at the start, scaled by ratio when given; SWEEP
-// when they move), its level decaying by r16 a grain, heard at gain g (Q28,
-// 0 for none). Writes out, or adds to it (ADD); swing gets |sine| (SWING).
+// A skin runs at half the rate: its partials are all under about 3 kHz, swept
+// or not, so a grain is 8 of its samples, each two of the block's, and the
+// sum comes back to the full rate by straight lines between them (expand).
+const u32 hgrain = grain / 2;
+// One partial over m half-rate samples (m a whole number of half grains): its
+// increment at each grain's edge (inc[0] at the start, full-rate, scaled by
+// ratio when given; SWEEP when they move), its level decaying by r16 a
+// grain, heard at gain g (Q28, 0 for none). Writes out, or adds to it (ADD);
+// swing gets |sine| (SWING).
 template <bool ADD, bool SWING, bool SWEEP>
 __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, const u32* __restrict inc, i32 ratio28,
-                                           i32 g28, i32* __restrict out, i32* __restrict swing, u32 n) {
+                                           i32 g28, i32* __restrict out, i32* __restrict swing, u32 m) {
     u32 p = phase;
     i32 a = level;
-    u32 now = ratio28 ? times(inc[0], ratio28) : inc[0];
-    for (u32 g = 0; g < n; g += grain) {
-        const u32 next = SWEEP ? (ratio28 ? times(inc[g / grain + 1], ratio28) : inc[g / grain + 1]) : now;
-        const i32 step = static_cast<i32>(next - now) >> 4;
+    u32 now = (ratio28 ? times(inc[0], ratio28) : inc[0]) << 1;
+    // The sine by its two-term recurrence, sin(x + w) = 2 cos w sin x - sin(x - w),
+    // from the table's sin p and sin(p + w) (wrapping arithmetic: each result
+    // is a sine, in range). A sweep sets each grain at its mean step w afresh;
+    // a steady partial runs the whole stretch from one start.
+    u32 w = now;
+    i32 c = sine_of(w + 0x40000000u);
+    i32 y0 = sine_of(p), y1 = sine_of(p + w);
+    for (u32 g = 0; g < m; g += hgrain) {
+        const u32 next = SWEEP ? (ratio28 ? times(inc[g / hgrain + 1], ratio28) : inc[g / hgrain + 1]) << 1 : now;
+        if (SWEEP) {
+            w = now + static_cast<u32>(static_cast<i32>(next - now) >> 1);
+            c = sine_of(w + 0x40000000u);
+            y0 = sine_of(p);
+            y1 = sine_of(p + w);
+        }
         const i32 end = multiply(a, r16);
         i32 l = g28 ? gain(a, g28) : a;
-        const i32 dl = ((g28 ? gain(end, g28) : end) - l) >> 4;
+        const i32 dl = ((g28 ? gain(end, g28) : end) - l) >> 3;
         i32* __restrict o = out + g;
-        for (u32 i = 0; i < grain; ++i) {
-            if (SWEEP) now += static_cast<u32>(step);
-            p += now;
+        for (u32 i = 0; i < hgrain; i += 2) {
             l += dl;
-            const i32 v = sine_of(p);
-            const i32 y = multiply(v, l);
-            if (ADD) o[i] += y;
-            else o[i] = y;
-            if (SWING) swing[g + i] = v < 0 ? -v : v;
+            const i32 v = multiply(y1, l);
+            if (ADD) o[i] += v;
+            else o[i] = v;
+            if (SWING) swing[g + i] = y1 < 0 ? -y1 : y1;
+            y0 = static_cast<i32>((static_cast<u32>(multiply(c, y1)) << 1) - static_cast<u32>(y0));
+            l += dl;
+            const i32 u = multiply(y0, l);
+            if (ADD) o[i + 1] += u;
+            else o[i + 1] = u;
+            if (SWING) swing[g + i + 1] = y0 < 0 ? -y0 : y0;
+            y1 = static_cast<i32>((static_cast<u32>(multiply(c, y0)) << 1) - static_cast<u32>(y1));
         }
+        p += w * hgrain;
         now = next;
         a = end;
     }
@@ -807,20 +918,21 @@ __attribute__((noinline)) void partial_run(u32& phase, i32& level, i32 r16, cons
     level = a;
 }
 template <bool ADD, bool SWING>
-inline void partial(bool sweep, u32& phase, i32& level, i32 r, const u32* inc, i32 ratio28, i32 g28, i32* out, i32* swing,
-                    u32 n) {
-    if (sweep) partial_run<ADD, SWING, true>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, n);
-    else partial_run<ADD, SWING, false>(phase, level, per_grain(r), inc, ratio28, g28, out, swing, n);
+inline void partial(bool sweep, u32& phase, i32& level, i32 r16, const u32* inc, i32 ratio28, i32 g28, i32* out, i32* swing,
+                    u32 m) {
+    if (sweep) partial_run<ADD, SWING, true>(phase, level, r16, inc, ratio28, g28, out, swing, m);
+    else partial_run<ADD, SWING, false>(phase, level, r16, inc, ratio28, g28, out, swing, m);
 }
-// A skin: writes n samples (a whole number of grains), or adds them (add), at
-// gain g (Q28) if given. swing, if given, gets |sine| of the fundamental (Q31)
-// for the snare's wires. A partial that has died away only keeps its phase.
-inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swing = 0, i32 g28 = 0, bool add = false) {
+// A skin at half the rate: writes m samples (a whole number of half grains),
+// or adds them (add), at gain g (Q28) if given. swing, if given, gets |sine|
+// of the fundamental (Q31), at the half rate too, for the snare's wires. A
+// partial that has died away only keeps its phase.
+inline void skin_half(Skin& k, i32* __restrict out, u32 m, i32* __restrict swing = 0, i32 g28 = 0, bool add = false) {
     u32 inc[64 / grain + 1];
-    const u32 grains = n / grain;
+    const u32 grains = m / hgrain;
     i32 s = k.s;
     if (s > 4194304 && k.sweep_inc) {                       // sweeping (above 0.002)
-        const i32 sr16 = per_grain(k.sr);
+        const i32 sr16 = k.sr;
         const u32 base = k.inc, sweep = k.sweep_inc;
         inc[0] = base + static_cast<u32>(multiply(static_cast<i32>(sweep), sweep_curve(s)));
         for (u32 g = 1; g <= grains; ++g) {
@@ -832,16 +944,21 @@ inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swin
         k.s = 0;
         for (u32 g = 0; g <= grains; ++g) inc[g] = k.inc;
     }
-    if (!k.parts) {
-        if (!add) for (u32 i = 0; i < n; ++i) out[i] = 0;
+    if (!k.parts || k.quiet()) {
+        // Silent (every partial under -96 dB): nothing to add; the phases move on.
+        if (!add) for (u32 i = 0; i < m; ++i) out[i] = 0;
+        for (u32 part = 0; part < k.parts; ++part) {
+            k.e[part].a = 0;
+            k.ph[part] += (part ? times(k.inc, k.ratio[part]) : k.inc) * (2 * m);
+        }
         return;
     }
     const bool sweeping = k.s != 0;
-    if (swing) partial<false, true>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, swing, n);
-    else if (add) partial<true, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, n);
-    else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, n);
+    if (swing) partial<false, true>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, swing, m);
+    else if (add) partial<true, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, m);
+    else partial<false, false>(sweeping, k.ph[0], k.e[0].a, k.e[0].r, inc, 0, g28, out, 0, m);
     for (u32 part = 1; part < k.parts; ++part) {
-        if (k.e[part].a < 4096) {                           // under -95 dBFS
+        if (k.e[part].a < dsp::hush) {                      // under -96 dB of a full strike
             k.e[part].a = 0;
             u32 p = k.ph[part];
             for (u32 g = 0; g < grains; ++g) {
@@ -851,51 +968,100 @@ inline void skin_block(Skin& k, i32* __restrict out, u32 n, i32* __restrict swin
             k.ph[part] = p;
             continue;
         }
-        partial<true, false>(sweeping, k.ph[part], k.e[part].a, k.e[part].r, inc, k.ratio[part], g28, out, 0, n);
+        partial<true, false>(sweeping, k.ph[part], k.e[part].a, k.e[part].r, inc, k.ratio[part], g28, out, 0, m);
     }
 }
-// A click's noise burst, high-passed, added at gain g (Q28).
-__attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
-    i32 e = c.e, h = c.hp.s;
-    const i32 r = c.r, cc = c.c;
-    u32 x = seed;
-    for (u32 i = 0; i < n; ++i) {
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        e = multiply(e, r);
-        const i32 in = multiply(static_cast<i32>(x), e) * 2;
-        h += multiply(in - h, cc);
-        out[i] = dsp::sat_add(out[i], gain(in - h, g28));
+// m half-rate samples h back to the full rate: each one, after the midpoint
+// between it and the one before (last, kept across stretches). Written, or
+// added (ADD).
+template <bool ADD>
+__attribute__((noinline)) void expand(const i32* __restrict h, u32 m, i32& last, i32* __restrict out) {
+    i32 y0 = last;
+    for (u32 i = 0; i < m; ++i) {
+        const i32 y = h[i];
+        const i32 mid = (y0 >> 1) + (y >> 1);
+        if (ADD) {
+            out[2 * i] += mid;
+            out[2 * i + 1] += y;
+        } else {
+            out[2 * i] = mid;
+            out[2 * i + 1] = y;
+        }
+        y0 = y;
     }
-    seed = x;
-    if (e < 16 && h < 4096 && h > -4096) e = h = 0;
-    c.e = e;
-    c.hp.s = h;
+    last = y0;
 }
 // r^8: a per-sample decay over 8 samples.
 inline i32 per_eight(i32 r) {
     for (int i = 0; i < 3; ++i) r = multiply(r, r);
     return r;
 }
+// A click's burst ends once its level is under -72 dB of a full strike's.
+const i32 click_floor = 1 << 16;
+// The high-pass's own tail once its burst has ended (no input): -h a sample,
+// h falling by c. Added; h cleared once it is under -96 dB.
+__attribute__((noinline)) void click_tail(i32& hs, i32 c, i32* __restrict out, u32 n) {
+    i32 h = hs;
+    if (h < 4096 && h > -4096) { hs = 0; return; }
+    for (u32 i = 0; i < n; ++i) {
+        h -= multiply(h, c);
+        out[i] = dsp::sat_add(out[i], -h);
+    }
+    hs = h;
+}
+// How many samples of a burst at level e (decaying r8 every 8) are left in n:
+// 8 at a time while it is over the floor; e is left decayed past them.
+inline u32 burst_length(i32& e, i32 r8, u32 n) {
+    u32 k = 0;
+    while (k < n && e >= click_floor) { e = multiply(e, r8); k += 8; }
+    return k;
+}
+// A click's noise is a linear congruential draw (its top bits; four
+// instructions where xorshift takes six).
 // A click under unity gain (g < 1, Q28): the gain rides on the burst's level,
-// so the sample needs no scaling (n a multiple of 8).
+// so the sample needs no scaling (n a multiple of 8). The noise runs only as
+// long as the burst lasts, then the high-pass's tail.
 __attribute__((noinline)) void click_soft_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
     i32 s = multiply(c.e, g28 << 3), h = c.hp.s;
     const i32 r = c.r, cc = c.c;
+    i32 e = c.e;
+    const u32 k = burst_length(e, per_eight(r), n);
     u32 x = seed;
-    for (u32 i = 0; i < n; ++i) {
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    for (u32 i = 0; i < k; ++i) {
+        x = x * 1664525u + 1013904223u;
         s = multiply(s, r);
         const i32 in = multiply(static_cast<i32>(x), s) * 2;
         h += multiply(in - h, cc);
         out[i] = dsp::sat_add(out[i], in - h);
     }
     seed = x;
-    // Its own level, decayed the same way 8 samples at a time.
-    const i32 r8 = per_eight(r);
-    i32 e = c.e;
-    for (u32 g = 0; g < n; g += 8) e = multiply(e, r8);
-    if (e < 16 && h < 4096 && h > -4096) e = h = 0;
-    c.e = e;
+    c.e = e >= click_floor ? e : 0;
+    if (k < n) click_tail(h, cc, out + k, n - k);
+    c.hp.s = h;
+}
+// A click at gain g (Q28) of 1 or more, the same way.
+__attribute__((noinline)) void click_run(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 g28) {
+    i32 e = c.e, h = c.hp.s;
+    const i32 r = c.r, cc = c.c;
+    i32 left = e;
+    const u32 k = burst_length(left, per_eight(r), n);
+    u32 x = seed;
+    for (u32 i = 0; i < k; ++i) {
+        x = x * 1664525u + 1013904223u;
+        e = multiply(e, r);
+        const i32 in = multiply(static_cast<i32>(x), e) * 2;
+        h += multiply(in - h, cc);
+        out[i] = dsp::sat_add(out[i], gain(in - h, g28));
+    }
+    seed = x;
+    c.e = left >= click_floor ? left : 0;
+    if (k < n) {
+        // The tail at the gain: the high-pass's state is before it.
+        i32 t[64];
+        for (u32 i = 0; i < n - k; ++i) t[i] = 0;
+        click_tail(h, cc, t, n - k);
+        for (u32 i = 0; i < n - k; ++i) out[k + i] = dsp::sat_add(out[k + i], gain(t[i], g28));
+    }
     c.hp.s = h;
 }
 // Idle, it costs nothing.
@@ -905,14 +1071,18 @@ inline void click_add(dsp::Click& c, u32& seed, i32* __restrict out, u32 n, i32 
     else click_run(c, seed, out, n, g28);
 }
 // Two clicks on one burst of noise and one high-pass (a's), each at its own
-// width and gain (Q28, under 1), added: n a multiple of 8.
+// width and gain (Q28, under 1), added: n a multiple of 8. The noise runs as
+// long as the longer burst lasts.
 __attribute__((noinline)) void click_pair_run(dsp::Click& a, dsp::Click& b, u32& seed, i32* __restrict out, u32 n,
                                               i32 ga28, i32 gb28) {
     i32 sa = multiply(a.e, ga28 << 3), sb = multiply(b.e, gb28 << 3), h = a.hp.s;
     const i32 ra = a.r, rb = b.r, c = a.c;
+    i32 ea = a.e, eb = b.e;
+    const u32 ka = burst_length(ea, per_eight(ra), n), kb = burst_length(eb, per_eight(rb), n);
+    const u32 k = ka > kb ? ka : kb;
     u32 x = seed;
-    for (u32 i = 0; i < n; ++i) {
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    for (u32 i = 0; i < k; ++i) {
+        x = x * 1664525u + 1013904223u;
         sa = multiply(sa, ra);
         sb = multiply(sb, rb);
         const i32 in = multiply(static_cast<i32>(x), sa + sb) * 2;
@@ -920,13 +1090,9 @@ __attribute__((noinline)) void click_pair_run(dsp::Click& a, dsp::Click& b, u32&
         out[i] = dsp::sat_add(out[i], in - h);
     }
     seed = x;
-    // Their own levels, decayed the same way 8 samples at a time.
-    const i32 ra8 = per_eight(ra), rb8 = per_eight(rb);
-    i32 ea = a.e, eb = b.e;
-    for (u32 g = 0; g < n; g += 8) { ea = multiply(ea, ra8); eb = multiply(eb, rb8); }
-    if (ea < 16 && eb < 16 && h < 4096 && h > -4096) ea = eb = h = 0;
-    a.e = ea;
-    b.e = eb;
+    a.e = ea >= click_floor ? ea : 0;
+    b.e = eb >= click_floor ? eb : 0;
+    if (k < n) click_tail(h, c, out + k, n - k);
     a.hp.s = h;
 }
 inline void click_pair_add(dsp::Click& a, dsp::Click& b, u32& seed, i32* __restrict out, u32 n, i32 ga28, i32 gb28) {
@@ -956,7 +1122,7 @@ inline void modes_add(Struck* m, u32 count, i32* __restrict out, u32 n) {
         dsp::Mode& o = m[k].m;
         if (!o.y1 && !o.y2) continue;
         modes_one(o, out, n);
-        if (o.y1 < 256 && o.y1 > -256 && o.y2 < 256 && o.y2 > -256) o.y1 = o.y2 = 0;
+        if (o.y1 < dsp::hush && o.y1 > -dsp::hush && o.y2 < dsp::hush && o.y2 > -dsp::hush) o.y1 = o.y2 = 0;
     }
 }
 // Noise under an envelope (noise std about 1.15 units), written.
@@ -1001,7 +1167,7 @@ __attribute__((noinline)) void low_run(dsp::Pole& p, i32 c, i32* __restrict io, 
 __attribute__((noinline)) void add_gain(i32* __restrict out, const i32* __restrict in, i32 g28, u32 n) {
     for (u32 i = 0; i < n; ++i) out[i] += gain(in[i], g28);
 }
-inline bool idle(const Energy& e) { return e.a < 64; }
+inline bool idle(const Energy& e) { return e.a < dsp::hush; }
 // A one-pole high-pass of in, added into out at gain g (Q28).
 __attribute__((noinline)) void high_add(dsp::Pole& p, i32 c, const i32* __restrict in, i32* __restrict out, i32 g28, u32 n) {
     i32 h = p.s;
@@ -1017,29 +1183,86 @@ inline void band_high_add(dsp::Band& f, dsp::Pole& p, i32 c, i32* __restrict io,
     band_run(f, io, n);
     high_add(p, c, io, out, g28, n);
 }
-// Noise under an envelope, swelling with a swing (Q31) as 0.55 + 0.45 swing, written.
-__attribute__((noinline)) void noise_env_swell(Energy& env, u32& seed, const i32* __restrict swing, i32* __restrict out, u32 n) {
-    i32 a = env.a;
-    const i32 r = env.r;
+// Noise under an envelope driving a two-pole resonator (f's a1 and a2, its
+// input scaled by f.b), at half the rate: m samples (m even) written, the
+// envelope's decay squared a sample. Two samples a turn, so the state swaps
+// without moves.
+__attribute__((noinline)) void noise_ring_half(Energy& env, u32& seed, dsp::Band& f, i32* __restrict out, u32 m) {
+    i32 a = env.a, y1 = f.y1, y2 = f.y2;
+    const i32 r = multiply(env.r, env.r), b = f.b, a1 = f.a1, a2 = f.a2;
     u32 x = seed;
-    for (u32 i = 0; i < n; ++i) {
+    for (u32 i = 0; i < m; i += 2) {
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         a = multiply(a, r);
-        out[i] = multiply(multiply(static_cast<i32>(x) >> 2, a) * 8, GQ31(0.55) + multiply(GQ31(0.45), swing[i]));
+        y2 = multiply(b, multiply(static_cast<i32>(x) >> 2, a) * 8) + multiply(a1, y1) * 2 - multiply(a2, y2);
+        out[i] = y2;
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        a = multiply(a, r);
+        y1 = multiply(b, multiply(static_cast<i32>(x) >> 2, a) * 8) + multiply(a1, y2) * 2 - multiply(a2, y1);
+        out[i + 1] = y1;
     }
-    env.a = a;
     seed = x;
+    env.a = a;
+    if (a < dsp::hush && y1 < dsp::hush && y1 > -dsp::hush && y2 < dsp::hush && y2 > -dsp::hush) y1 = y2 = 0;
+    f.y1 = y1;
+    f.y2 = y2;
 }
-// Noise under an envelope, swelling with `swing` if given, through a band-pass
-// and a one-pole high-pass, added into out at gain g: three passes through a
-// buffer, each with its state in registers.
-inline void noise_band_add(Energy& env, u32& seed, const i32* __restrict swing, dsp::Band& f, dsp::Pole& p, i32 c,
-                           i32* __restrict out, i32 g28, u32 n) {
-    i32 x[64];
-    if (swing) noise_env_swell(env, seed, swing, x, n);
-    else noise_env(env, seed, x, n);
-    band_run(f, x, n);
-    high_add(p, c, x, out, g28, n);
+// r^n: a per-sample decay over n samples.
+inline i32 decay_over(i32 r, u32 n) {
+    i32 y = dsp::one;
+    for (; n; n >>= 1) {
+        if (n & 1) y = multiply(y, r);
+        r = multiply(r, r);
+    }
+    return y;
+}
+// Noise, each sample the mean of two draws (a zero at Nyquist), under an
+// envelope (swelling with a half-rate swing if SWELL, as
+// 0.55 + 0.45 swing, which it overwrites) through a one-pole high-pass at ch and a one-pole
+// low-pass at cl, a broad band, added into out at gain g (Q28, under 2.5): one
+// pass. The gain rides on the envelope's level; the level itself is decayed
+// once, over the stretch, at the end.
+template <bool SWELL>
+__attribute__((noinline)) void noise_hl_add(Energy& env, u32& seed, i32* __restrict swing, dsp::Pole& hp, dsp::Pole& lp,
+                                            i32 ch, i32 cl, i32* __restrict out, i32 g28, u32 n) {
+    i32 ag = multiply(env.a, g28) << 3, h = hp.s, l = lp.s;
+    const i32 r = env.r, r2 = multiply(r, r);
+    u32 x = seed;
+    if (SWELL) {
+        // The level each two samples (the swing's rate) first, in place of the
+        // swing; then the noise, two samples a turn.
+        const u32 m = n >> 1;
+        i32 amp[64];
+        for (u32 j = 0; j < m; ++j) {
+            const i32 a2 = multiply(ag, GQ31(0.55) + multiply(GQ31(0.45), swing[j]));
+            amp[2 * j] = amp[2 * j + 1] = a2;
+            ag = multiply(ag, r2);
+        }
+        for (u32 i = 0; i < n; ++i) {
+            const i32 x0 = static_cast<i32>(x) >> 3;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            const i32 v = multiply((static_cast<i32>(x) >> 3) + x0, amp[i]) * 8;
+            h += multiply(v - h, ch);
+            l += multiply(v - h - l, cl);
+            out[i] += l;
+        }
+    } else {
+        for (u32 i = 0; i < n; ++i) {
+            const i32 x0 = static_cast<i32>(x) >> 3;
+            x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+            ag = multiply(ag, r);
+            const i32 v = multiply((static_cast<i32>(x) >> 3) + x0, ag) * 8;
+            h += multiply(v - h, ch);
+            l += multiply(v - h - l, cl);
+            out[i] += l;
+        }
+    }
+    seed = x;
+    const i32 a = multiply(env.a, decay_over(r, n));
+    if (a < dsp::hush && l < dsp::hush && l > -dsp::hush) h = l = 0;
+    env.a = a;
+    hp.s = h;
+    lp.s = l;
 }
 
 // The largest |x| of n samples, unsigned (so |-2^31| is 2^31).
@@ -1056,13 +1279,21 @@ __attribute__((noinline)) u32 peak_of(const i32* __restrict x, u32 n) {
 // k + h (units 2^28; inv_h28 is 1 / h in Q28). A hit's first milliseconds give
 // up their peak, so its body sounds louder under the same ceiling; softer
 // strokes pass untouched.
+// The bend is a cubic, h (v - 4/27 v^3) of v = over / h, flat at k + h from
+// 1.5 h over: tanh's shape, without a table or a branch.
 __attribute__((noinline)) void knee_bend(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
     for (u32 i = 0; i < n; ++i) {
         const i32 x = io[i];
-        const i32 a = x < 0 ? -x : x;
-        if (a <= k) continue;
-        const i32 y = k + multiply(dsp::tanh(gain(a - k, inv_h28)), h);
-        io[i] = x < 0 ? -y : y;
+        const i32 s = x >> 31;
+        const i32 a = (x ^ s) - s;
+        i32 over = a - k;
+        over = over < 0 ? 0 : over;
+        i32 v = gain(over, inv_h28);
+        v = v < GQ28(1.5) ? v : GQ28(1.5);
+        const i32 sq = multiply(v << 2, v << 1);                                   // v^2, units 2^28
+        const i32 c = v - multiply(v, multiply(sq, GQ31(4.0 / 27.0)) << 3);
+        const i32 y = a - over + multiply(c << 3, h);
+        io[i] = (y ^ s) - s;
     }
 }
 // The bend's search only where some sample is over the knee.
@@ -1070,36 +1301,54 @@ inline void knee_run(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
     if (peak_of(io, n) > static_cast<u32>(k)) knee_bend(io, n, k, h, inv_h28);
 }
 
+// The kick head's saturation: x driven by g (Q28), through a cubic soft clip
+// (u - 4/27 u^3, held at 1 from u = 1.5; tanh's shape, a little firmer), at
+// the makeup gain (Q28). In place.
+__attribute__((noinline)) void kick_drive(i32* __restrict io, u32 n, i32 g28, i32 makeup) {
+    const i32 hi = GQ28(1.5), lo = -GQ28(1.5);
+    for (u32 i = 0; i < n; ++i) {
+        i32 u = gain(io[i], g28);
+        u = u > hi ? hi : u < lo ? lo : u;
+        const i32 sq = multiply(u << 2, u << 1);                  // u^2, units 2^28
+        const i32 y = u - multiply(u, multiply(sq, GQ31(4.0 / 27.0)) << 3);   // 4/27 u^2 (Q31, at most 1/3)
+        io[i] = multiply(y, makeup) << 3;
+    }
+}
 __attribute__((noinline)) inline void run_kick(Body& b, i32* __restrict out, u32 count) {
-    skin_block(b.skin[0], out, count);
+    i32 h[32];
+    skin_half(b.skin[0], h, count / 2);
+    expand<false>(h, count / 2, b.held, out);
     modes_add(b.mode, 2, out, count);   // at the attack's level, from their strikes
-    const i32 drive = b.k[0], makeup = b.k[1];
-    for (u32 i = 0; i < count; ++i) out[i] = multiply(dsp::tanh(gain(out[i], drive)), makeup);
+    kick_drive(out, count, b.k[0], b.k[1]);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_snare(Body& b, i32* __restrict out, u32 count) {
-    i32 swing[64];
-    skin_block(b.skin[0], out, count, swing, b.g[0]);   // the head at its level
-    if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
+    i32 h[32], swing[32];
+    skin_half(b.skin[0], h, count / 2, swing, b.g[0]);   // the head at its level
+    expand<false>(h, count / 2, b.held, out);
+    if (!idle(b.env[0]) || b.pole[1].s) {
         // The wires buzz with the head: noise, swelling with the head's swing.
-        noise_band_add(b.env[0], b.seed, swing, b.band[0], b.pole[0], b.pc[0], out, b.g[1], count);
+        noise_hl_add<true>(b.env[0], b.seed, swing, b.pole[0], b.pole[1], b.pc[0], b.pc[1], out, b.g[1], count);
     }
     // The stick's click and the crack: one burst of noise, one high-pass.
     click_pair_add(b.click[0], b.click[1], b.seed, out, count, b.cg[0], b.cg[1]);
     knee_run(out, count, GQ28(1.2), GQ28(0.6), GQ28(1 / 0.6));
 }
 __attribute__((noinline)) inline void run_skins(Body& b, i32* __restrict out, u32 count) {   // tom, fill
-    skin_block(b.skin[0], out, count);
-    if (b.model == kit::fill) skin_block(b.skin[1], out, count, 0, 0, true);
+    i32 h[32];
+    skin_half(b.skin[0], h, count / 2);
+    if (b.model == kit::fill) skin_half(b.skin[1], h, count / 2, 0, 0, true);
+    expand<false>(h, count / 2, b.held, out);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_hand(Body& b, i32* __restrict out, u32 count) {
-    skin_block(b.skin[0], out, count, 0, b.g[0]);
+    i32 h[32];
+    skin_half(b.skin[0], h, count / 2, 0, b.g[0]);
+    expand<false>(h, count / 2, b.held, out);
     if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
-        i32 sl[64];
-        noise_env(b.env[0], b.seed, sl, count);
-        band_run(b.band[0], sl, count);
-        add_gain(out, sl, b.g[1], count);
+        // The slap at half the rate, back by straight lines.
+        noise_ring_half(b.env[0], b.seed, b.band[0], h, count / 2);
+        expand<true>(h, count / 2, b.pole[0].s, out);
     }
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
@@ -1116,11 +1365,9 @@ __attribute__((noinline)) inline void run_modes(Body& b, i32* __restrict out, u3
     // The shell, at its level, added (silent at 0, but ringing on).
     if (b.model == kit::rim || b.model == kit::ratchet) {
         const i32 level = b.g[b.model == kit::ratchet ? 1 : 0];
-        if (level) skin_block(b.skin[0], out, count, 0, level, true);
-        else {
-            i32 unheard[64];
-            skin_block(b.skin[0], unheard, count);
-        }
+        i32 h[32];
+        skin_half(b.skin[0], h, count / 2, 0, level);
+        if (level) expand<true>(h, count / 2, b.held, out);
     }
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
@@ -1177,10 +1424,10 @@ __attribute__((noinline)) void hat_finish(dsp::Pole& p1, dsp::Pole& p2, i32 c, d
     p1.s = s1; p2.s = s2; z.s = last;
 }
 __attribute__((noinline)) inline void run_hat(Body& b, i32* __restrict out, u32 count) {
-    if (idle(b.env[0]) && !b.band[0].y1 && !b.band[0].y2 && !b.pole[2].s) {
+    if (idle(b.env[0]) && !b.band[0].y1 && !b.band[0].y2 && b.pole[2].s < dsp::hush && b.pole[2].s > -dsp::hush) {
         for (u32 i = 0; i < count; ++i) out[i] = 0;
         for (u32 k = 0; k < 6; ++k) b.sq[k] += b.sqi[k] * count;
-        b.pole[0].s = 0;
+        b.pole[0].s = b.pole[1].s = b.pole[2].s = 0;
         click_add(b.click[0], b.seed, out, count, b.cg[0]);
         return;
     }
@@ -1188,42 +1435,54 @@ __attribute__((noinline)) inline void run_hat(Body& b, i32* __restrict out, u32 
     bank6(b.sq, b.sqi, src, count);
     hat_mix(b.env[0], b.seed, b.g[0], b.g[1], src, count);
     band_run(b.band[0], src, count);
+    if (idle(b.env[0]) && b.band[0].y1 < dsp::hush && b.band[0].y1 > -dsp::hush && b.band[0].y2 < dsp::hush &&
+        b.band[0].y2 > -dsp::hush)
+        b.band[0].reset();
     // Two high-passes, then a zero at Nyquist, no pole: the hiss and the bank's
     // aliases darkened above 10 kHz.
     hat_finish(b.pole[1], b.pole[2], b.pc[1], b.pole[0], src, out, count);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
 __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32 count) {
-    i32 sh[64];
-    for (u32 i = 0; i < count; ++i) out[i] = 0;
+    i32 sh[32];
+    const u32 m = count / 2;
     if (!idle(b.env[0]) || b.band[0].y1 || b.band[0].y2) {
-        // The bank in two passes of four squares, the second applying the envelope.
+        // The bank at half the rate, in two passes of four squares, the second
+        // applying the envelope (its decay squared, a step of two samples).
         u32 p0 = b.sq[0], p1 = b.sq[1], p2 = b.sq[2], p3 = b.sq[3];
-        const u32 d0 = b.sqi[0], d1 = b.sqi[1], d2 = b.sqi[2], d3 = b.sqi[3];
-        for (u32 i = 0; i < count; ++i) {
+        const u32 d0 = b.sqi[0] * 2, d1 = b.sqi[1] * 2, d2 = b.sqi[2] * 2, d3 = b.sqi[3] * 2;
+        for (u32 i = 0; i < m; ++i) {
             p0 += d0; p1 += d1; p2 += d2; p3 += d3;
             sh[i] = (static_cast<i32>(p0) >> 31) + (static_cast<i32>(p1) >> 31) + (static_cast<i32>(p2) >> 31) +
                     (static_cast<i32>(p3) >> 31);
         }
         b.sq[0] = p0; b.sq[1] = p1; b.sq[2] = p2; b.sq[3] = p3;
         p0 = b.sq[4]; p1 = b.sq[5]; p2 = b.sq[6]; p3 = b.sq[7];
-        const u32 d4 = b.sqi[4], d5 = b.sqi[5], d6 = b.sqi[6], d7 = b.sqi[7];
+        const u32 d4 = b.sqi[4] * 2, d5 = b.sqi[5] * 2, d6 = b.sqi[6] * 2, d7 = b.sqi[7] * 2;
         i32 a = b.env[0].a;
-        const i32 r = b.env[0].r;
-        for (u32 i = 0; i < count; ++i) {
+        const i32 r = multiply(b.env[0].r, b.env[0].r);
+        for (u32 i = 0; i < m; ++i) {
             p0 += d4; p1 += d5; p2 += d6; p3 += d7;
-            // -count of negative squares, -8..0: the bank is (8 + 2 sum) * 2^25
+            // -count of negative squares, -8..0: the bank is (8 + 2 sum) * 2^25, at its gain
             const i32 sum = sh[i] + (static_cast<i32>(p0) >> 31) + (static_cast<i32>(p1) >> 31) + (static_cast<i32>(p2) >> 31) +
                             (static_cast<i32>(p3) >> 31);
             a = multiply(a, r);
-            sh[i] = multiply((8 + 2 * sum) * (1 << 25), a) * 8;
+            sh[i] = multiply((8 + 2 * sum) * GQ28(0.95 / 8), a) * 8;   // 0.8, and 1.5 dB for what half the rate loses
         }
         b.sq[4] = p0; b.sq[5] = p1; b.sq[6] = p2; b.sq[7] = p3;
         b.env[0].a = a;
-        band_high_add(b.band[0], b.pole[0], b.pc[0], sh, out, GQ28(0.8), count);
-    } else for (u32 k = 0; k < 8; ++k) b.sq[k] += b.sqi[k] * count;
-    if (b.g[0] && (!idle(b.env[1]) || b.band[1].y1 || b.band[1].y2))
-        noise_band_add(b.env[1], b.seed, 0, b.band[1], b.pole[3], b.pc[2], out, b.g[0], count);
+        band_run(b.band[0], sh, m);
+        high_run(b.pole[0], b.pc[0], sh, m);
+        expand<false>(sh, m, b.held, out);
+        if (idle(b.env[0]) && b.band[0].y1 < dsp::hush && b.band[0].y1 > -dsp::hush && b.band[0].y2 < dsp::hush &&
+            b.band[0].y2 > -dsp::hush)
+            b.band[0].reset();
+    } else {
+        for (u32 k = 0; k < 8; ++k) b.sq[k] += b.sqi[k] * count;
+        for (u32 i = 0; i < count; ++i) out[i] = 0;
+    }
+    if (b.g[0] && (!idle(b.env[1]) || b.pole[2].s))
+        noise_hl_add<false>(b.env[1], b.seed, 0, b.pole[3], b.pole[2], b.pc[2], b.pc[3], out, b.g[0], count);
     if (b.g[1]) modes_add(b.mode, 2, out, count);   // the bell, at its level from the strikes
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
@@ -1232,10 +1491,12 @@ __attribute__((noinline)) inline void run_ride(Body& b, i32* __restrict out, u32
 // negative exactly when its phase is past half a turn), under a slow and a
 // fast decay whose sum is planned every 16 samples and ramps between. KIND 0
 // has both parts, 1 only the pure (no clang), 2 only the clang (no table).
-// Each partial at half scale, so their sum (up to 1.8) stays in range.
+// Each partial at half scale, so their sum (up to 1.8) stays in range. At half
+// the rate: m samples, inc the full rate's increment.
 template <int KIND>
-__attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pure, i32 clang, u32* __restrict ph,
-                                        i32* __restrict out, u32 n) {
+__attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc_full, i32 pure, i32 clang, u32* __restrict ph,
+                                        i32* __restrict out, u32 m) {
+    const u32 inc = inc_full * 2;
     i32 slow = es.a, fast = ef.a;
     const i32 rs16 = per_grain(es.r), rf16 = per_grain(ef.r);
     const u32 inc2 = times(inc, GQ28(1.48));
@@ -1244,25 +1505,54 @@ __attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pur
     const i32 up0 = clang >> 1, down0 = (-clang) >> 1;
     const i32 up1 = multiply(clang, GQ31(0.8)) >> 1, down1 = multiply(-clang, GQ31(0.8)) >> 1;
     const i32 ups = up0 + up1, d0 = down0 - up0, d1 = down1 - up1;
-    for (u32 g = 0; g < n; g += grain) {
-        const i32 s1 = multiply(slow, rs16), f1 = multiply(fast, rf16);
-        i32 l = slow + fast;
-        const i32 dl = (s1 + f1 - l) >> 4;
-        i32* __restrict o = out + g;
-        for (u32 i = 0; i < grain; ++i) {
-            p0 += inc;
-            p1 += inc2;
-            l += dl;
-            i32 wave = 0;
-            if (KIND != 2) wave = multiply(sine_of(p0), a0) + multiply(sine_of(p1), a1);
-            // The signs, without a branch: a phase's top bit, all ones from
-            // half a turn (where the sine is 0, so either reads the same but
-            // for its last bit).
-            if (KIND != 1) wave += ups + (d0 & (static_cast<i32>(p0) >> 31)) + (d1 & (static_cast<i32>(p1) >> 31));
-            o[i] += multiply(wave, l) * 2;
+    if (KIND == 2) {
+        for (u32 g = 0; g < m; g += hgrain) {
+            const i32 s1 = multiply(slow, rs16), f1 = multiply(fast, rf16);
+            i32 l = slow + fast;
+            const i32 dl = (s1 + f1 - l) >> 3;
+            i32* __restrict o = out + g;
+            for (u32 i = 0; i < hgrain; ++i) {
+                p0 += inc;
+                p1 += inc2;
+                l += dl;
+                // The signs, without a branch: a phase's top bit, all ones from
+                // half a turn (where the sine is 0, so either reads the same but
+                // for its last bit).
+                const i32 wave = ups + (d0 & (static_cast<i32>(p0) >> 31)) + (d1 & (static_cast<i32>(p1) >> 31));
+                o[i] += multiply(wave, l) * 2;
+            }
+            slow = s1;
+            fast = f1;
         }
-        slow = s1;
-        fast = f1;
+    } else {
+        // The sines by their recurrence, sin(x + w) = 2 cos w sin x - sin(x - w),
+        // from the table at the stretch's start; a sine's sign is the clang's.
+        const i32 c0 = sine_of(inc + 0x40000000u), c1 = sine_of(inc2 + 0x40000000u);
+        i32 u0 = sine_of(p0), v0 = sine_of(p0 + inc), u1 = sine_of(p1), v1 = sine_of(p1 + inc2);
+        for (u32 g = 0; g < m; g += hgrain) {
+            const i32 s1 = multiply(slow, rs16), f1 = multiply(fast, rf16);
+            i32 l = slow + fast;
+            const i32 dl = (s1 + f1 - l) >> 3;
+            i32* __restrict o = out + g;
+            for (u32 i = 0; i < hgrain; i += 2) {
+                l += dl;
+                i32 wave = multiply(v0, a0) + multiply(v1, a1);
+                if (KIND == 0) wave += ups + (d0 & (v0 >> 31)) + (d1 & (v1 >> 31));
+                o[i] += multiply(wave, l) * 2;
+                u0 = static_cast<i32>((static_cast<u32>(multiply(c0, v0)) << 1) - static_cast<u32>(u0));
+                u1 = static_cast<i32>((static_cast<u32>(multiply(c1, v1)) << 1) - static_cast<u32>(u1));
+                l += dl;
+                wave = multiply(u0, a0) + multiply(u1, a1);
+                if (KIND == 0) wave += ups + (d0 & (u0 >> 31)) + (d1 & (u1 >> 31));
+                o[i + 1] += multiply(wave, l) * 2;
+                v0 = static_cast<i32>((static_cast<u32>(multiply(c0, u0)) << 1) - static_cast<u32>(v0));
+                v1 = static_cast<i32>((static_cast<u32>(multiply(c1, u1)) << 1) - static_cast<u32>(v1));
+            }
+            slow = s1;
+            fast = f1;
+        }
+        p0 += inc * m;
+        p1 += inc2 * m;
     }
     ph[0] = p0; ph[1] = p1;
     es.a = slow; ef.a = fast;
@@ -1270,50 +1560,77 @@ __attribute__((noinline)) void bell_run(Energy& es, Energy& ef, u32 inc, i32 pur
 __attribute__((noinline)) inline void run_bell(Body& b, i32* __restrict out, u32 count) {
     const i32 sq = b.k[2];
     const i32 pure = dsp::one - sq, clang = multiply(GQ31(0.7), sq);
-    for (u32 i = 0; i < count; ++i) out[i] = 0;
+    // The pair and its band at half the rate (the bells under 1.9 kHz, the
+    // band under 5.7), back to the full rate by straight lines.
+    i32 h[32];
+    const u32 m = count / 2;
+    for (u32 i = 0; i < m; ++i) h[i] = 0;
     for (u32 w = 0; w < 2; ++w) {
-        if (b.env[2 * w].a < 64 && b.env[2 * w + 1].a < 64) continue;
+        if (b.env[2 * w].a < dsp::hush && b.env[2 * w + 1].a < dsp::hush) continue;
         const u32 inc = static_cast<u32>(w ? b.k[1] : b.k[0]);
-        if (!pure) bell_run<2>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
-        else if (!clang) bell_run<1>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
-        else bell_run<0>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, out, count);
+        if (!pure) bell_run<2>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, h, m);
+        else if (!clang) bell_run<1>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, h, m);
+        else bell_run<0>(b.env[2 * w], b.env[2 * w + 1], inc, pure, clang, b.sq + 2 * w, h, m);
     }
-    band_run(b.band[0], out, count);
+    band_run(b.band[0], h, m);
+    expand<false>(h, m, b.held, out);
     click_add(b.click[0], b.seed, out, count, b.cg[0]);
 }
-// out 2 + hand g (the bursts' own crack over the cavity's ring), through two
-// one-pole high-passes at c.
-__attribute__((noinline)) void clap_mix(i32* __restrict out, const i32* __restrict hand, i32 g28, dsp::Pole& p1,
-                                        dsp::Pole& p2, i32 c, u32 n) {
-    i32 s1 = p1.s, s2 = p2.s;
-    for (u32 i = 0; i < n; ++i) {
-        i32 y = out[i] * 2 + gain(hand[i], g28);
+// The cavity's ring (half-rate samples h, back to the full rate by straight
+// lines) at 2, plus the bursts' own crack (noise under the half-rate burst
+// level eg, the crack's gain in it), through two one-pole high-passes at c.
+__attribute__((noinline)) void clap_mix(i32* __restrict out, const i32* __restrict h, const i32* __restrict eg, i32& last,
+                                        u32& seed, dsp::Pole& p1, dsp::Pole& p2, i32 c, u32 n) {
+    i32 s1 = p1.s, s2 = p2.s, y0 = last;
+    u32 x = seed;
+    const u32 m = n >> 1;
+    for (u32 j = 0; j < m; ++j) {
+        const i32 y1 = h[j], e = eg[j];
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        i32 y = (y0 >> 1) + (y1 >> 1);
+        y = y * 2 + multiply(static_cast<i32>(x) >> 2, e) * 8;
         s1 += multiply(y - s1, c);
         y -= s1;
         s2 += multiply(y - s2, c);
-        out[i] = y - s2;
+        out[2 * j] = y - s2;
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        y = y1 * 2 + multiply(static_cast<i32>(x) >> 2, e) * 8;
+        s1 += multiply(y - s1, c);
+        y -= s1;
+        s2 += multiply(y - s2, c);
+        out[2 * j + 1] = y - s2;
+        y0 = y1;
     }
+    seed = x;
+    last = y0;
     p1.s = s1; p2.s = s2;
 }
+// The cavity (the palms' bursts and the room, through its band, 900 .. 2,140 Hz)
+// at half the rate; the crack over it at the full rate.
 __attribute__((noinline)) inline void run_clap(Body& b, i32* __restrict out, u32 count) {
-    i32 hand[64];
+    i32 h[32], eg[32];
+    const u32 m = count / 2;
     i32 e0 = b.env[0].a, e1 = b.env[1].a, e2 = b.env[2].a;
-    const i32 r0 = b.env[0].r, r1 = b.env[1].r, r2 = b.env[2].r, room = b.g[0];
+    const i32 r0 = multiply(b.env[0].r, b.env[0].r), r1 = multiply(b.env[1].r, b.env[1].r),
+              r2 = multiply(b.env[2].r, b.env[2].r), room = b.g[0], crack = b.g[1];
     u32 x = b.seed;
-    for (u32 i = 0; i < count; ++i) {
+    for (u32 j = 0; j < m; ++j) {
         e0 = multiply(e0, r0);
         e1 = multiply(e1, r1);
         e2 = multiply(e2, r2);
+        const i32 burst = e0 - e1;
+        eg[j] = multiply(burst, crack) << 3;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        const i32 n = static_cast<i32>(x) >> 2;
-        hand[i] = multiply(n, e0 - e1) * 8;
+        const i32 hand = multiply(static_cast<i32>(x) >> 2, burst) * 8;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        out[i] = hand[i] + gain(multiply(static_cast<i32>(x) >> 2, e2) * 8, room);
+        // 1.5 dB down: noise at half the rate puts twice its density in the band
+        // (the crack, drawn apart, gives back the rest).
+        h[j] = multiply(hand + gain(multiply(static_cast<i32>(x) >> 2, e2) * 8, room), GQ31(0.84));
     }
     b.seed = x;
     b.env[0].a = e0; b.env[1].a = e1; b.env[2].a = e2;
-    band_run(b.band[0], out, count);
-    clap_mix(out, hand, b.g[1], b.pole[0], b.pole[1], b.pc[0], count);
+    band_run(b.band[0], h, m);
+    clap_mix(out, h, eg, b.held, b.seed, b.pole[0], b.pole[1], b.pc[0], count);
     knee_run(out, count, GQ28(0.6), GQ28(0.3), GQ28(1 / 0.3));
 }
 // The woodblock: its modes and its click, then a soft knee of its own: the
@@ -1323,12 +1640,20 @@ __attribute__((noinline)) inline void run_block(Body& b, i32* __restrict out, u3
     run_modes(b, out, count, 3);
     knee_run(out, count, GQ28(0.9), GQ28(0.45), GQ28(1 / 0.45));
 }
-__attribute__((noinline)) void add_eighth(i32* __restrict out, const i32* __restrict in, u32 n) {
-    for (u32 i = 0; i < n; ++i) out[i] += in[i] >> 3;
+// out plus a grain's eighth, through a one-pole high-pass at c, in place.
+__attribute__((noinline)) void high_eighth(dsp::Pole& p, i32 c, i32* __restrict io, const i32* __restrict grain, u32 n) {
+    i32 s = p.s;
+    for (u32 i = 0; i < n; ++i) {
+        const i32 y = io[i] + (grain[i] >> 3);
+        s += multiply(y - s, c);
+        io[i] = y - s;
+    }
+    p.s = s;
 }
 __attribute__((noinline)) inline void run_shaker(Body& b, i32* __restrict out, u32 count) {
     i32 grain[64];
-    i32 e0 = b.env[0].a, e1 = b.env[1].a;
+    // The rustle's level carries its 0.2; its own is decayed once, at the end.
+    i32 e0 = b.env[0].a, e1 = multiply(b.env[1].a, GQ31(0.2));
     const i32 r0 = b.env[0].r, r1 = b.env[1].r;
     u32 x = b.seed;
     for (u32 i = 0; i < count; ++i) {
@@ -1337,14 +1662,14 @@ __attribute__((noinline)) inline void run_shaker(Body& b, i32* __restrict out, u
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
         grain[i] = multiply(static_cast<i32>(x) >> 2, e0) * 8;
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-        out[i] = grain[i] + multiply(multiply(static_cast<i32>(x) >> 2, e1) * 8, GQ31(0.2));
+        out[i] = grain[i] + multiply(static_cast<i32>(x) >> 2, e1) * 8;
     }
     b.seed = x;
-    b.env[0].a = e0; b.env[1].a = e1;
+    b.env[0].a = e0;
+    b.env[1].a = multiply(b.env[1].a, decay_over(r1, count));
     band_run(b.band[0], out, count);
-    add_eighth(out, grain, count);
     modes_add(b.mode, 2, out, count);   // the shell, at its level from the strikes
-    high_run(b.pole[0], b.pc[0], out, count);
+    high_eighth(b.pole[0], b.pc[0], out, grain, count);
     // The loudest grains give up their peak (about 3 dB at the defaults), the
     // pour under them untouched, so the shaker sits level with the kit.
     knee_run(out, count, GQ28(0.16), GQ28(0.13), GQ28(1 / 0.13));
