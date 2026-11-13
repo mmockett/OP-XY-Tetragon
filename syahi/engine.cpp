@@ -270,6 +270,10 @@ __attribute__((noinline)) static u32 finish_clean(Finish& f, const i32* __restri
             if (output[n] > knee_at || output[n] < -knee_at) output[n] = round_off(output[n], f.knee);
     return quiet_block(most);
 }
+// A hold's samples, all one value (out of line, so it stays a hardware loop).
+__attribute__((noinline)) static void hold_fill(i32* __restrict o, i32 value, u32 count) {
+    for (u32 i = 0; i < count; ++i) o[i] = value;
+}
 // GRIT past +9: the whole output chain runs once a hold (the rate it
 // crushes to) and its result holds, so a hold of 3 to 13 samples costs one
 // sample's work; `held` is the held output.
@@ -291,7 +295,7 @@ __attribute__((noinline)) static u32 finish_crush(Finish& f, const i32* __restri
             quiet_now = static_cast<u32>(held + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);
         }
         const u32 c = hold_left < 64 - n ? hold_left : 64 - n;
-        for (u32 i = 0; i < c; ++i) output[n + i] = held;
+        hold_fill(output + n, held, c);
         if (quiet_now) under += c;
         hold_left -= c;
         n += c;
