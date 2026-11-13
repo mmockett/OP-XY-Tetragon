@@ -236,7 +236,11 @@ inline i32 ceiling(i32 x) {
     over = over < 0 ? 0 : over;
     const i32 u = over < h + (h >> 1) ? over : h + (h >> 1);
     const i32 d = dsp::multiply(dsp::multiply(dsp::multiply(u, u), u), GQ31(4.0 / 27.0 / 0.0064 / 32.0)) << 5;   // 4/27 u^3 / h^2
-    const i32 y = a - over + u - d;
+    // The bend held a hair under its 0.08, so rounding never lifts the
+    // ceiling past half of full scale.
+    i32 bent = u - d;
+    bent = bent < h - 256 ? bent : h - 256;
+    const i32 y = a - over + bent;
     return (y ^ s) - s;
 }
 
