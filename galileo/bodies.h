@@ -1277,13 +1277,21 @@ __attribute__((noinline)) u32 peak_of(const i32* __restrict x, u32 n) {
 // k + h (units 2^28; inv_h28 is 1 / h in Q28). A hit's first milliseconds give
 // up their peak, so its body sounds louder under the same ceiling; softer
 // strokes pass untouched.
+// The bend is a cubic, h (v - 4/27 v^3) of v = over / h, flat at k + h from
+// 1.5 h over: tanh's shape, without a table or a branch.
 __attribute__((noinline)) void knee_bend(i32* __restrict io, u32 n, i32 k, i32 h, i32 inv_h28) {
     for (u32 i = 0; i < n; ++i) {
         const i32 x = io[i];
-        const i32 a = x < 0 ? -x : x;
-        if (a <= k) continue;
-        const i32 y = k + multiply(dsp::tanh(gain(a - k, inv_h28)), h);
-        io[i] = x < 0 ? -y : y;
+        const i32 s = x >> 31;
+        const i32 a = (x ^ s) - s;
+        i32 over = a - k;
+        over = over < 0 ? 0 : over;
+        i32 v = gain(over, inv_h28);
+        v = v < GQ28(1.5) ? v : GQ28(1.5);
+        const i32 sq = multiply(v << 2, v << 1);                                   // v^2, units 2^28
+        const i32 c = v - multiply(v, multiply(sq, GQ31(4.0 / 27.0)) << 3);
+        const i32 y = a - over + multiply(c << 3, h);
+        io[i] = (y ^ s) - s;
     }
 }
 // The bend's search only where some sample is over the knee.
