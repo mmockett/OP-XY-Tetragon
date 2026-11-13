@@ -100,11 +100,11 @@ inline bool pad_control_text(u32 field, i32 value, char* text) {
 }
 
 // A note's sound has ended once its output has stayed under -72 dB for
-// 45 ms with nothing still to come (a roll, a bounce, a snap, an echo, a
+// 12 ms with nothing still to come (a roll, a bounce, a snap, an echo, a
 // jolt, a bow still drawn). Its voice then writes silence without running the
 // sheet, and finished tells the SDK it may free the voice.
 const i32 quiet_under = 1 << 19;
-const u32 quiet_blocks = 31;
+const u32 quiet_blocks = 8;
 inline bool finished(const Voice& voice, const Shared&) { return voice.done != 0; }
 
 // A control word (raw << 24) as a Q16 unit.

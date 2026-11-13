@@ -815,11 +815,11 @@ inline void setup_chain(Voice& v, i32 most, i32 links, i32 lrel, i32 lo, i32 hi,
 }
 // The chain's passes (noinline, their state in locals: together they spill).
 // The dice: a slap, 0.4..1 of U / 16, either way, when they fall under the
-// chance; thrown every other half-rate sample (the one between gets none), a
+// chance; thrown every fourth half-rate sample (those between get none), a
 // second slap taking what passes certainty (both: any do).
 template <bool both>
 __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra, i32* hit) {
-    for (u32 n = 0; n < half / 2; ++n) {
+    for (u32 n = 0; n < half / 4; ++n) {
         seed ^= seed << 13;
         seed ^= seed >> 17;
         seed ^= seed << 5;
@@ -834,8 +834,8 @@ __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra
             h += ((a ^ s1) - s1) & m1;
         }
         hit[0] = h;
-        hit[1] = 0;
-        hit += 2;
+        hit[1] = hit[2] = hit[3] = 0;
+        hit += 4;
     }
     return seed;
 }
@@ -906,10 +906,10 @@ inline void chain_most(Voice& v, i32 most, i32* out, i32 scale, bool into_half) 
     if (scale >= 0) gain = multiply(gain, scale) << 1;
     i32 hs = v.c_hp.s, lp = v.c_l1;
     u32 seed = v.seed ? v.seed : 1u;
-    // the dice every fourth sample at four times the chance; past certainty a
+    // the dice every eighth sample at eight times the chance; past certainty a
     // second slap takes the rest
-    const i32 c4 = m >= (one >> 4) ? one : m << 4;
-    const i32 extra = m < (one >> 4) ? 0 : m >= (one >> 3) ? one : (m - (one >> 4)) << 4;
+    const i32 c4 = m >= (one >> 5) ? one : m << 5;
+    const i32 extra = m < (one >> 5) ? 0 : m >= (one >> 4) ? one : (m - (one >> 5)) << 5;
     i32 hits[half];
     seed = extra ? chain_dice<true>(seed, c4, extra, hits) : chain_dice<false>(seed, c4, extra, hits);
     i32 prev = 0;
