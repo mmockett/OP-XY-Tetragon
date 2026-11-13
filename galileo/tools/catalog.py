@@ -60,9 +60,9 @@ PAD = ("space", "feel", "fx1", "fx2", "pan", "level")
 
 class Key(tuple):
     """A key: (model, eight controls 0..127), and .pad, its pad fields and mixer
-    channel: SPACE -16..15, FEEL 0..15, FX I and FX II codes 0..7 (0 follows the
-    track's send, 1..7 send 0, 17, 33, 50, 67, 83 or 100), pan -100..100 and
-    level -30..0 dB. All 0 is neutral."""
+    channel: SPACE -16..15, FEEL 0..15, FX I and FX II the key's own sends
+    0..100 (SDK 1.15; not named, a send follows the track's), pan -100..100 and
+    level -30..0 dB. All 0, and no sends, is neutral."""
     pad = {}
 
 
@@ -81,7 +81,7 @@ def key(model, **over):
         assert 0 <= v <= 127, f"{model} {k}={v}"
         values[k] = v
     assert -16 <= pad.get("space", 0) <= 15 and 0 <= pad.get("feel", 0) <= 15
-    assert 0 <= pad.get("fx1", 0) <= 7 and 0 <= pad.get("fx2", 0) <= 7
+    assert all(type(pad[f]) is int and 0 <= pad[f] <= 100 for f in ("fx1", "fx2") if f in pad)
     assert -100 <= pad.get("pan", 0) <= 100 and -30 <= pad.get("level", 0) <= 0
     k = Key((model, [values[c] for c in m[2] + MOTION]))
     k.pad = pad
@@ -370,35 +370,35 @@ PRESETS = [
 PADS = {
     "galileo": {4: dict(pan=-15), 6: dict(pan=25), 7: dict(pan=25), 8: dict(pan=25), 9: dict(pan=20),
                 10: dict(pan=40, feel=9), 11: dict(pan=-20), 12: dict(pan=-30), 14: dict(pan=-35),
-                5: dict(fx2=3), 17: dict(pan=-40), 18: dict(pan=30, fx2=3), 19: dict(pan=-40),
-                20: dict(pan=35), 21: dict(pan=-25), 22: dict(space=-8), 23: dict(pan=-30, fx2=4)},
-    "clockwork": {2: dict(fx2=4), 4: dict(pan=-35, feel=3), 5: dict(fx2=5), 6: dict(pan=30), 7: dict(pan=30),
-                  8: dict(pan=30), 9: dict(pan=30), 10: dict(pan=30), 14: dict(pan=-40), 15: dict(pan=-25, fx1=3),
-                  16: dict(pan=-20), 17: dict(pan=40, feel=9), 18: dict(pan=25), 19: dict(pan=-25), 20: dict(pan=30, fx1=3)},
+                5: dict(fx2=33), 17: dict(pan=-40), 18: dict(pan=30, fx2=33), 19: dict(pan=-40),
+                20: dict(pan=35), 21: dict(pan=-25), 22: dict(space=-8), 23: dict(pan=-30, fx2=50)},
+    "clockwork": {2: dict(fx2=50), 4: dict(pan=-35, feel=3), 5: dict(fx2=67), 6: dict(pan=30), 7: dict(pan=30),
+                  8: dict(pan=30), 9: dict(pan=30), 10: dict(pan=30), 14: dict(pan=-40), 15: dict(pan=-25, fx1=33),
+                  16: dict(pan=-20), 17: dict(pan=40, feel=9), 18: dict(pan=25), 19: dict(pan=-25), 20: dict(pan=30, fx1=33)},
     "rudiments": {7: dict(space=-10), 8: dict(feel=3), 10: dict(pan=-30), 11: dict(pan=30), 12: dict(pan=-30),
-                  13: dict(pan=0), 14: dict(pan=30), 15: dict(pan=-30, space=-6), 18: dict(fx2=3), 22: dict(space=6)},
+                  13: dict(pan=0), 14: dict(pan=30), 15: dict(pan=-30, space=-6), 18: dict(fx2=33), 22: dict(space=6)},
     "workshop": {3: dict(feel=3), 4: dict(pan=45, feel=9), 5: dict(pan=45, feel=9), 6: dict(pan=25, feel=3),
-                 7: dict(pan=25), 8: dict(pan=-30, fx2=3), 9: dict(pan=-10), 10: dict(pan=35, feel=3),
-                 11: dict(pan=-40), 12: dict(pan=-40), 13: dict(pan=30, fx2=3), 14: dict(pan=30), 15: dict(pan=-15),
+                 7: dict(pan=25), 8: dict(pan=-30, fx2=33), 9: dict(pan=-10), 10: dict(pan=35, feel=3),
+                 11: dict(pan=-40), 12: dict(pan=-40), 13: dict(pan=30, fx2=33), 14: dict(pan=30), 15: dict(pan=-15),
                  16: dict(pan=15), 17: dict(pan=-25), 18: dict(pan=25), 20: dict(pan=-35), 21: dict(pan=40)},
-    "marble run": {1: dict(space=-12, pan=-30), 2: dict(pan=30, fx2=3), 3: dict(space=10, pan=-20), 4: dict(feel=10, fx2=4),
-                   5: dict(space=-16, pan=20), 6: dict(pan=-35), 7: dict(pan=35, feel=4), 8: dict(pan=-25, fx1=3),
-                   9: dict(pan=25, fx1=3), 10: dict(pan=40, feel=5), 11: dict(pan=20), 18: dict(space=-16, fx2=5),
-                   19: dict(pan=-30), 20: dict(pan=30, feel=15), 22: dict(pan=-20, fx2=4)},
+    "marble run": {1: dict(space=-12, pan=-30), 2: dict(pan=30, fx2=33), 3: dict(space=10, pan=-20), 4: dict(feel=10, fx2=50),
+                   5: dict(space=-16, pan=20), 6: dict(pan=-35), 7: dict(pan=35, feel=4), 8: dict(pan=-25, fx1=33),
+                   9: dict(pan=25, fx1=33), 10: dict(pan=40, feel=5), 11: dict(pan=20), 18: dict(space=-16, fx2=67),
+                   19: dict(pan=-30), 20: dict(pan=30, feel=15), 22: dict(pan=-20, fx2=50)},
     "shot and skin": {1: dict(pan=-35), 2: dict(pan=-35), 3: dict(pan=-35), 4: dict(pan=30), 5: dict(pan=30),
                       6: dict(pan=-45), 7: dict(pan=45, feel=9), 8: dict(pan=45, feel=9), 9: dict(pan=50, feel=10),
                       10: dict(pan=-20), 11: dict(pan=-20, feel=3), 12: dict(pan=25), 13: dict(pan=25, feel=3),
                       14: dict(pan=-10), 15: dict(pan=10), 17: dict(pan=15), 18: dict(pan=20), 19: dict(pan=-25),
-                      20: dict(pan=35, fx2=3), 22: dict(pan=30), 23: dict(pan=50, feel=11)},
-    "zeno": {0: dict(fx2=4), 2: dict(pan=-30, fx2=5), 3: dict(pan=30, fx2=6), 4: dict(pan=-40, feel=14, fx2=5),
-             5: dict(pan=40, feel=13, fx2=5), 6: dict(pan=20, space=-12), 7: dict(pan=-20, feel=12), 8: dict(pan=45, feel=14),
-             9: dict(pan=-45, feel=15), 10: dict(pan=45, feel=15), 11: dict(pan=-25, feel=12), 14: dict(space=12, fx2=4),
-             16: dict(fx2=7), 17: dict(space=-16, fx2=4), 18: dict(pan=35, feel=13, fx2=6), 20: dict(pan=-50, feel=14),
-             21: dict(pan=50, fx2=6), 22: dict(fx2=7)},
-    "escapement": {2: dict(fx1=3), 4: dict(pan=30, feel=4), 5: dict(pan=30, feel=4), 6: dict(pan=-30, feel=4),
-                   7: dict(pan=-30, feel=4), 8: dict(pan=25), 9: dict(pan=25), 10: dict(pan=-20, fx2=3),
-                   11: dict(pan=-25, fx1=2), 12: dict(pan=-20), 13: dict(pan=20), 16: dict(pan=35), 17: dict(pan=40, feel=4),
-                   18: dict(pan=-35, fx1=3), 19: dict(pan=-15), 20: dict(pan=30, feel=5), 21: dict(pan=-30, feel=4),
+                      20: dict(pan=35, fx2=33), 22: dict(pan=30), 23: dict(pan=50, feel=11)},
+    "zeno": {0: dict(fx2=50), 2: dict(pan=-30, fx2=67), 3: dict(pan=30, fx2=83), 4: dict(pan=-40, feel=14, fx2=67),
+             5: dict(pan=40, feel=13, fx2=67), 6: dict(pan=20, space=-12), 7: dict(pan=-20, feel=12), 8: dict(pan=45, feel=14),
+             9: dict(pan=-45, feel=15), 10: dict(pan=45, feel=15), 11: dict(pan=-25, feel=12), 14: dict(space=12, fx2=50),
+             16: dict(fx2=100), 17: dict(space=-16, fx2=50), 18: dict(pan=35, feel=13, fx2=83), 20: dict(pan=-50, feel=14),
+             21: dict(pan=50, fx2=83), 22: dict(fx2=100)},
+    "escapement": {2: dict(fx1=33), 4: dict(pan=30, feel=4), 5: dict(pan=30, feel=4), 6: dict(pan=-30, feel=4),
+                   7: dict(pan=-30, feel=4), 8: dict(pan=25), 9: dict(pan=25), 10: dict(pan=-20, fx2=33),
+                   11: dict(pan=-25, fx1=17), 12: dict(pan=-20), 13: dict(pan=20), 16: dict(pan=35), 17: dict(pan=40, feel=4),
+                   18: dict(pan=-35, fx1=33), 19: dict(pan=-15), 20: dict(pan=30, feel=5), 21: dict(pan=-30, feel=4),
                    23: dict(pan=20, feel=4)},
 }
 # Each kit preset's key levels (dB, -30..0), written by tools/balance.py: a
