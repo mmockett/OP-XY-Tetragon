@@ -334,7 +334,7 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
     v.k[5] = static_cast<i32>(samples(ltau + L(0.9)) >> 6) + 1;   // blocks until the hand lands
     v.k[6] = block_decay(ltau - L(6));
     v.k[4] = mix(Q31(0.9), Q31(0.5), c[4]);                   // the densest modes, as a sizzle: more on a slack sheet
-    v.k[3] = mix(Q31(0.045), Q31(0.075), nail);                  // and a noisy sizzle among them, the sheet's forest above them: more off a coin
+    v.k[3] = mix(Q31(0.03), Q31(0.12), nail);                     // and a noisy sizzle among them, the sheet's forest above them: more off a coin
     v.env[3].set(one, block_decay(ltau - L(0.17)));               // which fade under the hand, over six times DAMP's time
     // the sizzle, the body of the hat: six of the sheet's modes (its 2nd to
     // 7th at this TENSION), each a clang rich in overtones, three and a half
@@ -1095,7 +1095,9 @@ inline void setup_zap(Voice& v, const i32* c, i32 tune) {
         v.k[16 + e] = 0;   // its envelope now
     }
     v.s[0] = v.s[1] = v.s[2] = v.s[3] = v.s[4] = v.s[5] = 0;   // phases
-    setup_field(v, v.k[0] - 2 * octave, Q16(0.7), log16(mix(Q16(0.15), Q16(1.2), c[5])), Q16(0.6), 0, true);   // (four lines: DAMP's echoes ring in it)
+    // (DAMP damps the sheet's ring too: 1.3 octaves of its time over DAMP's
+    // travel, as it was at the default)
+    setup_field(v, v.k[0] - 2 * octave, Q16(0.7), log16(mix(Q16(0.15), Q16(1.2), c[5])) - mul16(c[1] - Q16(66.0 / 127), L(2.5)), Q16(0.6));
     field_clip(v);   // the chirp drives it into its rings' ceiling, a part of its ring
     field_raw(v);
     v.s[6] = 0;      // the ring's last half-rate sample

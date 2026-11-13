@@ -209,9 +209,8 @@ __attribute__((noinline)) inline void retune_modes(Voice& v, i32 m28) {
     for (; k < v.nmodes; ++k) v.mode[k].f = svf_f(static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4);
 }
 // The modes in tiers for their pitch times m28 (Q28): quarter, half, then
-// full rate, each with its decay over 16 samples at its rate. A mode keeps
-// its state as it moves between tiers (a state-variable pair holds its
-// amplitude whatever its rate); its pitch is set after.
+// full rate, each with its decay over 16 samples at its rate; their pitch is
+// set after.
 inline bool tier_modes(Voice& v, i32 m28, bool force = false) {
     // a quarter-rate tier of one mode would cost more than it saves: then none
     u32 low = 0;
@@ -255,14 +254,10 @@ inline i32 mode_f(const Voice& v, u32 k, u32 inc) {
     return svf_f(k < v.nquarter ? quarter_inc(inc) : k < v.nhalf ? half_inc(inc) : inc);
 }
 // CAMBER: every mode's pitch rises by bend * env, which falls away each block.
-// As the glide falls, a mode moves to a slower tier once its pitch fits it
-// (and back, if a re-strike lifts it).
 inline void glide_modes(Voice& v) {
     if (!v.bend || !v.bend_env) return;
     if (v.bend_env < (1 << 21)) v.bend_env = 0;   // settled (under a thousandth of its rise): at its own pitch from now on
-    const i32 m28 = (1 << 28) + multiply(v.bend, v.bend_env);   // 1 + bend env, Q28
-    tier_modes(v, m28);
-    retune_modes(v, m28);
+    retune_modes(v, (1 << 28) + multiply(v.bend, v.bend_env));   // 1 + bend env, Q28
     v.bend_env = multiply(v.bend_env, v.bend_k);
 }
 // Runs the modes over a block of force x, adding their sound to out. Each
