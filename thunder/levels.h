@@ -5,7 +5,7 @@
 namespace thunder {
 namespace levels {
 // log2 of each model's output gain, Q16.
-const opxy::i32 gain[12] = {245565, 204101, 254462, 204744, 152269, 101411, 196184, 175784, 180561, 74108, 126537, 150144};
+const opxy::i32 gain[12] = {245565, 204101, 254462, 204744, 152269, 93791, 196184, 175784, 180561, 74108, 126537, 128373};
 // log2 of the room its default hit leaves under its peak limit, Q16.
 const opxy::i32 room[12] = {20950, 7997, 0, 0, 17536, 64694, 27633, 0, 13306, 22760, 137030, 24548};
 // The models the transient limiter runs on (engine.cpp limit).

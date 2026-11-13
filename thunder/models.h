@@ -142,7 +142,7 @@ inline void setup_slap(Voice& v, const i32* c, i32 tune) {
     const i32 amp = beater_lift(v, lf0, ltc, lbend, lt0, Q16(0.6), 8, 0);
     // (never quite equal lines, and a smeared input: a crisp ring, not a boing)
     setup_field(v, lf0 + L(3.5), Q16(0.45) + mul16(65535 - tension, Q16(0.55)), lt0 + log16(mix(Q16(1.5), Q16(11.0), power16(c[7], Q16(0.6))) >> 3) + L(8.0),
-                Q16(0.4) + mul16(c[2], Q16(0.5)), 1, true);   // (four lines: METAL is the sheet ringing on)
+                Q16(0.2) + mul16(c[2], Q16(0.8)), 1, true);   // (four lines: METAL is the sheet ringing on)
     v.flevel = multiply(Q31(0.9), q31_root(c[7]));    // 1.8 sqrt(METAL), Q31 x 2
     if (!c[7]) v.fon = 0;
     // The wires: LINKS loosens them, slower to settle and lower.
@@ -333,7 +333,7 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
     v.env[0].set(one, block_decay(ltau + L(6)));
     v.k[5] = static_cast<i32>(samples(ltau + L(0.9)) >> 6) + 1;   // blocks until the hand lands
     v.k[6] = block_decay(ltau - L(6));
-    v.k[4] = mix(Q31(0.9), Q31(0.5), c[4]);                   // the densest modes, as a sizzle: more on a slack sheet (x 1.25 at half rate: flick_sizzle)
+    v.k[4] = mix(Q31(0.9), Q31(0.5), c[4]);                   // the densest modes, as a sizzle: more on a slack sheet (x 1.56 at half rate: flick_sizzle)
     v.k[3] = mix(Q31(0.045), Q31(0.075), nail);                  // and a noisy sizzle among them, the sheet's forest above them: more off a coin
     v.env[3].set(one, block_decay(ltau - L(0.17)));               // which fade under the hand, over six times DAMP's time
     // the sizzle, the body of the hat: six of the sheet's modes (its 2nd to
@@ -403,10 +403,10 @@ __attribute__((noinline)) inline void flick_squares(u32* phase, const u32* inc, 
 }
 // The squares (each +-1: no step at the start) and a noisy sizzle among
 // them, high-passed twice, at half rate, at a level stepping from e by es,
-// added to out at the full rate (each half-rate sample, and between two a
-// quarter of their mean, which keeps its images above 11 kHz: the sizzle's top).
+// added to every other sample of out: its images above 11 kHz stay at its
+// own level, the sizzle's top.
 __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, const i32* t, u32 seed, i32* out, i32 e, i32 es) {
-    i32 h4 = v.op[4].s, h5 = v.op[5].s, prev = v.s[4];
+    i32 h4 = v.op[4].s, h5 = v.op[5].s;
     const i32 k = v.k[7], kn = v.k[3];
     for (u32 n = 0; n < half; ++n, e += es) {
         seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
@@ -415,15 +415,11 @@ __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, const i32* t, u32 se
         const i32 a = x - h4;
         h5 += multiply(a - h5, k);
         i32 y = multiply(a - h5, e);
-        y += y >> 2;   // (x 1.25: at half rate, with its images, it keeps its level)
-        out[0] += (prev + y) >> 3;   // (a quarter of the mean between: its images, the sizzle's top, stay)
-        out[1] += y;
-        prev = y;
+        out[1] += y + (y >> 1) + (y >> 4);   // (x 1.56: one sample in two keeps its level)
         out += 2;
     }
     v.op[4].s = h4;
     v.op[5].s = h5;
-    v.s[4] = prev;
     return seed;
 }
 // out += x e, e stepping by es a sample.
@@ -511,8 +507,6 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
         const i32 p0 = multiply(multiply(fizz, hand0), v.k[4]);
         const i32 p1 = multiply(multiply(fizz + static_cast<i32>(frames) * zs, hand0 + static_cast<i32>(frames) * hs), v.k[4]);
         seed = flick_sizzle(v, t, seed, out, p0, (p1 - p0) >> 5);
-    } else {
-        v.s[4] = 0;
     }
     v.seed = seed;
     if (v.c_amount) {
@@ -649,8 +643,10 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     const i32 lf0 = mix(L(110), L(650), c[0]) + tune;
     const i32 lt60 = mix(L(4.5), L(0.25), c[1]);
     const i32 tension = mul16(c[4], Q16(0.6));
-    // (its two lowest modes, under 2.8 kHz, so the body runs at half rate with its ring)
-    setup_modes(v, lf0, tension, Q16(0.3) + mul16(c[3], Q16(0.7)), lt60 - 2 * octave, Q16(0.6), Q16(0.5), 2, beater_time(c[2]), 0, L(2800.0));
+    setup_modes(v, lf0, tension, Q16(0.3) + mul16(c[3], Q16(0.7)), lt60 - 2 * octave, Q16(0.6), Q16(0.5), 6, beater_time(c[2]), 0);
+    // its two lowest modes (at the weights six gave them), and only those
+    // under 2.8 kHz (setup_model), so the body runs at half rate with its ring
+    if (v.nmodes > 2) v.nmodes = 2;
     v.bend = 1 << 26;
     v.bend_env = one;
     v.bend_k = block_decay(L(0.08));
@@ -1430,7 +1426,7 @@ inline void setup_model(Voice& v, u32 model, const i32* c, i32 tune) {
     default: setup_shake(v, c, tune); break;
     }
     split_modes(v, model != CRASH);
-    if (model == CRASH) v.nmodes = v.nhalf;   // (its body runs at half rate: none over it)
+    if (model == CRASH) v.nmodes = v.nhalf;   // (its body runs at half rate: none over 2.8 kHz, gliding)
 }
 __attribute__((noinline)) inline void block_model(Voice& v, Work& w, i32* out) {
     switch (v.model) {
