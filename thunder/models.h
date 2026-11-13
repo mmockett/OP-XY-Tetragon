@@ -132,7 +132,7 @@ inline void setup_slap(Voice& v, const i32* c, i32 tune) {
     const i32 lf0 = mix(L(110), L(330), c[0]) + mix(-Q16(0.5), Q16(0.1), c[4]) + tune;
     const i32 lt0 = mix(L(0.45), L(0.035), c[1]);
     const i32 tension = mix(Q16(0.2), Q16(1.0), c[4]);
-    setup_modes(v, lf0, tension, Q16(0.05) + mul16(power16(c[3], Q16(0.6)), Q16(0.9)), lt0, Q16(0.6), Q16(0.4), 8, hardest);
+    setup_modes(v, lf0, tension, Q16(0.05) + mul16(power16(c[3], Q16(0.6)), Q16(0.9)), lt0, Q16(0.6), Q16(0.4), 6, hardest);   // (its six lowest)
     radiate(v, Q31(0.67));
     v.bend = mix(Q16(0.7), Q16(0.1), c[4]) << 12;   // a slack head sags 0.7 over 6 ms, a tight one 0.1: crisp, not a boing
     v.bend_env = one;
