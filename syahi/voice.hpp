@@ -97,6 +97,7 @@ struct Core {
     i32 qs[3];
     // The head's plan reaches one block ahead (1) or not (0), and the modes it runs (bit k).
     u32 ahead, live_bits;
+    i32 dc;   // the 24 Hz high-pass's state, on the head at half the rate
 };
 
 // Mode k's resting phase: the prototype's k * 1.3 radians.
@@ -515,32 +516,41 @@ __attribute__((noinline)) static void quarter_up(const i32* __restrict q, i32* _
         h[2 * i + 1] += q[i + 2];
     }
 }
+// The 24 Hz high-pass that keeps a hit's DC (the air's push, the body) out
+// of the output, on the half-rate head: the full rate's 1 - e^(-2 pi 24 / 44100)
+// over two samples, 1 - (1 - c)^2, Q31. The
+// wash, the noise and the wires are band-passed, with nothing down there.
+const i32 dc_coefficient = 14621028;
 // The half-rate head back at the full rate, each half-sample's step heard
-// between (the last block's last half-sample is `last`). The block's first
-// writer: it sets out, and the passes after it add.
-__attribute__((noinline)) static void head_up(const i32* __restrict h, i32* __restrict out, i32& last) {
-    i32 prev = last;
+// between (the last block's last half-sample is `last`), past the high-pass
+// (its state dc). The block's first writer: it sets out, and the passes after it add.
+__attribute__((noinline)) static void head_up(const i32* __restrict h, i32* __restrict out, i32& last, i32& dc) {
+    i32 prev = last, d = dc;
     for (u32 i = 0; i < 32; ++i) {
-        const i32 y = h[i];
+        d = opxy::q31::add(d, multiply(h[i] - d, dc_coefficient));
+        const i32 y = h[i] - d;
         out[2 * i] = (prev >> 1) + (y >> 1);
         out[2 * i + 1] = y;
         prev = y;
     }
     last = prev;
+    dc = d;
 }
 // METAL's head: the same with its tilt, a zero at Nyquist (the mean of each
 // sample and the last), which on the interpolated head is 3/4 and 1/4 of the
 // two half-samples.
-__attribute__((noinline)) static void head_up_tilted(const i32* __restrict h, i32* __restrict out, i32& last) {
-    i32 prev = last;
+__attribute__((noinline)) static void head_up_tilted(const i32* __restrict h, i32* __restrict out, i32& last, i32& dc) {
+    i32 prev = last, d = dc;
     for (u32 i = 0; i < 32; ++i) {
-        const i32 y = h[i];
-        const i32 d = (y - prev) >> 2;
-        out[2 * i] = prev + d;
-        out[2 * i + 1] = y - d;
+        d = opxy::q31::add(d, multiply(h[i] - d, dc_coefficient));
+        const i32 y = h[i] - d;
+        const i32 q = (y - prev) >> 2;
+        out[2 * i] = prev + q;
+        out[2 * i + 1] = y - q;
         prev = y;
     }
     last = prev;
+    dc = d;
 }
 // METAL's wires (SIZZLE) in one pass: the block's swing (mean |out|, before
 // the rivets), which the next block's drive follows; and the rivets' buzz,
@@ -1097,8 +1107,8 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
     const bool ringing = !noisy && s.noise > 0 && s.noise_ring && v.noise_quiet < 40u;
     const bool rattling = s.wires > 0 && !metal;   // the snare's wires
     // METAL: its head tilted (and its wash, in the wash's pass).
-    if (metal) head_up_tilted(h, out, v.head_last);
-    else head_up(h, out, v.head_last);
+    if (metal) head_up_tilted(h, out, v.head_last, v.dc);
+    else head_up(h, out, v.head_last, v.dc);
     // The wash and the noise add to the head; the snare's wires then follow all of it.
     if (metal_wash) {
         wash_envelopes(v, strikes);

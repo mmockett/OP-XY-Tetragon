@@ -439,8 +439,6 @@ const i32 svf[q_classes][fc_steps][3] = {
         {33048668, 261607145, 2070833789}, {33048668, 261607145, 2070833789}, {33048668, 261607145, 2070833789}, {33048668, 261607145, 2070833789},
     },
 };
-// GRIT +10..+15 (index 0..5): the 24 Hz high-pass over a hold of 3..13 samples, Q31.
-const i32 crush_hp[6] = {21894174, 36366140, 50739575, 65015149, 79193528, 93275374};
 // METAL's wash at half the rate (GRIT +10 and up): its inputs' gain that keeps
 // the band's level, Q14, at pitches 100 * 2^(i / 2) Hz (tools/make_tables.py).
 const i32 wash_half[10] = {10650, 10650, 10650, 10650, 10650, 10379, 9843, 8846, 6795, 6795};
