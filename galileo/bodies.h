@@ -151,8 +151,8 @@ const u32 step = 64, tine_step = 8, fill_step = 16;
 inline u32 step_of(u32 model) { return model == kit::tine ? tine_step : model == kit::fill ? fill_step : step; }
 // A pending strike the body schedules itself: a clap's reflections, a ratchet's teeth.
 // They gather on the grid ahead, a word a block, 64 blocks (93 ms) round a
-// ring: the block's force (Q15, the ghosts' together), its strongest one's
-// force (its top 14 bits), and that one's 8-sample step in the block (bits 29..31).
+// ring: the block's force (Q15, its strongest ghost's), that one's force
+// again (its top 14 bits), and that one's 8-sample step in the block (bits 29..31).
 const u32 later_cells = 64;
 
 struct Body {
@@ -586,8 +586,10 @@ inline void add_ghost(Body& b, u32 at, i32 v) {
         ++b.due;
     }
     const u32 fine = (at % step) >> 3;
-    w = v > top ? static_cast<u32>(dsp::together(had, v)) | static_cast<u32>(v >> 1) << 15 | fine << 29
-                : static_cast<u32>(dsp::together(had, v)) | (w & ~0x7fffu);
+    // The block strikes once, as its strongest ghost (teeth and reflections
+    // that fall in one block are heard as one).
+    w = v > top ? static_cast<u32>(v > had ? v : had) | static_cast<u32>(v >> 1) << 15 | fine << 29
+                : static_cast<u32>(v > had ? v : had) | (w & ~0x7fffu);
 }
 // Samples from b.now (a cell's start) to the next cell holding a ghost, if it is
 // within this cell or the next; else all ones.
