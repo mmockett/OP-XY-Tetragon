@@ -1025,7 +1025,6 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
     if (v.quarter)
         for (u32 i = 0; i < 16; ++i) q[i] = 0;
     bool quartered = qs[0] || qs[1] || qs[2];
-    bool heard = lives != 0;   // anything in the head this block
     {
         u32 hb = 0, qb = 0;
         for (u32 i = 0; i <= strikes.count; ++i) {
@@ -1072,7 +1071,6 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
             quartered = true;
         } else {
             run_half<false>(b, h, r, 0, 32);
-            heard = true;
         }
     }
     Partial& air = v.part[air_mode];
@@ -1090,7 +1088,6 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
         } else {
             run_half<false>(air, h, r, 0, 32);
         }
-        heard = true;
     }
     v.air_time += 64;
     if (quartered) {
@@ -1110,10 +1107,6 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed
     const bool ringing = !noisy && s.noise > 0 && s.noise_ring && v.noise_quiet < 40u;
     const bool rattling = s.wires > 0 && !metal;   // the snare's wires
     // METAL: its head tilted (and its wash, in the wash's pass).
-    // A silent head: the high-pass's truncating step leaves its state up to
-    // about 150 units off, a DC that GRIT's drive would hold over the quiet
-    // floor. Under 2^12 units (-72 dB of a strike) it is let go, so the note ends.
-    if (!heard && !quartered && absolute(v.dc) < (1 << 12)) v.dc = 0;
     if (metal) head_up_tilted(h, out, v.head_last, v.dc);
     else head_up(h, out, v.head_last, v.dc);
     // The wash and the noise add to the head; the snare's wires then follow all of it.
