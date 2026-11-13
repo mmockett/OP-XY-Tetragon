@@ -170,10 +170,12 @@ strike(s) -> eight modes (FORM, LOAD, SPOT; pitch lifted by the struck energy)
           -> + body (one resonance below the head) + air -> GRIT -> out
 ```
 
-**Modes.** Each mode is a sine read from a 16,384-step table. Its phase
-increment and amplitude are planned once a block and stepped linearly
-through it, so a pitch that falls fast (a 4 ms zap) glides sample by sample
-instead of stepping, and a mode decays exactly as its time says. A mode's
+**Modes.** Each mode is a sine read from a 2,048-step table at half the
+sample rate; a note's modes that never rise past 1.5 kHz, its body and its
+air run at a quarter, brought up through a half-band filter. A mode's phase
+increment and amplitude are planned once a block (two blocks between
+strikes) and stepped linearly through it, so a pitch that falls fast (a 4 ms
+zap) glides sample by sample instead of stepping. A mode's
 ring time is DECAY times its ratio to the lowest to the power of the
 material's tilt. A strike lands on its own sample and ramps in over the
 contact time as a raised cosine, so felt is soft and brass clicks; up to 24
@@ -196,16 +198,18 @@ over a third of the ring (40 to 150 ms to -60 dB, given back in level), so
 the spray swells in under the stick's click rather than spiking with it. As
 WASH rises the wash takes the modes' energy and the two keep one level.
 
-**Tilt.** METAL's whole sound, before its rattle, is averaged with the
-sample before it: a zero at Nyquist and no filter pole, which takes the
-square-wave products' fizz out of the top octave. A hat's spectral centroid
+**Tilt.** METAL's head and wash are each averaged with the sample before
+them: a zero at Nyquist and no filter pole, which takes the square-wave
+products' fizz out of the top octave. While GRIT crushes (+10 and up) the
+wash runs at half the rate, its level kept. A hat's spectral centroid
 sits at 8.1 to 8.9 kHz (MD KIT's hats 8.6 to 8.9) and its crest at 15 to 17
 dB, 18 with a pedal hat's sizzle (MD KIT's 13 to 15).
 
 **Rattle.** A follower on the head's swing; past a gap (a share of its peak)
 the wires buzz, answering at once and settling over SNAP's time: noise
-through a band-pass at the wires' tone, a 900 Hz high-pass and two
-one-poles for a low-pass with no notch at Nyquist.
+through a band-pass at the wires' tone and a low-pass, at half the rate.
+METAL's rivets (SIZZLE) follow the whole cymbal's swing a block late and
+buzz as half-rate noise through n - n[-2], a band around 5.5 kHz.
 
 **Fixed point.** Everything is integer: Q31 signals, pitches and times as
 log2 values with table exp2 and log2, no division in any per-sample path
@@ -318,15 +322,15 @@ The host figure (`tools/cpu.py`) times the render against the SDK's
 reference loop, as `sdk.py test` does for synths, at the slowest of every
 control's nine positions with GRIT on and off; it overstates the Blackfin,
 where a Q31 multiply is one instruction, and varies by a fifth between runs.
-METAL with its wash, wires, tilt and stick noise is the heaviest; it runs
-the wires' pass always, since its tilt rides in it. Silent voices free themselves, and a key cuts its own last note, so a kit holds at most 16
+METAL with its wash, rivets and stick noise is the heaviest. Silent voices
+free themselves, and a key cuts its own last note, so a kit holds at most 16
 voices and usually far fewer.
 
 ## Memory
 
-178 KiB of the 2,032 KiB module region in a firmware of its own (`sdk.py
-compile`): a 32 KiB sine table, the filter, log and exp tables, 16 voices of
-1,304 bytes, 2.3 KiB shared and the screen's artwork.
+In the 2,032 KiB module region: a 4 KiB sine table (small enough to stay in
+the data cache with sixteen voices), the filter, log and exp tables, 16
+voices of 1,364 bytes, 2.3 KiB shared and the screen's artwork.
 
 ## Building
 
