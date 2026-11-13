@@ -1067,7 +1067,7 @@ __attribute__((noinline)) inline void block_bounce(Voice& v, Work& w, i32* out) 
 // far corner, a tap arrives as a falling chirp, then its echoes off the edges.
 inline void setup_zap(Voice& v, const i32* c, i32 tune) {
     v.k[0] = mix(L(1400), L(6000), c[0]) + tune;      // the top
-    const i32 ltau = mix(L(1.6), L(0.03), c[1]);
+    const i32 ltau = mix(L(0.8), L(0.03), c[1]);
     const i32 lsweep = mix(L(0.015), L(0.3), c[2]);
     v.u[0] = 1 + static_cast<u32>((c[3] * 5 + 32768) >> 16);   // the chirp and ECHOS
     v.k[1] = mix(L(4), L(120), c[4]);                 // DEPTH: the fall, log2
@@ -1080,11 +1080,11 @@ inline void setup_zap(Voice& v, const i32* c, i32 tune) {
         v.u[8 + e] = samples(lsw);                                                     // length
         v.k[4 + e] = frac2(static_cast<i32>(e) * L(0.65));                              // level
         // after its sweep it fades with 0.4 sw + 150..4 ms (DAMP)
-        v.k[10 + e] = block_decay(log16(mul16(exp16(lsw), Q16(0.4)) + exp16(mix(L(0.3), L(0.004), c[1]))));   // DAMP lets it ring on
+        v.k[10 + e] = block_decay(log16(mul16(exp16(lsw), Q16(0.4)) + exp16(mix(L(0.15), L(0.004), c[1]))));   // DAMP lets it ring on
         v.k[16 + e] = 0;   // its envelope now
     }
     v.s[0] = v.s[1] = v.s[2] = v.s[3] = v.s[4] = v.s[5] = 0;   // phases
-    setup_field(v, v.k[0] - 2 * octave, Q16(0.7), log16(mix(Q16(0.15), Q16(1.2), c[5])), Q16(0.6));
+    setup_field(v, v.k[0] - 2 * octave, Q16(0.7), log16(mix(Q16(0.15), Q16(1.2), c[5])), Q16(0.6), 0, true);   // (four lines: DAMP's echoes ring in it)
     field_clip(v);   // the chirp drives it into its rings' ceiling, a part of its ring
     field_raw(v);
     v.s[6] = 0;      // the ring's last half-rate sample

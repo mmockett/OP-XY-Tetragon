@@ -17,7 +17,9 @@ const unsigned half = frames / 2;   // a block at half the sample rate
 // A low mode of the sheet: a Chamberlin resonator scaled so that it sounds at
 // its weight: the force enters its band state times its weight (gw, Q31), and
 // its band state is its sound.
-struct Mode { i32 lp, bp, f, r, gw; u32 inc; };   // r: its decay over 8 samples, Q31 (over 16 at its rate once split_modes has run)
+// r: its decay over 8 samples, Q31 (over 16 at its rate once split_modes has
+// run, which keeps the 8-sample decay in r8)
+struct Mode { i32 lp, bp, f, r, gw; u32 inc; i32 r8; };
 const u32 field_samples = 512;
 const u32 wide_stride = 128;    // a wide field's four rings
 const u32 small_stride = 256;   // a small field's two rings
@@ -68,6 +70,7 @@ struct Voice {
     u32 nhalf;                // how many of the modes (the first) run at half rate or lower
     i32 qprev;                // the quarter-rate modes' last sample heard
     u32 nquarter;             // how many of those (the first) run at a quarter of the rate
+    u32 quarter_ok;           // whether the model may use the quarter-rate tier
     u32 u[16];
     Svf sv[4];
     OnePole op[6];
@@ -198,41 +201,6 @@ inline u32 mode_tier(const Voice& v, u32 k, i32 m28, bool quarter) {
     if (!v.bend) peak += peak >> 4;   // a sheet that doesn't glide may wobble (SHAKE, by 4%)
     return quarter && peak <= quarter_top ? 0 : peak <= half_top ? 1 : 2;
 }
-// quarter: whether the model may use the quarter-rate tier (CRASH keeps its
-// body at half rate, where it filters it).
-inline void split_modes(Voice& v, bool quarter_ok = true) {
-    const i32 m28 = (1 << 28) + (v.bend > 0 ? v.bend : 0);
-    // a quarter-rate tier of one mode would cost more than it saves: then none
-    u32 low = 0;
-    for (u32 k = 0; k < v.nmodes; ++k) low += mode_tier(v, k, m28, true) == 0;
-    const bool quarter = quarter_ok && low >= 2;
-    Mode m[8];
-    u32 n = 0;
-    for (u32 pass = 0; pass < 3; ++pass) {
-        for (u32 k = 0; k < v.nmodes; ++k)
-            if (mode_tier(v, k, m28, quarter) == pass) m[n++] = v.mode[k];
-        if (pass == 0) v.nquarter = n;
-        if (pass == 1) v.nhalf = n;
-    }
-    for (u32 k = 0; k < n; ++k) {
-        // its decay over 16 samples at its rate (r is over 8 at the full rate)
-        i32 r = multiply(m[k].r, m[k].r);
-        if (k < v.nquarter) {
-            m[k].f = svf_f(quarter_inc(m[k].inc));
-            r = multiply(r, r);
-            r = multiply(r, r);
-        } else if (k < v.nhalf) {
-            m[k].f = svf_f(half_inc(m[k].inc));
-            r = multiply(r, r);
-        }
-        m[k].r = r;
-        v.mode[k] = m[k];
-    }
-}
-// A mode's pitch coefficient for a (full-rate) increment, at the rate it runs.
-inline i32 mode_f(const Voice& v, u32 k, u32 inc) {
-    return svf_f(k < v.nquarter ? quarter_inc(inc) : k < v.nhalf ? half_inc(inc) : inc);
-}
 // Every mode's pitch times m28 (Q28): a tier at a time, without a branch a mode.
 __attribute__((noinline)) inline void retune_modes(Voice& v, i32 m28) {
     u32 k = 0;
@@ -240,11 +208,61 @@ __attribute__((noinline)) inline void retune_modes(Voice& v, i32 m28) {
     for (; k < v.nhalf; ++k) v.mode[k].f = svf_f(half_inc(static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4));
     for (; k < v.nmodes; ++k) v.mode[k].f = svf_f(static_cast<u32>(multiply(static_cast<i32>(v.mode[k].inc >> 1), m28)) << 4);
 }
+// The modes in tiers for their pitch times m28 (Q28): quarter, half, then
+// full rate, each with its decay over 16 samples at its rate. A mode keeps
+// its state as it moves between tiers (a state-variable pair holds its
+// amplitude whatever its rate); its pitch is set after.
+inline bool tier_modes(Voice& v, i32 m28, bool force = false) {
+    // a quarter-rate tier of one mode would cost more than it saves: then none
+    u32 low = 0;
+    for (u32 k = 0; k < v.nmodes; ++k) low += mode_tier(v, k, m28, true) == 0;
+    const bool quarter = v.quarter_ok && low >= 2;
+    u32 tier[8], nq = 0, nh = 0;
+    bool same = !force;
+    for (u32 k = 0; k < v.nmodes; ++k) {
+        tier[k] = mode_tier(v, k, m28, quarter);
+        nq += tier[k] == 0;
+        nh += tier[k] <= 1;
+        same = same && tier[k] == (k < v.nquarter ? 0u : k < v.nhalf ? 1u : 2u);
+    }
+    if (same) return false;
+    Mode m[8];
+    u32 n = 0;
+    for (u32 pass = 0; pass < 3; ++pass)
+        for (u32 k = 0; k < v.nmodes; ++k)
+            if (tier[k] == pass) m[n++] = v.mode[k];
+    v.nquarter = nq;
+    v.nhalf = nh;
+    for (u32 k = 0; k < n; ++k) {
+        i32 r = multiply(m[k].r8, m[k].r8);
+        if (k < nh) r = multiply(r, r);
+        if (k < nq) r = multiply(r, r);
+        m[k].r = r;
+        v.mode[k] = m[k];
+    }
+    return true;
+}
+// quarter_ok: whether the model may use the quarter-rate tier (CRASH keeps
+// its body at half rate, where it filters it).
+inline void split_modes(Voice& v, bool quarter_ok = true) {
+    for (u32 k = 0; k < v.nmodes; ++k) v.mode[k].r8 = v.mode[k].r;
+    v.quarter_ok = quarter_ok;
+    tier_modes(v, (1 << 28) + (v.bend > 0 ? v.bend : 0), true);
+    retune_modes(v, 1 << 28);
+}
+// A mode's pitch coefficient for a (full-rate) increment, at the rate it runs.
+inline i32 mode_f(const Voice& v, u32 k, u32 inc) {
+    return svf_f(k < v.nquarter ? quarter_inc(inc) : k < v.nhalf ? half_inc(inc) : inc);
+}
 // CAMBER: every mode's pitch rises by bend * env, which falls away each block.
+// As the glide falls, a mode moves to a slower tier once its pitch fits it
+// (and back, if a re-strike lifts it).
 inline void glide_modes(Voice& v) {
     if (!v.bend || !v.bend_env) return;
     if (v.bend_env < (1 << 21)) v.bend_env = 0;   // settled (under a thousandth of its rise): at its own pitch from now on
-    retune_modes(v, (1 << 28) + multiply(v.bend, v.bend_env));   // 1 + bend env, Q28
+    const i32 m28 = (1 << 28) + multiply(v.bend, v.bend_env);   // 1 + bend env, Q28
+    tier_modes(v, m28);
+    retune_modes(v, m28);
     v.bend_env = multiply(v.bend_env, v.bend_k);
 }
 // Runs the modes over a block of force x, adding their sound to out. Each
@@ -324,7 +342,7 @@ __attribute__((noinline)) inline i32 modes_up(const i32* y, i32* out, i32 prev) 
 inline void run_modes(Voice& v, const i32* x, i32* out) {
     const bool drive = block_or(x) != 0;
     // an odd mode out is paired with a silent one
-    Mode spare = {0, 0, 0, one, 0, 0};
+    Mode spare = {0, 0, 0, one, 0, 0, one};
     const u32 nq = v.nquarter, nh = v.nhalf;
     if (nq || v.qprev) {
         // the force at a quarter rate: fours summed (a mode takes its area)
@@ -368,7 +386,7 @@ inline void run_modes(Voice& v, const i32* x, i32* out) {
 // it is, into y2 (32 values), for the model to filter there and bring up.
 inline void run_modes_half(Voice& v, const i32* x, i32* y2) {
     const bool drive = block_or(x) != 0;
-    Mode spare = {0, 0, 0, one, 0, 0};
+    Mode spare = {0, 0, 0, one, 0, 0, one};
     const u32 nh = v.nhalf;
     i32 x2[half];
     if (drive) for (u32 i = 0; i < half; ++i) x2[i] = x[2 * i] + x[2 * i + 1];
@@ -516,6 +534,11 @@ __attribute__((noinline)) inline void field_reads(Voice& v, i32* r, u32 w, u32 s
     for (u32 l = 0; l < lines; ++l)
         v.flp[l] = field_read(v.buf + l * stride, (w - v.fd[l]) & (stride - 1), stride, v.flp[l], k, r + l * half);
 }
+// A field driven hard enough to fill its rings (ZAP's) clips them where
+// 16-bit rings once did (clip).
+const i32 ring_top = 32767 << 13, ring_bottom = -32768 * (1 << 13);
+template <bool clip>
+inline i32 ring_write(i32 h) { return clip ? clamp(h, ring_bottom, ring_top) : h; }
 // The wide mix: the four lines' sum is heard (back at the full rate, each
 // half-rate sample and the step from the last), and the Hadamard pairs go back
 // in, halved, with the loop's gain (g, already halved), plus the input
@@ -523,7 +546,7 @@ __attribute__((noinline)) inline void field_reads(Voice& v, i32* r, u32 w, u32 s
 // position (the others a stride on each).
 // raw: the sum heard is written at half rate (one value a pass), as it is,
 // for a model that filters it there before bringing it back to the full rate.
-template <bool fed, bool raw>
+template <bool fed, bool clip, bool raw>
 inline i32 field_mix_run(const i32* r, const i32* x, i32* out, i32* w, u32 count, i32 g, i32 level, i32 prev) {
     for (u32 n = 0; n < count; ++n) {
         const i32 r0 = r[0], r1 = r[half], r2 = r[2 * half], r3 = r[3 * half];
@@ -538,29 +561,26 @@ inline i32 field_mix_run(const i32* r, const i32* x, i32* out, i32* w, u32 count
             out += 2;
         }
         const i32 xs = fed ? *x++ : 0;
-        w[0] = multiply(a0 + a2, g) + xs;
-        w[wide_stride] = multiply(a1 + a3, g) + xs;
-        w[2 * wide_stride] = multiply(a0 - a2, g) + xs;
-        w[3 * wide_stride] = multiply(a1 - a3, g) - xs;
+        w[0] = ring_write<clip>(multiply(a0 + a2, g) + xs);
+        w[wide_stride] = ring_write<clip>(multiply(a1 + a3, g) + xs);
+        w[2 * wide_stride] = ring_write<clip>(multiply(a0 - a2, g) + xs);
+        w[3 * wide_stride] = ring_write<clip>(multiply(a1 - a3, g) - xs);
         ++r;
         ++w;
     }
     return prev;
 }
-template <bool fed, bool raw>
+template <bool fed, bool clip, bool raw>
 __attribute__((noinline)) inline i32 field_mix(const i32* r, const i32* x, i32* out, i32* b, u32 at, i32 g, i32 level, i32 prev) {
     const u32 first = wide_stride - at < half ? wide_stride - at : half;
-    prev = field_mix_run<fed, raw>(r, x, out, b + at, first, g, level, prev);
-    return field_mix_run<fed, raw>(r + first, x + first, out + (raw ? 1 : 2) * first, b, half - first, g, level, prev);
+    prev = field_mix_run<fed, clip, raw>(r, x, out, b + at, first, g, level, prev);
+    return field_mix_run<fed, clip, raw>(r + first, x + first, out + (raw ? 1 : 2) * first, b, half - first, g, level, prev);
 }
 // The small field's mix: two lines turned through 45 degrees each pass (their
 // sum and difference over sqrt 2, which keeps the energy and, unlike a
 // Hadamard pair, has no resonance at DC), the sum heard, the input into both.
 // g: the loop's gain over sqrt 2. A field driven hard enough to fill them
 // (ZAP's) clips its rings where 16-bit rings once did (clip).
-const i32 ring_top = 32767 << 13, ring_bottom = -32768 * (1 << 13);
-template <bool clip>
-inline i32 ring_write(i32 h) { return clip ? clamp(h, ring_bottom, ring_top) : h; }
 template <bool fed, bool clip, bool raw>
 inline i32 field_mix2_run(const i32* r, const i32* x, i32* out, i32* w, u32 count, i32 g, i32 level, i32 prev) {
     for (u32 n = 0; n < count; ++n) {
@@ -666,11 +686,16 @@ __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i3
     } else {
         const i32 g = fg >> 1;
         if (raw) {
-            if (fed) field_mix<true, true>(r, x, out, v.buf, w, g, level, 0);
-            else field_mix<false, true>(r, x, out, v.buf, w, g, level, 0);
+            if (v.floop & 2u) {
+                if (fed) field_mix<true, true, true>(r, x, out, v.buf, w, g, level, 0);
+                else field_mix<false, true, true>(r, x, out, v.buf, w, g, level, 0);
+            } else {
+                if (fed) field_mix<true, false, true>(r, x, out, v.buf, w, g, level, 0);
+                else field_mix<false, false, true>(r, x, out, v.buf, w, g, level, 0);
+            }
         } else {
-            v.fprev = fed ? field_mix<true, false>(r, x, out, v.buf, w, g, level, v.fprev)
-                          : field_mix<false, false>(r, x, out, v.buf, w, g, level, v.fprev);
+            v.fprev = fed ? field_mix<true, false, false>(r, x, out, v.buf, w, g, level, v.fprev)
+                          : field_mix<false, false, false>(r, x, out, v.buf, w, g, level, v.fprev);
         }
     }
     v.fw = w + half;
@@ -815,11 +840,11 @@ inline void setup_chain(Voice& v, i32 most, i32 links, i32 lrel, i32 lo, i32 hi,
 }
 // The chain's passes (noinline, their state in locals: together they spill).
 // The dice: a slap, 0.4..1 of U / 16, either way, when they fall under the
-// chance; thrown every fourth half-rate sample (those between get none), a
+// chance; thrown every other half-rate sample (the one between gets none), a
 // second slap taking what passes certainty (both: any do).
 template <bool both>
 __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra, i32* hit) {
-    for (u32 n = 0; n < half / 4; ++n) {
+    for (u32 n = 0; n < half / 2; ++n) {
         seed ^= seed << 13;
         seed ^= seed >> 17;
         seed ^= seed << 5;
@@ -834,8 +859,8 @@ __attribute__((noinline)) inline u32 chain_dice(u32 seed, i32 chance2, i32 extra
             h += ((a ^ s1) - s1) & m1;
         }
         hit[0] = h;
-        hit[1] = hit[2] = hit[3] = 0;
-        hit += 4;
+        hit[1] = 0;
+        hit += 2;
     }
     return seed;
 }
@@ -906,10 +931,10 @@ inline void chain_most(Voice& v, i32 most, i32* out, i32 scale, bool into_half) 
     if (scale >= 0) gain = multiply(gain, scale) << 1;
     i32 hs = v.c_hp.s, lp = v.c_l1;
     u32 seed = v.seed ? v.seed : 1u;
-    // the dice every eighth sample at eight times the chance; past certainty a
+    // the dice every fourth sample at four times the chance; past certainty a
     // second slap takes the rest
-    const i32 c4 = m >= (one >> 5) ? one : m << 5;
-    const i32 extra = m < (one >> 5) ? 0 : m >= (one >> 4) ? one : (m - (one >> 5)) << 5;
+    const i32 c4 = m >= (one >> 4) ? one : m << 4;
+    const i32 extra = m < (one >> 4) ? 0 : m >= (one >> 3) ? one : (m - (one >> 4)) << 4;
     i32 hits[half];
     seed = extra ? chain_dice<true>(seed, c4, extra, hits) : chain_dice<false>(seed, c4, extra, hits);
     i32 prev = 0;
