@@ -20,13 +20,56 @@ preset writer exports that word's top half as the region's "random" (written
 only when it isn't 0) and its reader restores it shifted back, as
 max(random << 16, 0); so a region carries them as random, with its top bit
 (the word's bit 31) clear: TUNE in random's bits 0..4, DRIVE 5..8, FX I
-9..11, FX II 12..14. A send's code is 0 (TRK, the track's send) or 1..7 (0,
-17, 33, 50, 67, 83, 100).
+9..11, FX II 12..14.
+
+Each send is TRK (the track's send) or the key's own 0..100 in 1% steps
+(SDK 1.15): its code above is the nearest of seven steps, and random's bits
+16..22 (FX I) and 23..29 (FX II) carry the amount itself (send_code, below).
 """
 import argparse, json, math, pathlib, re
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODELS = ["BOOM", "SLAP", "POP", "FLICK", "TOM", "CRASH", "CLANK", "GRIT", "HOP", "ZAP", "BOW", "SHAKE"]
+
+# Each key's own FX I and FX II sends (SDK 1.15, etcetc000/open-xy#518): TRK,
+# which follows the track's send, or the key's own amount, 0..100 in 1% steps.
+# A region's "random" carries a send twice: its 3-bit code (FX I's at bits
+# 9..11, FX II's at 12..14), 0 for TRK or 1..7 for the nearest of the seven
+# steps firmware before SDK 1.15 plays (STEPS); and its amount + 1 (FX I's at
+# bits 16..22, FX II's at 23..29), 0 for TRK, which SDK 1.15's preset import
+# keeps in the key's record. Stock's import drops random's bits from 16, so
+# older firmware reads the codes alone; SDK 1.15 plays the amount, as its code
+# is always the amount's nearest step (the SDK's drum_send.hpp).
+TRK = None
+STEPS = (0, 17, 33, 50, 67, 83, 100)   # codes 1..7, as SDK 1.15 shows them
+
+
+def send_code(amount):
+    """A send's 3-bit code: 0 for TRK, else the amount's nearest step, halves up (drum_send_shadow)."""
+    return 0 if amount is TRK else 1 + (6 * amount + 50) // 100
+
+
+def send_index(amount):
+    """A send's amount as random keeps it from bit 16: 0 for TRK, else the amount + 1."""
+    return 0 if amount is TRK else amount + 1
+
+
+def send_ok(amount):
+    return amount is TRK or (type(amount) is int and 0 <= amount <= 100)
+
+
+def sends_read(random):
+    """Both sends as SDK 1.15 reads them back from random (drum_send_stored): the amount
+    when its byte holds one and the code beside it is its step; else the old code, as
+    ("code", c), or TRK."""
+    sends = []
+    for s in (0, 1):
+        index, code = (random >> (16 + 7 * s)) & 0x7f, (random >> (9 + 3 * s)) & 7
+        if 1 <= index <= 101 and code == send_code(index - 1):
+            sends.append(index - 1)
+        else:
+            sends.append(("code", code) if code else TRK)
+    return sends
 
 
 def default_kit():
@@ -36,7 +79,7 @@ def default_kit():
     choke = [int(x) for x in re.search(r"key_choke\[keys\] = \{([^}]*)\}", text).group(1).split(",")]
     assert len(models) == len(values) == len(choke) == 24
     return [{"model": m, "c": list(v), "choke": g, "pan": 0, "gain": LEVELS.get("default", {}).get(k, 0), "tune": 0, "drive": 0,
-             "fx1": 0, "fx2": 0} for k, (m, v, g) in enumerate(zip(models, values, choke))]
+             "fx1": TRK, "fx2": TRK} for k, (m, v, g) in enumerate(zip(models, values, choke))]
 
 
 def model_defaults(name):
@@ -68,7 +111,7 @@ def hz(note):
 
 def kit(changes):
     """The default kit with changes: key -> {"model": name, "c": {slot: value}, "gain": dB, "pan": -100..100,
-    "choke": 0/1, "tune": -16..15, "drive": 0..15, "fx1", "fx2": 0..7}."""
+    "choke": 0/1, "tune": -16..15, "drive": 0..15, "fx1", "fx2": TRK or 0..100}."""
     keys = default_kit()
     for k, ch in changes.items():
         key = keys[k]
@@ -105,20 +148,20 @@ PRESETS = {
     # ring, offbeat flicks, a stirrup cowbell, the laser and a thunderclap
     "kingston": kit({
         BD: {"c": {0: 44, 1: 51, 5: 84, 6: 74}},
-        SD: {"c": {0: 66, 1: 64, 5: 56, 6: 40, 7: 90, 2: 60}, "fx1": 6},
+        SD: {"c": {0: 66, 1: 64, 5: 56, 6: 40, 7: 90, 2: 60}, "fx1": 83},
         CH: {"c": {0: 60, 1: 90, 4: 30, 2: 96}, "pan": 20},
         OH: {"c": {1: 56, 6: 70, 5: 30}, "pan": 20},
         CB: {"c": {0: 60, 1: 86, 4: 110, 5: 60}, "pan": -30},
         MT: {"c": {0: 60, 5: 64, 6: 50}},
-        M3: {"c": {0: 70, 2: 70, 3: 90, 4: 70}, "pan": -20, "fx1": 7},
-        M4: {"c": {2: 70, 6: 80}, "fx1": 5},
+        M3: {"c": {0: 70, 2: 70, 3: 90, 4: 70}, "pan": -20, "fx1": 100},
+        M4: {"c": {2: 70, 6: 80}, "fx1": 67},
         M1: {"c": {0: 60, 3: 70}, "pan": 35},
     }),
     # industrial techno: steel rods, a stiff plate, hard snaps and a ball
     # bearing for fills
     "foundry": kit({
         BD: {"c": {0: 48, 1: 76, 2: 44, 4: 96, 5: 64, 6: 40}, "drive": 6},
-        CP: {"c": {0: 70, 2: 80, 3: 52, 4: 100, 5: 40, 6: 30}, "drive": 3, "fx1": 3},
+        CP: {"c": {0: 70, 2: 80, 3: 52, 4: 100, 5: 40, 6: 30}, "drive": 3, "fx1": 33},
         CH: {"c": {0: 84, 1: 104, 2: 110, 4: 10}},
         OH: {"c": {0: 76, 1: 72, 4: 10, 5: 30, 6: 30}},
         CB: {"c": {0: 34, 1: 90, 2: 120, 4: 10, 5: 40}, "pan": 25, "drive": 9},
@@ -144,7 +187,7 @@ PRESETS = {
     "proscenium": kit({
         M4: {"c": {0: 10, 2: 127, 6: 100, 7: 90}},
         SK2: {"c": {0: 0, 1: 20, 2: 110, 3: 30, 7: 110}},
-        CC: {"c": {0: 30, 1: 10, 5: 110, 6: 60}, "fx2": 6},
+        CC: {"c": {0: 30, 1: 10, 5: 110, 6: 60}, "fx2": 83},
         BW: {"c": {0: 30, 1: 20, 4: 110, 7: 60}},
         M2: {"model": "BOW", "c": {0: 60, 1: 30, 2: 90, 4: 90}},
         LT: {"c": {0: 10, 6: 70}}, FT: {"c": {0: 0, 6: 100, 1: 30}},
@@ -160,7 +203,7 @@ PRESETS = {
         SD: {"c": {0: 60, 1: 80, 2: 20, 5: 60, 6: 90, 7: 20}},
         SD2: {"model": "FLICK", "c": {0: 40, 1: 70, 2: 10, 7: 127}},
         HT: {"c": {2: 10, 1: 60}}, MT: {"c": {2: 0, 1: 60}}, LT: {"c": {2: 0, 1: 60}}, FT: {"c": {2: 0, 1: 50}},
-        RC: {"c": {0: 90, 1: 60, 2: 60, 3: 30}, "pan": 30, "fx2": 3},
+        RC: {"c": {0: 90, 1: 60, 2: 60, 3: 30}, "pan": 30, "fx2": 33},
         BD: {"c": {0: 60, 1: 62, 2: 0, 5: 20}},
     }),
     # tuned percussion: taut toms and shackles on a pentatonic scale, a ball
@@ -172,11 +215,11 @@ PRESETS = {
         **{k: {"c": {0: note_size("TOM", hz("G3")), 4: 127, 1: 30, 2: 90, 3: 80}, "tune": st, "pan": pan}
            for k, st, pan in zip((LT, MT, HT, FT), (-5, 0, 2, -8), (-30, -10, 10, -45))},
         **{k: {"model": "CLANK", "c": {0: note_size("CLANK", hz("D5")), 1: 40, 4: 110, 5: 50}, "tune": st, "pan": pan,
-               "fx1": 4}
+               "fx1": 50}
            for k, st, pan in zip((RS, CB, CP, SN, SD2), (0, 2, 5, 7, 9), (40, 25, 10, -10, -25))},
-        M2: {"c": {0: 90, 2: 110, 4: 30, 5: 30, 6: 90}, "fx1": 5, "pan": 30},
+        M2: {"c": {0: 90, 2: 110, 4: 30, 5: 30, 6: 90}, "fx1": 67, "pan": 30},
         BD: {"c": {0: 60, 1: 47, 4: 127, 5: 20}},
-        CC: {"c": {0: 30, 1: 30, 4: 127, 5: 60}, "fx2": 5},
+        CC: {"c": {0: 30, 1: 30, 4: 127, 5: 60}, "fx2": 67},
     }),
     # minimal: small, damped, ticks, single snaps, short zaps
     "cold-plate": kit({
@@ -214,14 +257,18 @@ def kit_value(model, controls):
 
 
 def pad_random(key):
-    """The key's pad fields as the region's random: the pad word's bits 16..30, shifted down."""
-    assert -16 <= key["tune"] <= 15 and 0 <= key["drive"] <= 15 and 0 <= key["fx1"] <= 7 and 0 <= key["fx2"] <= 7
-    return (key["tune"] & 31) | key["drive"] << 5 | key["fx1"] << 9 | key["fx2"] << 12
+    """The key's pad fields as the region's random: the pad word's bits 16..30, shifted
+    down, the sends' codes among them; then the sends' amounts from bit 16."""
+    assert -16 <= key["tune"] <= 15 and 0 <= key["drive"] <= 15 and send_ok(key["fx1"]) and send_ok(key["fx2"])
+    return ((key["tune"] & 31) | key["drive"] << 5 | send_code(key["fx1"]) << 9 | send_code(key["fx2"]) << 12
+            | send_index(key["fx1"]) << 16 | send_index(key["fx2"]) << 23)
 
 
 def unpack_random(random):
-    """What the SDK decodes from the restored word, max(random << 16, 0)."""
-    word = max(random << 16, 0)
+    """What every firmware decodes from the word stock's reader restores, max(random << 16, 0)
+    as a 32-bit int: the pad controls and the sends' codes (bits 16 and up of random drop out)."""
+    word = (random << 16) & 0xffffffff
+    word = 0 if word >> 31 else word
     field = lambda low, bits: (word >> low) & ((1 << bits) - 1)
     tune = field(16, 5)
     return {"tune": tune - 32 if tune & 16 else tune, "drive": field(21, 4), "fx1": field(25, 3), "fx2": field(28, 3)}
@@ -272,9 +319,15 @@ def check():
             assert all(0 <= c <= 127 for c in k["c"]) and -30 <= r["gain"] <= 0 and -100 <= r.get("pan", 0) <= 100, (name, i)
             # the pad fields come back as they went in, and the word's bit 31 stays clear
             random = r.get("random", 0)
-            assert 0 <= random < 1 << 15, (name, i, random)
+            assert 0 <= random < 1 << 30 and not random & 0x8000, (name, i, random)
             back = unpack_random(random)
-            assert back == {f: k[f] for f in ("tune", "drive", "fx1", "fx2")}, (name, i, back)
+            assert back == {"tune": k["tune"], "drive": k["drive"], "fx1": send_code(k["fx1"]), "fx2": send_code(k["fx2"])}, (name, i, back)
+            # SDK 1.15 reads each send back as the amount written. The kits were
+            # voiced on the seven steps, so each amount is the percent SDK 1.15
+            # shows for (and turns on from) the code these presets carried before
+            # SDK 1.15 (drum_send_percent), and the code is unchanged.
+            assert sends_read(random) == [k["fx1"], k["fx2"]], (name, i, random)
+            assert all(a is TRK or a == STEPS[send_code(a) - 1] for a in (k["fx1"], k["fx2"])), (name, i)
     carried = sum(1 for keys in PRESETS.values() for k in keys if pad_random(k))
     print(f"{len(PRESETS) + 1} kits: every key decodes to its own sound, pan, level and pad fields ({carried} keys carry pad fields)")
 

@@ -18,7 +18,10 @@ pan (-100..100) and gain (dB) as "pan" and "gain", and its pad word +0x14 as
 shifted back (max(random << 16, 0)). The SDK packs a padMix kit's pad fields
 there: TUNE in bits 16..20 (signed), VARY in 21..24, FX I's code in 25..27 and
 FX II's in 28..30 (0 follows the track's send; 1..7 send 0, 17, 33, 50, 67,
-83, 100). Bit 31 stays clear, so the reader's max() keeps them.
+83, 100). Bit 31 stays clear, so the reader's max() keeps them. A send is TRK
+or the key's own 0..100 in 1% steps (SDK 1.15): its code is the nearest of
+those seven steps, and random's bits 16..22 (FX I) and 23..29 (FX II) carry
+the amount itself (send_code, below).
 
     python3 tools/presets.py --check    # decode every preset back and compare
 """
@@ -139,44 +142,44 @@ KITS = {
 }
 CHOKED = {7, 9, 11}   # the hats cut each other (playmode mute1)
 
-# Each key's own settings: tune (semitones), vary (0..15), fx1 and fx2 (codes
-# 0..7: 0 the track's send, then 0, 17, 33, 50, 67, 83, 100), pan, level (dB).
+# Each key's own settings: tune (semitones), vary (0..15), fx1 and fx2 (the
+# key's own send, 0..100; TRK, the track's send, when not named), pan, level (dB).
 PADS = {
     "cabinet": {},
     "cellar": {
-        1: dict(vary=2, level=-1), 3: dict(pan=5, vary=4, fx2=3), 4: dict(pan=-30, vary=6),
-        7: dict(pan=30, vary=8), 11: dict(pan=35, vary=4, fx2=2), 13: dict(pan=-45, vary=10),
-        10: dict(pan=-20, vary=3, fx2=3, level=-3), 15: dict(pan=20, tune=-5, fx2=4), 20: dict(level=-1),
+        1: dict(vary=2, level=-1), 3: dict(pan=5, vary=4, fx2=33), 4: dict(pan=-30, vary=6),
+        7: dict(pan=30, vary=8), 11: dict(pan=35, vary=4, fx2=17), 13: dict(pan=-45, vary=10),
+        10: dict(pan=-20, vary=3, fx2=33, level=-3), 15: dict(pan=20, tune=-5, fx2=50), 20: dict(level=-1),
     },
     "foundry": {
-        1: dict(vary=1), 5: dict(vary=5, fx2=3), 6: dict(pan=10, vary=4, fx2=3),
-        20: dict(pan=-30, fx2=4), 11: dict(pan=25, vary=5), 14: dict(pan=-35, vary=9),
-        16: dict(pan=40, vary=4, fx1=3, fx2=3), 23: dict(fx1=4, fx2=4),
+        1: dict(vary=1), 5: dict(vary=5, fx2=33), 6: dict(pan=10, vary=4, fx2=33),
+        20: dict(pan=-30, fx2=50), 11: dict(pan=25, vary=5), 14: dict(pan=-35, vary=9),
+        16: dict(pan=40, vary=4, fx1=33, fx2=33), 23: dict(fx1=50, fx2=50),
     },
     "frost": {
-        3: dict(vary=3, fx2=2), 4: dict(pan=-25, vary=5), 7: dict(pan=25, vary=7),
+        3: dict(vary=3, fx2=17), 4: dict(pan=-25, vary=5), 7: dict(pan=25, vary=7),
         9: dict(pan=30, vary=7), 11: dict(pan=35, vary=5),
         8: dict(pan=-30), 10: dict(pan=-10), 12: dict(pan=15), 20: dict(level=-1),
     },
     "hothouse": {
-        2: dict(vary=12, pan=-40, fx1=3), 7: dict(vary=10, pan=35), 13: dict(vary=15, pan=50, fx1=4),
-        14: dict(vary=13, pan=-50), 18: dict(vary=9, level=-4), 22: dict(vary=11, pan=20, fx1=3), 21: dict(vary=8, pan=-20), 20: dict(level=-1),
+        2: dict(vary=12, pan=-40, fx1=33), 7: dict(vary=10, pan=35), 13: dict(vary=15, pan=50, fx1=50),
+        14: dict(vary=13, pan=-50), 18: dict(vary=9, level=-4), 22: dict(vary=11, pan=20, fx1=33), 21: dict(vary=8, pan=-20), 20: dict(level=-1),
     },
     # The pentatonic scale is TUNE's: each instrument's keys share one voicing.
     "glasshouse": {
-        **{k: dict(tune=t, fx2=3, pan=p, **({"level": lv} if lv else {}))
+        **{k: dict(tune=t, fx2=33, pan=p, **({"level": lv} if lv else {}))
            for k, t, p, lv in zip((15, 17, 19, 21, 23), (0, 2, 4, 7, 9), (-40, -20, 0, 20, 40), (0, 0, 0, -1, -1))},
         **{k: dict(tune=t, pan=p) for k, t, p in zip((8, 10, 12, 14, 16), (0, 3, 5, 7, 10), (-30, -15, 0, 15, 30))},
-        **{k: dict(tune=t, fx2=4) for k, t in zip((18, 20, 22), (0, 4, 7))},
+        **{k: dict(tune=t, fx2=50) for k, t in zip((18, 20, 22), (0, 4, 7))},
         13: dict(vary=8, pan=-35),
     },
     "parlour": {
-        3: dict(vary=9, fx2=2), 5: dict(vary=9, pan=-20), 7: dict(vary=10, pan=30), 11: dict(vary=8, pan=-30),
-        8: dict(pan=-25, level=-1), 10: dict(pan=0, level=-1), 12: dict(pan=25, level=-2), 17: dict(fx2=3), 20: dict(level=-1),
+        3: dict(vary=9, fx2=17), 5: dict(vary=9, pan=-20), 7: dict(vary=10, pan=30), 11: dict(vary=8, pan=-30),
+        8: dict(pan=-25, level=-1), 10: dict(pan=0, level=-1), 12: dict(pan=25, level=-2), 17: dict(fx2=33), 20: dict(level=-1),
     },
     "storm": {
-        1: dict(fx2=3), 2: dict(fx2=4), 6: dict(fx2=5, pan=-20, level=-2), 20: dict(fx2=6, pan=25), 23: dict(fx1=5, fx2=6, level=-2),
-        24: dict(fx1=6, fx2=5, vary=4), 16: dict(fx2=6, pan=40),
+        1: dict(fx2=33), 2: dict(fx2=50), 6: dict(fx2=67, pan=-20, level=-2), 20: dict(fx2=83, pan=25), 23: dict(fx1=67, fx2=83, level=-2),
+        24: dict(fx1=83, fx2=67, vary=4), 16: dict(fx2=83, pan=40),
     },
 }
 for kit in KITS:
@@ -191,18 +194,60 @@ for kit, keys in KITS.items():
         for k in (18, 20, 22):
             keys[k][1]["bell"] = 30
 
+# Each key's own FX I and FX II sends (SDK 1.15, etcetc000/open-xy#518): TRK,
+# which follows the track's send, or the key's own amount, 0..100 in 1% steps.
+# A region's "random" carries a send twice: its 3-bit code (FX I's at bits
+# 9..11, FX II's at 12..14), 0 for TRK or 1..7 for the nearest of the seven
+# steps firmware before SDK 1.15 plays (STEPS); and its amount + 1 (FX I's at
+# bits 16..22, FX II's at 23..29), 0 for TRK, which SDK 1.15's preset import
+# keeps in the key's record. Stock's import drops random's bits from 16, so
+# older firmware reads the codes alone; SDK 1.15 plays the amount, as its code
+# is always the amount's nearest step (the SDK's drum_send.hpp).
+TRK = None
+STEPS = (0, 17, 33, 50, 67, 83, 100)   # codes 1..7, as SDK 1.15 shows them
+
+
+def send_code(amount):
+    """A send's 3-bit code: 0 for TRK, else the amount's nearest step, halves up (drum_send_shadow)."""
+    return 0 if amount is TRK else 1 + (6 * amount + 50) // 100
+
+
+def send_index(amount):
+    """A send's amount as random keeps it from bit 16: 0 for TRK, else the amount + 1."""
+    return 0 if amount is TRK else amount + 1
+
+
+def send_ok(amount):
+    return amount is TRK or (type(amount) is int and 0 <= amount <= 100)
+
+
+def sends_read(random):
+    """Both sends as SDK 1.15 reads them back from random (drum_send_stored): the amount
+    when its byte holds one and the code beside it is its step; else the old code, as
+    ("code", c), or TRK."""
+    sends = []
+    for s in (0, 1):
+        index, code = (random >> (16 + 7 * s)) & 0x7f, (random >> (9 + 3 * s)) & 7
+        if 1 <= index <= 101 and code == send_code(index - 1):
+            sends.append(index - 1)
+        else:
+            sends.append(("code", code) if code else TRK)
+    return sends
+
 
 def random_word(pad):
-    """The pad word's top 16 bits as stock's preset keeps them ("random")."""
-    tune, vary, fx1, fx2 = pad.get("tune", 0), pad.get("vary", 0), pad.get("fx1", 0), pad.get("fx2", 0)
-    assert -16 <= tune <= 15 and 0 <= vary <= 15 and 0 <= fx1 <= 7 and 0 <= fx2 <= 7
-    value = (tune & 0x1f) | vary << 5 | fx1 << 9 | fx2 << 12
+    """The pad word's top 16 bits as stock's preset keeps them ("random"), the sends'
+    codes among them; then the sends' amounts from bit 16 (SDK 1.15)."""
+    tune, vary, fx1, fx2 = pad.get("tune", 0), pad.get("vary", 0), pad.get("fx1", TRK), pad.get("fx2", TRK)
+    assert -16 <= tune <= 15 and 0 <= vary <= 15 and send_ok(fx1) and send_ok(fx2)
+    value = (tune & 0x1f) | vary << 5 | send_code(fx1) << 9 | send_code(fx2) << 12
     assert value < 0x8000   # bit 31 of the word stays clear
-    return value
+    return value | send_index(fx1) << 16 | send_index(fx2) << 23
 
 
 def decode(region):
-    """What the device restores: the model, controls and pad fields."""
+    """What the device restores: the model, controls and pad fields (the sends as their
+    codes: stock's reader drops random's bits from 16)."""
     value = sum((w & 0x7fff) << (15 * i) for i, w in enumerate(region["params"]))
     controls = [(value >> (7 * i)) & 127 for i in range(8)]
     model = (value >> 56) & 15
@@ -260,9 +305,18 @@ def check():
     for name in KITS:
         for k, ((m, v), r) in enumerate(zip(kit_keys(name), regions_of(name))):
             dm, dv, dp = decode(r)
-            want = {"tune": 0, "vary": 0, "fx1": 0, "fx2": 0, "pan": 0, "level": 0, **PADS[name].get(k + 1, {})}
+            pad = {"tune": 0, "vary": 0, "fx1": TRK, "fx2": TRK, "pan": 0, "level": 0, **PADS[name].get(k + 1, {})}
+            want = {**pad, "fx1": send_code(pad["fx1"]), "fx2": send_code(pad["fx2"])}
             assert (dm, dv) == (m, v), (name, k + 1)
             assert dp == want, (name, k + 1, dp, want)
+            random = r.get("random", 0)
+            assert 0 <= random < 1 << 30 and not random & 0x8000, (name, k + 1, random)
+            # SDK 1.15 reads each send back as the amount written. The kits were
+            # voiced on the seven steps, so each amount is the percent SDK 1.15
+            # shows for (and turns on from) the code these presets carried before
+            # SDK 1.15 (drum_send_percent), and the code is unchanged.
+            assert sends_read(random) == [pad["fx1"], pad["fx2"]], (name, k + 1, random)
+            assert all(a is TRK or a == STEPS[send_code(a) - 1] for a in (pad["fx1"], pad["fx2"])), (name, k + 1)
     print(f"{len(KITS)} kits decode back: specimens, controls, TUNE, VARY, sends, pan and level")
 
 

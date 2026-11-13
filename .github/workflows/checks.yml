@@ -30,6 +30,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - name: Kit presets, their sends as every firmware reads them (pure Python)
+        run: |
+          python tetragon/thunder/tools/presets.py --check
+          python tetragon/curio/tools/presets.py --check
+          python tetragon/syahi/tools/presets.py --out "$RUNNER_TEMP/presets"
+          python tetragon/galileo/tools/presets.py "$RUNNER_TEMP/presets"
       - name: Preview and host tools
         run: |
           sudo apt-get update && sudo apt-get install -y clang lld

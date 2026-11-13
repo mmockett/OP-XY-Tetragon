@@ -19,6 +19,9 @@ cuts the runs (the screen shows the cut).
 Each key's pad fields (SPACE, FEEL, FX I, FX II) go in the region's "random",
 the top half of stock's pad word +0x14 as its preset writer exports it, and its
 pan and level in "pan" and "gain"; each is written only when not neutral.
+A send is TRK or the key's own 0..100 in 1% steps (SDK 1.15): random keeps its
+nearest step as a code, which older firmware plays, and the amount above bit
+16 (send_code). Writing checks every key's sends in pure Python first;
 `--check` decodes every key back through the SDK's own drum_storage.hpp.
 """
 import argparse
@@ -40,11 +43,53 @@ def kit_value(model, controls):
     return sum(c << (7 * i) for i, c in enumerate(controls)) | model << 56
 
 
+# Each key's own FX I and FX II sends (SDK 1.15, etcetc000/open-xy#518): TRK,
+# which follows the track's send, or the key's own amount, 0..100 in 1% steps.
+# A region's "random" carries a send twice: its 3-bit code (FX I's at bits
+# 9..11, FX II's at 12..14), 0 for TRK or 1..7 for the nearest of the seven
+# steps firmware before SDK 1.15 plays (STEPS); and its amount + 1 (FX I's at
+# bits 16..22, FX II's at 23..29), 0 for TRK, which SDK 1.15's preset import
+# keeps in the key's record. Stock's import drops random's bits from 16, so
+# older firmware reads the codes alone; SDK 1.15 plays the amount, as its code
+# is always the amount's nearest step (the SDK's drum_send.hpp).
+TRK = None
+STEPS = (0, 17, 33, 50, 67, 83, 100)   # codes 1..7, as SDK 1.15 shows them
+
+
+def send_code(amount):
+    """A send's 3-bit code: 0 for TRK, else the amount's nearest step, halves up (drum_send_shadow)."""
+    return 0 if amount is TRK else 1 + (6 * amount + 50) // 100
+
+
+def send_index(amount):
+    """A send's amount as random keeps it from bit 16: 0 for TRK, else the amount + 1."""
+    return 0 if amount is TRK else amount + 1
+
+
+def send_ok(amount):
+    return amount is TRK or (type(amount) is int and 0 <= amount <= 100)
+
+
+def sends_read(random):
+    """Both sends as SDK 1.15 reads them back from random (drum_send_stored): the amount
+    when its byte holds one and the code beside it is its step; else the old code, as
+    ("code", c), or TRK."""
+    sends = []
+    for s in (0, 1):
+        index, code = (random >> (16 + 7 * s)) & 0x7f, (random >> (9 + 3 * s)) & 7
+        if 1 <= index <= 101 and code == send_code(index - 1):
+            sends.append(index - 1)
+        else:
+            sends.append(("code", code) if code else TRK)
+    return sends
+
+
 # The pad word +0x14's top half, as stock's preset writer exports it ("random",
 # word >>> 16, written only when non-zero; read back as int << 16): the kit's pad
 # controls from bit 16 (SPACE 5 bits signed, then FEEL 4), FX I's code at bits
 # 25..27 and FX II's at 28..30 (the SDK's drum_storage.hpp). Bit 31 stays clear,
-# or the reader's max(word, 0) would drop the lot.
+# or the reader's max(word, 0) would drop the lot. Above the half, from bit 16,
+# the sends' amounts (SDK 1.15).
 PAD_BITS = (("space", 5), ("feel", 4))
 
 
@@ -53,9 +98,11 @@ def pad_random(pad):
     for name, bits in PAD_BITS:
         value |= (pad.get(name, 0) & ((1 << bits) - 1)) << low
         low += bits
-    value |= (pad.get("fx1", 0) & 7) << 9 | (pad.get("fx2", 0) & 7) << 12
+    fx1, fx2 = pad.get("fx1", TRK), pad.get("fx2", TRK)
+    assert send_ok(fx1) and send_ok(fx2)
+    value |= send_code(fx1) << 9 | send_code(fx2) << 12
     assert 0 <= value <= 0x7fff
-    return value
+    return value | send_index(fx1) << 16 | send_index(fx2) << 23
 
 
 def kit_region(key, model, controls, pad=None):
@@ -159,7 +206,7 @@ def check(sdk):
             lines.append(" ".join(map(str, region["params"] + [region.get("random", 0)])))
             pad = k.pad
             wanted.append([catalog.model_index(k[0])] + list(k[1]) +
-                          [pad.get("space", 0), pad.get("feel", 0), pad.get("fx1", 0), pad.get("fx2", 0)])
+                          [pad.get("space", 0), pad.get("feel", 0), send_code(pad.get("fx1", TRK)), send_code(pad.get("fx2", TRK))])
             assert region.get("pan", 0) == pad.get("pan", 0) and region.get("gain", 0) == pad.get("level", 0)
     out = subprocess.run([str(work / "check")], input="\n".join(lines) + "\n", capture_output=True, text=True, check=True).stdout
     got = [list(map(int, l.split())) for l in out.splitlines()]
@@ -171,6 +218,29 @@ def check(sdk):
     return len(got)
 
 
+def check_sends():
+    """Pure Python: every preset's every key carries its sends as every firmware reads
+    them. Returns the number of keys with a send of their own."""
+    own = 0
+    for name, _role, keys in catalog.PRESETS:
+        for region, k in zip(regions(keys), keys):
+            sends = [k.pad.get("fx1", TRK), k.pad.get("fx2", TRK)]
+            random = region.get("random", 0)
+            assert 0 <= random < 1 << 30 and not random & 0x8000, (name, region["hikey"], random)
+            # Firmware before SDK 1.15: stock's reader, max(random << 16, 0) as a
+            # 32-bit int, keeps the codes alone.
+            word = (random << 16) & 0xffffffff
+            assert not word >> 31 and [(word >> 25) & 7, (word >> 28) & 7] == [send_code(a) for a in sends], (name, region["hikey"])
+            # SDK 1.15 reads each send back as the amount written. The kits were
+            # voiced on the seven steps, so each amount is the percent SDK 1.15
+            # shows for (and turns on from) the code these presets carried before
+            # SDK 1.15 (drum_send_percent), and the code is unchanged.
+            assert sends_read(random) == sends, (name, region["hikey"], random)
+            assert all(a is TRK or a == STEPS[send_code(a) - 1] for a in sends), (name, region["hikey"])
+            own += any(a is not TRK for a in sends)
+    return own
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("out", nargs="?")
@@ -180,5 +250,6 @@ if __name__ == "__main__":
     if args.check:
         print(f"{check(args.sdk)} keys decode to their models, controls and pad fields")
     if args.out:
+        print(f"{check_sends()} keys carry sends of their own, read back alike by every firmware")
         for path in write(args.out):
             print("wrote", path)

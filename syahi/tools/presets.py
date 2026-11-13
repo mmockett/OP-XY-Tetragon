@@ -15,6 +15,9 @@ mode), and its pad fields as stock's preset writer stores them: `pan`, `gain`
 abi-1.2.1.md; drumline-research). Syahi's fields there are HUMAN (bits
 16..19), GRIT (20..24, two's complement), FX I (25..27) and FX II (28..30);
 bit 31 stays clear, so stock's reader (max(random << 16, 0)) gives them back.
+A send is TRK or the key's own 0..100 in 1% steps (SDK 1.15): its field holds
+the nearest of seven steps, and random's bits 16..22 (FX I) and 23..29 (FX
+II) carry the amount itself (send_code, below).
 Every preset written is decoded back and compared (check()).
 """
 import argparse, json, pathlib, re, sys
@@ -33,15 +36,56 @@ def kit_value(model, controls):
     return sum(c << (7 * i) for i, c in enumerate(controls)) | model << 56
 
 
+# Each key's own FX I and FX II sends (SDK 1.15, etcetc000/open-xy#518): TRK,
+# which follows the track's send, or the key's own amount, 0..100 in 1% steps.
+# A region's "random" carries a send twice: its 3-bit code (FX I's at bits
+# 9..11, FX II's at 12..14), 0 for TRK or 1..7 for the nearest of the seven
+# steps firmware before SDK 1.15 plays (STEPS); and its amount + 1 (FX I's at
+# bits 16..22, FX II's at 23..29), 0 for TRK, which SDK 1.15's preset import
+# keeps in the key's record. Stock's import drops random's bits from 16, so
+# older firmware reads the codes alone; SDK 1.15 plays the amount, as its code
+# is always the amount's nearest step (the SDK's drum_send.hpp).
+TRK = None
+STEPS = (0, 17, 33, 50, 67, 83, 100)   # codes 1..7, as SDK 1.15 shows them
+
+
+def send_code(amount):
+    """A send's 3-bit code: 0 for TRK, else the amount's nearest step, halves up (drum_send_shadow)."""
+    return 0 if amount is TRK else 1 + (6 * amount + 50) // 100
+
+
+def send_index(amount):
+    """A send's amount as random keeps it from bit 16: 0 for TRK, else the amount + 1."""
+    return 0 if amount is TRK else amount + 1
+
+
+def send_ok(amount):
+    return amount is TRK or (type(amount) is int and 0 <= amount <= 100)
+
+
+def sends_read(random):
+    """Both sends as SDK 1.15 reads them back from random (drum_send_stored): the amount
+    when its byte holds one and the code beside it is its step; else the old code, as
+    ("code", c), or TRK."""
+    sends = []
+    for s in (0, 1):
+        index, code = (random >> (16 + 7 * s)) & 0x7f, (random >> (9 + 3 * s)) & 7
+        if 1 <= index <= 101 and code == send_code(index - 1):
+            sends.append(index - 1)
+        else:
+            sends.append(("code", code) if code else TRK)
+    return sends
+
+
 # The pad word's fields (resources.padControls in declaration order from bit 16,
-# then the sends), as (name, low bit, bits, signed).
+# then the sends' codes), as (name, low bit, bits, signed).
 FIELDS = [("human", 16, 4, False), ("grit", 20, 5, True), ("fx1", 25, 3, False), ("fx2", 28, 3, False)]
 
 
 def pad_word(pad):
     word = 0
     for name, low, bits, signed in FIELDS:
-        v = pad.get(name, 0)
+        v = send_code(pad.get(name, TRK)) if name in ("fx1", "fx2") else pad.get(name, 0)
         lo, hi = (-(1 << (bits - 1)), (1 << (bits - 1)) - 1) if signed else (0, (1 << bits) - 1)
         assert lo <= v <= hi, (name, v)
         word |= (v & ((1 << bits) - 1)) << low
@@ -67,7 +111,8 @@ def kit_region(key, model, controls, choke, pad=None):
     region = {"hikey": key, "model": "fm slap", "params": [(value >> (15 * w)) & 0x7fff for w in range(4)]}
     if PLAYMODES[choke]:
         region["playmode"] = PLAYMODES[choke]
-    random = pad_word(pad) >> 16
+    assert send_ok(pad.get("fx1", TRK)) and send_ok(pad.get("fx2", TRK)), pad
+    random = pad_word(pad) >> 16 | send_index(pad.get("fx1", TRK)) << 16 | send_index(pad.get("fx2", TRK)) << 23
     if random:
         region["random"] = random
     if pad.get("pan", 0):
@@ -96,11 +141,21 @@ def check(target, files):
             value = sum(p << (15 * w) for w, p in enumerate(region["params"]))
             assert [(value >> (7 * c)) & 127 for c in range(8)] == list(controls), (name, role)
             assert value >> 56 == kits.MODELS.index(model), (name, role)
-            word = max((region.get("random", 0) << 16), 0)   # stock's reader: max(int << 16, 0)
+            random = region.get("random", 0)
+            assert 0 <= random < 1 << 30 and not random & 0x8000, (name, role, random)
+            word = (random << 16) & 0xffffffff   # stock's reader: max(int << 16, 0), a 32-bit int
             assert word < 1 << 31, (name, role, "bit 31")
             back = unpack(word)
-            for field in ("human", "grit", "fx1", "fx2"):
+            for field in ("human", "grit"):
                 assert back[field] == pad.get(field, 0), (name, role, field, back[field])
+            sends = [pad.get("fx1", TRK), pad.get("fx2", TRK)]
+            assert [back["fx1"], back["fx2"]] == [send_code(a) for a in sends], (name, role, back)
+            # SDK 1.15 reads each send back as the amount written. The kits were
+            # voiced on the seven steps, so each amount is the percent SDK 1.15
+            # shows for (and turns on from) the code these presets carried before
+            # SDK 1.15 (drum_send_percent), and the code is unchanged.
+            assert sends_read(random) == sends, (name, role, random)
+            assert all(a is TRK or a == STEPS[send_code(a) - 1] for a in sends), (name, role)
             assert region.get("pan", 0) == pad.get("pan", 0) and region.get("gain", 0) == pad.get("level", 0), (name, role)
             assert region.get("playmode") == PLAYMODES[choke], (name, role)
     print(f"checked {len(files)} presets: every key's model, controls, choke, HUMAN, GRIT, sends, pan and level decode back")

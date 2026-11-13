@@ -281,8 +281,8 @@ KITS = {
 
 
 # Each key's pad fields in the kit presets: HUMAN (0..15), GRIT (-16..15), the
-# FX I and FX II send codes (0 follows the track, 1..7 send 0..100), pan
-# (-100..100) and level (-30..0 dB). Keys not named are neutral.
+# FX I and FX II sends (the key's own 0..100; not named, they follow the
+# track's), pan (-100..100) and level (-30..0 dB). Keys not named are neutral.
 def pads(**keys):
     return keys
 
@@ -292,24 +292,24 @@ PADS = {
     "DEFAULT": {54: dict(level=-1), 57: dict(level=-1), 59: dict(human=3), 60: dict(human=3), 61: dict(level=-3),
         62: dict(pan=-25), 64: dict(pan=25), 65: dict(pan=30, level=-5), 66: dict(pan=-30, level=-6),
         71: dict(level=-1), 76: dict(level=-5)},
-    "VOLT": {53: dict(grit=2, level=-3), 55: dict(grit=1, level=-3), 57: dict(human=2, fx2=3, level=-1),
-        58: dict(human=3, fx2=3, level=-1), 59: dict(human=3), 60: dict(human=3), 61: dict(level=-3),
-        62: dict(pan=-30), 64: dict(pan=30), 65: dict(level=-5), 66: dict(level=-7), 70: dict(fx1=4, pan=-40),
-        71: dict(fx1=4, pan=40), 72: dict(fx2=4), 75: dict(level=-1)},
+    "VOLT": {53: dict(grit=2, level=-3), 55: dict(grit=1, level=-3), 57: dict(human=2, fx2=33, level=-1),
+        58: dict(human=3, fx2=33, level=-1), 59: dict(human=3), 60: dict(human=3), 61: dict(level=-3),
+        62: dict(pan=-30), 64: dict(pan=30), 65: dict(level=-5), 66: dict(level=-7), 70: dict(fx1=50, pan=-40),
+        71: dict(fx1=50, pan=40), 72: dict(fx2=50), 75: dict(level=-1)},
     "STUDIO": {55: dict(human=4), 56: dict(human=3), 57: dict(human=4), 58: dict(human=5, level=-3),
         59: dict(human=3), 60: dict(human=3), 61: dict(human=2, level=-3), 62: dict(pan=-30), 63: dict(pan=10),
         64: dict(pan=30), 65: dict(pan=30, level=-5), 66: dict(pan=-30, level=-7), 67: dict(level=-3),
         68: dict(level=-5), 70: dict(human=6, pan=20), 73: dict(human=6, level=-8), 74: dict(level=-1),
         76: dict(level=-3)},
-    "RAMAN": {53: dict(human=4), 54: dict(human=4), 55: dict(human=5, fx2=2), 56: dict(human=5, fx2=2),
+    "RAMAN": {53: dict(human=4), 54: dict(human=4), 55: dict(human=5, fx2=17), 56: dict(human=5, fx2=17),
         57: dict(human=6), 58: dict(human=5, level=-3), 59: dict(human=4), 63: dict(human=8),
-        67: dict(human=2, fx2=4, pan=-30), 68: dict(human=2, fx2=4, pan=-10), 69: dict(human=2, fx2=4, pan=10),
-        70: dict(human=2, fx2=4, pan=30), 71: dict(human=2, fx2=4, pan=40), 72: dict(level=-4), 73: dict(level=-4),
-        76: dict(fx2=5, level=-6)},
-    "KEBYAR": {57: dict(human=6), 58: dict(human=6, level=-3), 59: dict(fx2=4, level=-6), 60: dict(fx2=5, level=-9),
-        61: dict(human=2, fx2=3, pan=-35), 62: dict(human=2, fx2=3, pan=-25), 63: dict(human=2, fx2=3, pan=-15),
-        64: dict(human=2, fx2=3, pan=-5), 65: dict(human=2, fx2=3, pan=5), 66: dict(human=2, fx2=3, pan=15),
-        67: dict(human=2, fx2=3, pan=25), 68: dict(human=2, fx2=3, pan=35), 72: dict(level=-1), 76: dict(level=-3)},
+        67: dict(human=2, fx2=50, pan=-30), 68: dict(human=2, fx2=50, pan=-10), 69: dict(human=2, fx2=50, pan=10),
+        70: dict(human=2, fx2=50, pan=30), 71: dict(human=2, fx2=50, pan=40), 72: dict(level=-4), 73: dict(level=-4),
+        76: dict(fx2=67, level=-6)},
+    "KEBYAR": {57: dict(human=6), 58: dict(human=6, level=-3), 59: dict(fx2=50, level=-6), 60: dict(fx2=67, level=-9),
+        61: dict(human=2, fx2=33, pan=-35), 62: dict(human=2, fx2=33, pan=-25), 63: dict(human=2, fx2=33, pan=-15),
+        64: dict(human=2, fx2=33, pan=-5), 65: dict(human=2, fx2=33, pan=5), 66: dict(human=2, fx2=33, pan=15),
+        67: dict(human=2, fx2=33, pan=25), 68: dict(human=2, fx2=33, pan=35), 72: dict(level=-1), 76: dict(level=-3)},
     "DJELI": {56: dict(human=5), 57: dict(human=5), 58: dict(human=6), 59: dict(human=8), 60: dict(human=8),
         61: dict(human=3, pan=-20), 62: dict(human=3, pan=20), 67: dict(level=-1), 68: dict(level=-1),
         69: dict(level=-1), 70: dict(level=-1), 71: dict(level=-1), 72: dict(level=-2), 73: dict(level=-1)},
@@ -317,14 +317,14 @@ PADS = {
         56: dict(human=2, grit=5, level=-3), 57: dict(human=3, grit=11, level=-5),
         59: dict(human=3, grit=5, level=-10), 60: dict(human=3, grit=5, level=-6), 61: dict(level=-9),
         64: dict(human=2, grit=3, level=-7), 65: dict(human=2, grit=4, pan=-25, level=-5),
-        66: dict(human=2, grit=4, pan=25, level=-5), 69: dict(grit=4, fx2=3, level=-2),
-        70: dict(grit=6, fx2=3, level=-7), 71: dict(level=-5), 73: dict(level=-2), 76: dict(fx2=5, level=-9)},
+        66: dict(human=2, grit=4, pan=25, level=-5), 69: dict(grit=4, fx2=33, level=-2),
+        70: dict(grit=6, fx2=33, level=-7), 71: dict(level=-5), 73: dict(level=-2), 76: dict(fx2=67, level=-9)},
     "SHARD": {53: dict(grit=10, level=-4), 57: dict(grit=12, level=-6), 58: dict(grit=13, level=-7),
         59: dict(grit=10, level=-4), 61: dict(level=-2), 62: dict(pan=-40), 63: dict(pan=0), 64: dict(pan=40),
         70: dict(level=-1), 72: dict(grit=11, level=-3), 75: dict(grit=14, level=-3), 76: dict(level=-2)},
-    "TRAILER": {53: dict(grit=-6, fx2=3), 54: dict(grit=-8, fx2=3), 55: dict(level=-2), 56: dict(human=5),
-        57: dict(level=-3), 59: dict(level=-2), 61: dict(level=-7), 62: dict(grit=-4, fx2=3, pan=-30),
-        63: dict(grit=-4, fx2=3), 64: dict(grit=-4, fx2=3, pan=30), 65: dict(fx2=6, level=-6), 66: dict(level=-7),
+    "TRAILER": {53: dict(grit=-6, fx2=33), 54: dict(grit=-8, fx2=33), 55: dict(level=-2), 56: dict(human=5),
+        57: dict(level=-3), 59: dict(level=-2), 61: dict(level=-7), 62: dict(grit=-4, fx2=33, pan=-30),
+        63: dict(grit=-4, fx2=33), 64: dict(grit=-4, fx2=33, pan=30), 65: dict(fx2=83, level=-6), 66: dict(level=-7),
         67: dict(grit=3, level=-8), 68: dict(level=-1), 69: dict(level=-2), 70: dict(level=-6), 71: dict(level=-11),
-        72: dict(level=-6), 73: dict(level=-1), 74: dict(level=-2), 75: dict(fx2=6, level=-6)},
+        72: dict(level=-6), 73: dict(level=-1), 74: dict(level=-2), 75: dict(fx2=83, level=-6)},
 }
