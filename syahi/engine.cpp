@@ -118,7 +118,7 @@ inline i32 level_of(u32 model, const u32* raw) {
         if (v < 0) cut += v;
         else if (v > lift) lift = v;
     }
-    return static_cast<i32>(exp2i(clamp(levels::gain[model] + cut + lift + 28 * octave, 0, 31 * octave - 1)));
+    return static_cast<i32>(exp2i_cold(clamp(levels::gain[model] + cut + lift + 28 * octave, 0, 31 * octave - 1)));
 }
 
 inline void set_up(Voice& voice) {
@@ -128,7 +128,7 @@ inline void set_up(Voice& voice) {
     setup(voice.core, c, voice.raw[4], voice.pitch_offset);
     // The head sounds as velocity^1.3.
     const i32 v = voice.core.velocity;
-    const i32 v13 = v >= one ? one : exp2q(multiply(log2u(static_cast<u32>(v)) - 31 * octave, q31(0.65)) * 2);
+    const i32 v13 = v >= one ? one : exp2q_cold(multiply(log2u(static_cast<u32>(v)) - 31 * octave, q31(0.65)) * 2);
     voice.core.head_gain = multiply(multiply(voice.core.spec.head, v13), voice.core.wash_trim);
     voice.level = level_of(voice.core.model, voice.raw);
 }
@@ -151,14 +151,27 @@ inline void begin_note(Voice& voice, Shared& shared) {
     for (u32 k = 0; k < partials; ++k) {
         Partial& m = core.part[k];
         m.phase = start_phase(k);
-        m.inc = increment(k < head_modes ? lifted(m, one, 0) : m.rest);
+        m.inc = increment_cold(k < head_modes ? lifted(m, one, 0) : m.rest);
     }
     core.part[body_mode].phase = core.part[air_mode].phase = 0;
+    // A mode that can't rise past 1.5 kHz (struck at full energy, and any
+    // upward glide) runs at a quarter of the rate for the whole note, as do
+    // the body and the air (bit 8), when at least two partials do: one alone
+    // costs less at the half rate than bringing the quarter rate up.
+    u32 quarter = 0, count = 0;
+    const i32 rise = core.spec.glide > 0 ? core.spec.glide : 0;
+    for (u32 k = 0; k < head_modes; ++k)
+        if (core.part[k].weight && core.part[k].rest + core.part[k].bend + rise < lg(1500)) {
+            quarter |= 1u << k;
+            ++count;
+        }
+    count += (core.part[body_mode].weight != 0) + (core.part[air_mode].weight != 0);
+    core.quarter = count >= 2 ? quarter | 1u << 8 : 0;
     core.glide_left = core.swell_left = one;
     core.ramp = 0x80000000u;
     core.next_event = 0;
     core.noise_quiet = 0;
-    voice.low = voice.held = voice.hp = 0;
+    voice.low = voice.held = 0;
     voice.hold_left = 0;
 }
 
@@ -197,12 +210,16 @@ inline i32 round_off(i32 y, const Knee& k) {
 // A sound has ended once it has stayed under the floor for 90 ms with no strike to come.
 const i32 quiet_floor = 1 << 15;
 const u32 quiet_blocks = 62;
+// The whole block under the floor (64, as finish_crush counts it) or not (0),
+// from its loudest sample: every |y| < the floor exactly when the peak is.
+static inline u32 quiet_block(i32 most) { return most < quiet_floor ? 64u : 0u; }
 
-// The block out: the model's gain to the working level, GRIT, a 24 Hz
-// high-pass, the hit's level and the model's soft knee; whether it is silent.
+// The block out: the model's gain to the working level, GRIT, the hit's level
+// and the model's soft knee; whether it is silent. (The 24 Hz high-pass is on
+// the head, voice.hpp head_up.)
 // One pass for each GRIT kind (none, soft, drive, crush), its state in locals.
 struct Finish {
-    i32 gain, level, hp;
+    i32 gain, level;
     Knee knee;
     // GRIT: the soft low-pass and its coefficient; the drive's table words; the
     // crush's held output, samples left of it, its hold and its step.
@@ -213,9 +230,8 @@ enum GritKind { grit_none, grit_soft, grit_drive_only };
 template <int kind>
 __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restrict out, i32* __restrict output) {
     const i32 gain = f.gain, level = f.level, knee_at = f.knee.knee;
-    i32 hp = f.hp, low = f.low;
+    i32 low = f.low;
     const i32 soft = f.soft, drive = f.drive, makeup = f.makeup;
-    u32 under = 0;
     i32 most = 0;
     for (u32 n = 0; n < 64; ++n) {
         i32 y = shl_clamp(multiply(out[n], gain), 7);
@@ -225,53 +241,46 @@ __attribute__((noinline)) static u32 finish_pass(Finish& f, const i32* __restric
         } else if (kind == grit_drive_only) {
             y = grit_drive(y, drive, makeup);
         }
-        hp += multiply(y - hp, 7323000);   // 1 - e^(-2 pi 24 / 44100), Q31
-        y = shl_clamp(multiply(y - hp, level), 3);   // level is Q28
+        y = shl_clamp(multiply(y, level), 3);   // level is Q28
         output[n] = y;
         const i32 a = absolute(y);
         most = a > most ? a : most;
-        under += static_cast<u32>(y + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);   // |y| < the floor
     }
     // The knee, past the loop (rare: a hit's loudest moments), so the pass
     // stays a hardware loop. Past the knee is far above the quiet floor.
     if (most > knee_at)
         for (u32 n = 0; n < 64; ++n)
             if (output[n] > knee_at || output[n] < -knee_at) output[n] = round_off(output[n], f.knee);
-    f.hp = hp;
     f.low = low;
-    return under;
+    return quiet_block(most);
 }
 // Without GRIT the two gains are one (gain x level x 2^10, as Q22 under a
-// 9-bit shift) and the 24 Hz high-pass runs on the output's scale.
+// 9-bit shift).
 __attribute__((noinline)) static u32 finish_clean(Finish& f, const i32* __restrict out, i32* __restrict output) {
     const i32 k = multiply(f.gain, f.level) << 1, knee_at = f.knee.knee;
-    i32 hp = f.hp;
-    u32 under = 0;
     i32 most = 0;
     for (u32 n = 0; n < 64; ++n) {
-        const i32 x = shl_clamp(multiply(out[n], k), 9);
-        hp += multiply(x - hp, 7323000);   // 1 - e^(-2 pi 24 / 44100), Q31
-        const i32 y = x - hp;
+        const i32 y = shl_clamp(multiply(out[n], k), 9);
         output[n] = y;
         const i32 a = absolute(y);
         most = a > most ? a : most;
-        under += static_cast<u32>(y + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);
     }
     if (most > knee_at)
         for (u32 n = 0; n < 64; ++n)
             if (output[n] > knee_at || output[n] < -knee_at) output[n] = round_off(output[n], f.knee);
-    f.hp = hp;
-    return under;
+    return quiet_block(most);
+}
+// A hold's samples, all one value (out of line, so it stays a hardware loop).
+__attribute__((noinline)) static void hold_fill(i32* __restrict o, i32 value, u32 count) {
+    for (u32 i = 0; i < count; ++i) o[i] = value;
 }
 // GRIT past +9: the whole output chain runs once a hold (the rate it
 // crushes to) and its result holds, so a hold of 3 to 13 samples costs one
-// sample's work. The 24 Hz high-pass steps by the hold (hp_hold); `held` is
-// the held output.
-__attribute__((noinline)) static u32 finish_crush(Finish& f, const i32* __restrict out, i32* __restrict output,
-                                                  i32 hp_hold) {
+// sample's work; `held` is the held output.
+__attribute__((noinline)) static u32 finish_crush(Finish& f, const i32* __restrict out, i32* __restrict output) {
     const i32 gain = f.gain, level = f.level, knee_at = f.knee.knee;
     const i32 drive = f.drive, makeup = f.makeup, step = f.step;
-    i32 hp = f.hp, held = f.held;
+    i32 held = f.held;
     u32 hold_left = f.hold_left, under = 0, n = 0;
     const u32 hold = f.hold;
     const bool quiet_held = static_cast<u32>(held + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);
@@ -280,19 +289,17 @@ __attribute__((noinline)) static u32 finish_crush(Finish& f, const i32* __restri
         if (!hold_left) {
             const i32 x = shl_clamp(multiply(out[n], gain), 7);
             const i32 y = (grit_drive(x, drive, makeup) + (step >> 1)) & ~(step - 1);
-            hp += multiply(y - hp, hp_hold);
-            held = shl_clamp(multiply(y - hp, level), 3);   // level is Q28
+            held = shl_clamp(multiply(y, level), 3);   // level is Q28
             if (__builtin_expect(held > knee_at || held < -knee_at, 0)) held = round_off(held, f.knee);
             hold_left = hold;
             quiet_now = static_cast<u32>(held + quiet_floor - 1) < static_cast<u32>(2 * quiet_floor - 1);
         }
         const u32 c = hold_left < 64 - n ? hold_left : 64 - n;
-        for (u32 i = 0; i < c; ++i) output[n + i] = held;
+        hold_fill(output + n, held, c);
         if (quiet_now) under += c;
         hold_left -= c;
         n += c;
     }
-    f.hp = hp;
     f.held = held;
     f.hold_left = hold_left;
     return under;
@@ -303,7 +310,6 @@ static inline void finish(Voice& voice, const i32* out, i32* output) {
     Finish f;
     f.gain = model_gain[m];
     f.level = voice.level;
-    f.hp = voice.hp;
     f.knee = {levels::knee[m][0], levels::knee[m][1], levels::knee[m][2]};
     f.low = voice.low;
     f.held = voice.held;
@@ -313,12 +319,10 @@ static inline void finish(Voice& voice, const i32* out, i32* output) {
     f.makeup = g > 0 ? tables::grit_makeup[g] : 0;
     f.hold = g > 9 ? static_cast<u32>(1 + (g - 9) * 2) : 0;
     f.step = g > 9 ? static_cast<i32>(1) << (16 + ((g - 10) * 7) / 5) : 0;   // 2^(14 - 1.4 (g - 9)) steps a working level
-    // The high-pass's coefficient for a whole hold: 1 - (1 - c)^hold.
     const u32 under = g == 0 ? finish_clean(f, out, output)
                     : g < 0 ? finish_pass<grit_soft>(f, out, output)
                     : g <= 9 ? finish_pass<grit_drive_only>(f, out, output)
-                    : finish_crush(f, out, output, one - power(one - 7323000, f.hold));
-    voice.hp = f.hp;
+                    : finish_crush(f, out, output);
     voice.low = f.low;
     voice.held = f.held;
     voice.hold_left = f.hold_left;
@@ -335,18 +339,16 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
         for (unsigned i = 0; i < opxy::block_frames; ++i) output[i] = 0;
         return;
     } else {
-        u32 raw[8];
-        read_controls(parameters, raw);
-        bool moved = false;
-        for (u32 c = 0; c < 8; ++c) moved = moved || raw[c] != voice.raw[c];
+        // Whether a control moved, in one pass without a branch a control.
+        u32 moved = 0;
+        for (u32 c = 0; c < 8; ++c) moved |= (static_cast<u32>(positive(parameters[c])) >> 24) ^ voice.raw[c];
         if (moved) {
-            for (u32 c = 0; c < 8; ++c) voice.raw[c] = raw[c];
+            read_controls(parameters, voice.raw);
             set_up(voice);
         }
     }
-    i32 out[64];
-    for (u32 n = 0; n < 64; ++n) out[n] = 0;
-    render_core(voice.core, shared.scratch, out);
+    i32 out[64];   // render_core's head_up writes it whole
+    render_core(voice.core, shared.scratch, out, voice.grit > 9);
     finish(voice, out, output);
     if (voice.quiet >= quiet_blocks && voice.core.next_event < 0) voice.done = 1;
 }

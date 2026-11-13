@@ -207,7 +207,9 @@ int main() {
                 bool done = false;
                 const double q = peak(play(m, r, 0, 0, 16.0, &done));
                 CHECK(q <= 0.5, "%s scramble %d peaks %.3f", name(m), roll, q);
-                CHECK(q > 0.02, "%s scramble %d is (nearly) silent: %.3f", name(m), roll, q);
+                // (-36.5 dBFS: a felt mallet on a high bar, BAR roll 31, peaks at 0.020;
+                // the quarter-rate modes' alignment moves a hit's peak by up to 1.4 dB.)
+                CHECK(q > 0.015, "%s scramble %d is (nearly) silent: %.3f", name(m), roll, q);
                 CHECK(done, "%s scramble %d never frees its voice", name(m), roll);
             }
     }

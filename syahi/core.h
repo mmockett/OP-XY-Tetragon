@@ -24,7 +24,7 @@ struct Voice {
     u32 raw[8];         // the controls the voice was last set up for
     i32 spot_offset;    // HUMAN's nudge to this hit's SPOT (0..127 units)
     i32 pitch_offset;   // and to its pitch, Q16 octaves
-    i32 low, held, hp;  // GRIT's low-pass, its crush's held output, the 24 Hz high-pass
+    i32 low, held;      // GRIT's low-pass and its crush's held output
     i32 level;          // the hit's output gain, Q28 (engine.cpp level_of)
     u32 hold_left;
 };

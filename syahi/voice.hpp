@@ -65,6 +65,7 @@ struct Core {
     u32 seed;
     // noise burst: established and pending level (units), decay a sample, ramp
     i32 nb, np, nd, nramp, nstep, nd_tail;
+    i32 nd16, nd_tail16;          // the burst's fall over 16 samples, and its tail's
     u32 noise_quiet;
     Svf n1, n2;
     SvfCoefficients cn;
@@ -81,7 +82,22 @@ struct Core {
     i32 pair[wash_pairs], pair_decay[wash_pairs];   // and their rings, each the geometric mean of its two modes'
     i32 pair_in, pair_flow;       // a strike's share still coupling into the pairs, and its flow a block (Q31)
     i32 wash_lift;                // the flow's time over the ring's, Q31: the level the slower flow gives back
-    i32 tilt, tilt_last;          // METAL's zero at Nyquist (Q31, 0.5) and the last sample it saw
+    i32 tilt, tilt_last;          // METAL's zero at Nyquist (Q31, 0.5) and the wash's last sample, before it
+    // METAL's wash gain (Q28, at least half) and what its inputs keep of it
+    // (Q31); SIZZLE's gain on the wires' drive (Q28 x 2^-8) and the last
+    // block's swing, which the wires follow.
+    i32 wash_gain, wash_in, sizzle_k, swing;
+    // METAL's wash at half the rate (while GRIT crushes): its high-pass's f,
+    // its low-pass's coefficient and its inputs' gain (Q31).
+    i32 wash_f2, wash_c2, wash_half;
+    // The modes that run at a quarter of the rate (bit k for mode k, bit 8 the
+    // body and the air; set at the note's start), and the quarter-rate bus's
+    // last three samples.
+    u32 quarter;
+    i32 qs[3];
+    // The head's plan reaches one block ahead (1) or not (0), and the modes it runs (bit k).
+    u32 ahead, live_bits;
+    i32 dc;   // the 24 Hz high-pass's state, on the head at half the rate
 };
 
 // Mode k's resting phase: the prototype's k * 1.3 radians.
@@ -141,14 +157,14 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
         // Dispersion: a mode r times the lowest bends r^(1.6 spring) as far.
         if (bend > 0) {
             const i32 lb = log_bend + ((s.spring >> 2) * (above >> 2) >> 12);
-            m.bend = static_cast<i32>(exp2i(clamp(lb, 0, 20 * octave)));
+            m.bend = static_cast<i32>(exp2i_cold(clamp(lb, 0, 20 * octave)));
         } else {
             m.bend = 0;
         }
         if (s.beat > 0) {
             // cos(pi beat t (1 + 0.15 k)): the twin's beat, a little faster on higher modes.
             const i32 hz = log2u(static_cast<u32>(s.beat)) - 16 * octave - octave + log2_1p(q16(0.15) * static_cast<i32>(k));
-            m.beat_inc = exp2i(hz + increment_per_hz + 6 * octave);
+            m.beat_inc = exp2i_cold(hz + increment_per_hz + 6 * octave);
         } else {
             m.beat_inc = 0;
             m.beat_phase = 0;
@@ -163,7 +179,7 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     if (form_raw > 100 && v.model != metal && v.model != bar) {
         const i32 depth = static_cast<i32>(form_raw > 112 ? 12 : form_raw - 100);   // fades in from 100 to 112
         u32 hz[head_modes];
-        for (u32 k = 0; k < head_modes; ++k) hz[k] = exp2i(clamp(v.part[k].rest, 0, 15 * octave));
+        for (u32 k = 0; k < head_modes; ++k) hz[k] = exp2i_cold(clamp(v.part[k].rest, 0, 15 * octave));
         for (u32 k = 1; k < head_modes; ++k) {
             u32 nearest = 50;
             for (u32 j = 0; j < head_modes; ++j) {
@@ -195,41 +211,47 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
             if (k == 0 && s.tube > 0) weight += multiply(weight, s.tube) + multiply(weight, s.tube >> 1);
             v.part[k].weight = weight;
         }
-        // A mode the strike leaves 30 dB under the strongest is masked by it
-        // and isn't played. METAL keeps every mode: its wash is made of them.
-        if (v.model != metal) {
+        // A mode the strike leaves 24 dB under the strongest is masked by it
+        // and isn't played. METAL's wash reads only its modes' phases and
+        // struck energy, which a silent mode keeps, so METAL drops them too.
+        {
             i32 strongest = 0;
             for (u32 k = 0; k < head_modes; ++k) strongest = absolute(v.part[k].weight) > strongest ? absolute(v.part[k].weight) : strongest;
             for (u32 k = 0; k < head_modes; ++k)
-                if (absolute(v.part[k].weight) < strongest >> 5) v.part[k].weight = 0;
+                if (absolute(v.part[k].weight) < strongest >> 4) v.part[k].weight = 0;
         }
     }
     // The wash's pairs ring as long as their two modes on average: the
     // geometric mean of the two rings, so the spray lasts as the modes do.
-    for (u32 j = 0; j < wash_pairs; ++j) v.pair_decay[j] = per_block((lives[wash_a[j]] + lives[wash_b[j]]) >> 1);
+    // (Only METAL's wash reads them, its flow and its lift: the other models skip them.)
     v.tilt = v.model == metal ? q31(0.5) : 0;
-    // The strike's flow into the pairs, and the level that slower flow gives back.
-    {
+    if (v.tilt) {
+        for (u32 j = 0; j < wash_pairs; ++j) v.pair_decay[j] = per_block((lives[wash_a[j]] + lives[wash_b[j]]) >> 1);
+        // The strike's flow into the pairs, and the level that slower flow gives back.
         const i32 flow = clamp(s.decay + lg(0.3), lg(0.04), lg(0.15));
         v.pair_flow = one - per_block(flow);
-        v.wash_lift = exp2q(flow - s.decay < 0 ? flow - s.decay : 0);
+        v.wash_lift = exp2q_cold(flow - s.decay < 0 ? flow - s.decay : 0);
     }
     // The body: one resonance under the head.
     Partial& b = v.part[body_mode];
     b.rest = s.body_pitch;
     b.weight = multiply(s.body, q31(0.9 / 16.0)) << 0;   // Q28 -> units: * 2^-4
     b.weight = multiply(b.weight, v.velocity);
-    b.decay = per_block(s.body_decay);
-    v.body_rise_decay = multiply(b.decay, per_block(lg(0.002 * 6.9078)));
-    v.body_bend = multiply(bend, q31(0.28));
+    if (b.weight) {
+        b.decay = per_block(s.body_decay);
+        v.body_rise_decay = multiply(b.decay, per_block(lg(0.002 * 6.9078)));
+        v.body_bend = multiply(bend, q31(0.28));
+    }
     // The air: a 48 Hz push, a cycle and a half long.
     Partial& air = v.part[air_mode];
     air.rest = lg(48);
     air.weight = multiply(multiply(s.air >> 4, q31(1.1 / 2)) << 1, v.velocity);
-    const i32 air_log = log2u(static_cast<u32>(s.air_cycles)) - 16 * octave + lg(44100.0 / 48.0);
-    v.air_length = exp2i(air_log);
-    v.air_step = exp2i(31 * octave - air_log);
-    v.count_trim = -multiply(log2u(s.count), q31(0.25));
+    if (air.weight) {
+        const i32 air_log = log2u(static_cast<u32>(s.air_cycles)) - 16 * octave + lg(44100.0 / 48.0);
+        v.air_length = exp2i_cold(air_log);
+        v.air_step = exp2i_cold(31 * octave - air_log);
+    }
+    v.count_trim = s.count > 1 ? -multiply(log2u(s.count), q31(0.25)) : 0;
     // METAL: the wash takes over from the modes as WASH rises; together they
     // keep one level (1 / (1 + 4 WASH^2)), so WASH changes the colour, not the loudness.
     if (s.dense) {
@@ -240,33 +262,64 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
         v.wash_trim = one;
     }
     // The struck energy and the glide.
+    // (The energy also lifts the body and sets the wires' and the wash's first
+    // strike: every model keeps it. The glide and the swell only where they move.)
     v.energy_decay = per_block(s.bend_time + lg(6.9078));
-    v.glide_decay = per_block(s.glide_time + lg(6.9078));
-    v.swell_decay = per_block(lg(0.18 * 6.9078));
+    if (s.glide) v.glide_decay = per_block(s.glide_time + lg(6.9078));
+    if (s.swell) v.swell_decay = per_block(lg(0.18 * 6.9078));
     // The contact's raised cosine.
-    v.ramp_step = exp2i(clamp(31 * octave - (s.contact + lg(44100)), 0, 31 * octave - 1));
+    v.ramp_step = exp2i_cold(clamp(31 * octave - (s.contact + lg(44100)), 0, 31 * octave - 1));
     // Noise: its band, cascaded twice, and the two lowest modes' rings.
-    v.cn.set(s.noise_q, s.noise_tone < lg(9000) ? s.noise_tone : lg(9000));
-    v.r0.set(q_drum, v.part[0].rest);
-    v.nd = one - one_pole(s.noise_length);
-    v.nd_tail = one - one_pole(s.noise_length + s.tail);
-    v.nstep = static_cast<i32>(exp2i(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
+    if (s.noise) {
+        v.cn.set(s.noise_q, s.noise_tone < lg(9000) ? s.noise_tone : lg(9000));
+        if (s.noise_ring) v.r0.set(q_drum, v.part[0].rest);
+        v.nd = one - one_pole(s.noise_length);
+        v.nd_tail = s.tail ? one - one_pole(s.noise_length + s.tail) : v.nd;
+        v.nd16 = power(v.nd, 16);
+        v.nd_tail16 = power(v.nd_tail, 16);
+        v.nstep = static_cast<i32>(exp2i_cold(clamp(31 * octave - (s.noise_attack + lg(44100)), 0, 31 * octave - 1)));
+    }
     // The rattle.
-    v.cwb.set(q_wires, s.wire_tone + octave);   // (the buzz runs at half rate)
-    // The follower (0.6 ms), the buzz's rise (0.3 ms) and its fall over WIRE's
-    // time, each as its share of the way a block moves (1 - (1 - c)^64).
-    v.wire_top_c = one_pole(-(s.wire_top + lg(2 * 3.14159265)) - octave);
-    v.follow_c = one - power(one - one_pole(lg(0.0006)), 64);
-    v.wire_high_c = one - power(one - q31(0.073), 64);
-    v.drive_c = one - power(one - one_pole(s.wire_time - lg(4.5)), 64);
+    if (s.wires) {
+        v.cwb.set(q_wires, s.wire_tone + octave);   // (the buzz runs at half rate)
+        // The follower (0.6 ms), the buzz's rise (0.3 ms) and its fall over WIRE's
+        // time, each as its share of the way a block moves (1 - (1 - c)^64).
+        v.wire_top_c = one_pole(-(s.wire_top + lg(2 * 3.14159265)) - octave);
+        v.follow_c = one - power(one - one_pole(lg(0.0006)), 64);
+        v.wire_high_c = one - power(one - q31(0.073), 64);
+        v.drive_c = one - power(one - one_pole(s.wire_time - lg(4.5)), 64);
+    }
     // 40 x the threshold-passed motion, through noise of a third of its swing.
     v.wire_gain = multiply(s.wires, q31(0.4 * wire_drive * 1.732 / 32 * 0.7071));   // Q28 * 2^-5 -> Q23; -3 dB at half rate
-    // The wash.
-    // Its band follows the cymbal's size: a big, low one keeps its body (from
-    // twice the note, at least 900 Hz) and a darker top (ten times it); a small
-    // hat sprays from 3 kHz to the top octave.
-    v.xh.set(q_butter, clamp(pitch + lg(2), lg(900), lg(3000)));
-    v.wash_c = one_pole(-(clamp(pitch + lg(10), lg(5000), lg(12000)) + lg(2 * 3.14159265)));
+    // The wash (METAL's alone: the other models skip it).
+    if (v.model == metal) {
+        // Its band follows the cymbal's size: a big, low one keeps its body (from
+        // twice the note, at least 900 Hz) and a darker top (ten times it); a small
+        // hat sprays from 3 kHz to the top octave.
+        v.xh.set(q_butter, clamp(pitch + lg(2), lg(900), lg(3000)));
+        v.wash_c = one_pole(-(clamp(pitch + lg(10), lg(5000), lg(12000)) + lg(2 * 3.14159265)));
+        // The wash's level: 1.5 x WASH, rising faster near the top (the prototype had 1.4 x): it rings
+        // as long as its modes, so it needs less than twice. A slow flow (a hat's) is given back its level.
+        const i32 dense = multiply(s.dense, v.velocity);
+        i32 wash_gain = multiply(multiply(multiply(dense, q31(2.0 / 8)) * 8 + (multiply(multiply(dense, s.dense) << 3, q31(3.0 / 4)) << 2), v.wash_trim), q31(0.76));
+        wash_gain += multiply(wash_gain, v.wash_lift);
+        // At least half (Q28) at the output, a lower wash scaling its inputs
+        // instead: the band keeps its headroom either way.
+        v.wash_gain = wash_gain > (1 << 27) ? wash_gain : 1 << 27;
+        v.wash_in = wash_gain > (1 << 27) ? one : wash_gain << 4;
+        // At half the rate (GRIT +10 and up): the band retuned, and the inputs'
+        // gain that keeps its level (tables::wash_half, by the band's pitch).
+        v.wash_f2 = sine_fine(increment_cold(clamp(pitch + lg(2), lg(900), lg(3000))));
+        v.wash_c2 = one - multiply(one - v.wash_c, one - v.wash_c);
+        const i32 x = clamp(pitch - lg(100), 0, 9 * (octave / 2) - 1);
+        const u32 i = static_cast<u32>(x) >> 15;
+        const i32 f = x & 0x7fff;
+        v.wash_half = (tables::wash_half[i] + (((tables::wash_half[i + 1] - tables::wash_half[i]) * f) >> 15)) << 17;
+    }
+    // METAL's SIZZLE: the rivets' noise as a half-rate band, n - n[-2], whose
+    // level is the old band-pass chain's at 0.819 of its gain (tools: a
+    // float model of both; the band is 3 dB fuller at 1 to 3 kHz).
+    v.sizzle_k = v.model == metal && s.wires > 0 ? multiply(v.wire_gain, q31(0.8188)) : 0;
 }
 
 // ---- strikes
@@ -328,7 +381,16 @@ static inline void schedule(Core& v, Strikes& out) {
 // ---- a block
 
 // The planned values at the block's end for partial k.
-static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 glide_now) {
+// A plan's reach: its blocks (1 or 2), the decays it still owes (0..2: one
+// fewer when the last plan already took this block's), and where the struck
+// energy, the glide and the swell stand at its end.
+struct Reach {
+    u32 blocks, decays;
+    i32 energy, glide, swell;
+};
+// A mode's decay over the blocks a plan owes (1 or 2; 0 owes none).
+static inline i32 decay_for(const Partial& m, u32 d) { return d > 1 ? multiply(m.decay, m.decay) : m.decay; }
+static inline void plan_mode(Core& v, Partial& m, u32 k, const Reach& reach, u32 most) {
     // A finished ramp's strike joins the established ring.
     if (v.ramp >= 0x80000000u && m.p) {
         m.a += m.p;
@@ -336,19 +398,22 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
         m.p = 0;
         m.pe = 0;
     }
-    m.a = multiply(m.a, m.decay);
-    m.p = multiply(m.p, m.decay);
-    m.u = multiply(m.u, m.decay);
-    // Pitch at the block's end; the increment glides there sample by sample.
-    const i32 pitch = lifted(m, energy_end, glide_now);
+    if (reach.decays) {
+        const i32 d = decay_for(m, reach.decays);
+        m.a = multiply(m.a, d);
+        m.p = multiply(m.p, d);
+        if (v.tilt) m.u = multiply(m.u, d);   // (only METAL's wash reads it)
+    }
+    // Pitch at the plan's end; the increment glides there sample by sample.
+    const u32 shift = 5 + reach.blocks;   // 64 or 128 samples
+    const i32 pitch = lifted(m, reach.energy, reach.glide);
     // A mode whose pitch can't move (no bend, no glide) keeps its increment
     // after the first block.
     if (m.bend || v.spec.glide || !v.air_time) {
-        const u32 most = increment(lg(10800));   // the half rate's Nyquist, 11 kHz
         u32 target = increment(pitch);
         if (target > most) target = most;
         if (m.inc > most) m.inc = most;
-        m.dinc = (static_cast<i32>(target) - static_cast<i32>(m.inc)) >> 6;
+        m.dinc = (static_cast<i32>(target) - static_cast<i32>(m.inc)) >> shift;
     } else {
         m.dinc = 0;
     }
@@ -361,15 +426,15 @@ static inline void plan_mode(Core& v, Partial& m, u32 k, i32 energy_end, i32 gli
         if (hz >= 10500) mod = 0;
         else if (hz > 9000) mod = multiply(mod, (10500 - hz) * 1431655);
     }
-    if (k < head_modes && m.rank) mod = multiply(mod, q28(1.0) + multiply(m.rank, one - v.swell_left)) << 3;
+    if (k < head_modes && m.rank) mod = multiply(mod, q28(1.0) + multiply(m.rank, one - reach.swell)) << 3;
     if (m.beat_inc) {
-        m.beat_phase += m.beat_inc;
+        m.beat_phase += m.beat_inc * reach.blocks;
         mod = multiply(mod, sine(m.beat_phase + 0x40000000u));
     }
     m.m = mod;
     m.pe = multiply(m.p, mod) << 3;
     const i32 g_end = multiply(m.a, mod) << 3;
-    m.dg = (g_end - m.g) >> 6;
+    m.dg = (g_end - m.g) >> shift;
 }
 
 static inline void skip(Partial& m, u32 count) {
@@ -402,30 +467,126 @@ __attribute__((noinline)) static void run_half(Partial& a, i32* __restrict h, co
     const u32 da = 4 * d;
     i32 ga = a.g + a.dg;
     const i32 dga = 2 * a.dg, ea = ramp ? a.pe : 0;
-    const i16* ta = table + (pa >> 18);
+    const i16* ta = table + (pa >> sine_shift);
     i32* o = h + begin;
     const i32* rr = r + 2 * begin + 1;
     for (u32 n = 0; n < count; ++n) {
         const i32 xa = static_cast<i32>(*ta) << 16;
         pa += ia;
         ia += da;
-        ta = table + (pa >> 18);
+        ta = table + (pa >> sine_shift);
         o[n] += ramp ? multiply(ga + multiply(ea, rr[2 * n]), xa) : multiply(ga, xa);
         ga += dga;
     }
     advance(a, 2 * count);
 }
+// One partial at a quarter of the rate over quarter-samples [begin, begin + count)
+// of the block's 16: quarter-sample i is full sample 4i + 3, its phase the sum
+// after 4i + 4 steps (4 inc + 6 dinc, then on by 4 inc + 22 dinc, rising by
+// 16 dinc), its level stepped four samples at a time, into q.
+template <bool ramp>
+__attribute__((noinline)) static void run_quarter(Partial& a, i32* __restrict q, const i32* __restrict r, u32 begin, u32 count) {
+    const i16* const table = tables::sine;
+    const u32 d = static_cast<u32>(a.dinc);
+    u32 pa = a.phase + 4 * a.inc + 6 * d, ia = 4 * a.inc + 22 * d;
+    const u32 da = 16 * d;
+    i32 ga = a.g + 3 * a.dg;
+    const i32 dga = 4 * a.dg, ea = ramp ? a.pe : 0;
+    const i16* ta = table + (pa >> sine_shift);
+    i32* o = q + begin;
+    const i32* rr = r + 4 * begin + 3;
+    for (u32 n = 0; n < count; ++n) {
+        const i32 xa = static_cast<i32>(*ta) << 16;
+        pa += ia;
+        ia += da;
+        ta = table + (pa >> sine_shift);
+        o[n] += ramp ? multiply(ga + multiply(ea, rr[4 * n]), xa) : multiply(ga, xa);
+        ga += dga;
+    }
+    advance(a, 4 * count);
+}
+// The quarter-rate bus up to the half rate, added into h, one quarter-sample
+// (4 samples) late: each quarter-sample as it is, and between two the 4-tap
+// half-band (9 (b + c) - (a + d)) / 16, which keeps a mode's image under
+// -58 dB below 1 kHz and -44 dB at 1.5 kHz. q holds the last block's last
+// three quarter-samples, then this block's 16.
+__attribute__((noinline)) static void quarter_up(const i32* __restrict q, i32* __restrict h) {
+    for (u32 i = 0; i < 16; ++i) {
+        h[2 * i] += ((q[i + 1] >> 4) + (q[i + 2] >> 4)) * 9 - ((q[i] >> 4) + (q[i + 3] >> 4));
+        h[2 * i + 1] += q[i + 2];
+    }
+}
+// The 24 Hz high-pass that keeps a hit's DC (the air's push, the body) out
+// of the output, on the half-rate head: the full rate's 1 - e^(-2 pi 24 / 44100)
+// over two samples, 1 - (1 - c)^2, Q31. The
+// wash, the noise and the wires are band-passed, with nothing down there.
+const i32 dc_coefficient = 14621028;
 // The half-rate head back at the full rate, each half-sample's step heard
-// between (the last block's last half-sample is `last`), added into out.
-__attribute__((noinline)) static void head_up(const i32* __restrict h, i32* __restrict out, i32& last) {
-    i32 prev = last;
+// between (the last block's last half-sample is `last`), past the high-pass
+// (its state dc). The block's first writer: it sets out, and the passes after it add.
+__attribute__((noinline)) static void head_up(const i32* __restrict h, i32* __restrict out, i32& last, i32& dc) {
+    i32 prev = last, d = dc;
     for (u32 i = 0; i < 32; ++i) {
-        const i32 y = h[i];
-        out[2 * i] += (prev >> 1) + (y >> 1);
-        out[2 * i + 1] += y;
+        d = opxy::q31::add(d, multiply(h[i] - d, dc_coefficient));
+        const i32 y = h[i] - d;
+        out[2 * i] = (prev >> 1) + (y >> 1);
+        out[2 * i + 1] = y;
         prev = y;
     }
     last = prev;
+    dc = d;
+}
+// METAL's head: the same with its tilt, a zero at Nyquist (the mean of each
+// sample and the last), which on the interpolated head is 3/4 and 1/4 of the
+// two half-samples.
+__attribute__((noinline)) static void head_up_tilted(const i32* __restrict h, i32* __restrict out, i32& last, i32& dc) {
+    i32 prev = last, d = dc;
+    for (u32 i = 0; i < 32; ++i) {
+        d = opxy::q31::add(d, multiply(h[i] - d, dc_coefficient));
+        const i32 y = h[i] - d;
+        const i32 q = (y - prev) >> 2;
+        out[2 * i] = prev + q;
+        out[2 * i + 1] = y - q;
+        prev = y;
+    }
+    last = prev;
+    dc = d;
+}
+// METAL's wires (SIZZLE) in one pass: the block's swing (mean |out|, before
+// the rivets), which the next block's drive follows; and the rivets' buzz,
+// half-rate noise (each draw's two halves) through n - n[-2] (a band around
+// 5.5 kHz) at the drive m, stepped through the block, each half-sample's step heard between. z holds
+// the last two half-rate noise values and the last half-sample.
+struct Rivets { i32 n1, n2, last; u32 seed; };
+__attribute__((noinline)) static i32 rivets(Rivets& z, i32* __restrict out, i32 m, i32 step) {
+    // Two half-samples a turn, so n[-2] is the same register a turn back.
+    i32 a = z.n2, b = z.n1, prev = z.last, sum = 0;
+    u32 seed = z.seed;
+    for (u32 i = 0; i < 16; ++i) {
+        i32* o = out + 4 * i;
+        const i32 o0 = o[0], o1 = o[1], o2 = o[2], o3 = o[3];
+        sum += (absolute(o0) >> 6) + (absolute(o1) >> 6) + (absolute(o2) >> 6) + (absolute(o3) >> 6);
+        // One draw for the two: its top and bottom halves.
+        const i32 r = noise(seed);
+        const i32 x0 = r >> 1;
+        const i32 y0 = multiply(x0 - a, m);
+        m += step;
+        const i32 x1 = static_cast<i32>(static_cast<u32>(r) << 16) >> 1;
+        const i32 y1 = multiply(x1 - b, m);
+        m += step;
+        a = x0;
+        b = x1;
+        o[0] = o0 + (prev >> 1) + (y0 >> 1);
+        o[1] = o1 + y0;
+        o[2] = o2 + (y0 >> 1) + (y1 >> 1);
+        o[3] = o3 + y1;
+        prev = y1;
+    }
+    z.n1 = b;
+    z.n2 = a;
+    z.last = prev;
+    z.seed = seed;
+    return sum;
 }
 static inline bool quiet(const Partial& m) {
     return absolute(m.a) < silent && absolute(m.p) < silent && absolute(m.g) < silent && absolute(m.dg) < 2;
@@ -475,49 +636,65 @@ struct Wash {
     u32 ph[4], inc[4];
 };
 // The two square-wave products, +e or -e by the two phases' top bits.
-__attribute__((noinline)) static void wash_squares(const Wash& w, i32* __restrict x, i32 e4, i32 e5) {
+// (count samples, each stepping the phases `step` samples: 64 and 1, or 32 and 2.)
+__attribute__((noinline)) static void wash_squares(const Wash& w, i32* __restrict x, i32 e4, i32 e5, u32 count, u32 step) {
     u32 p0 = w.ph[0], p2 = w.ph[1], p3 = w.ph[2], p6 = w.ph[3];
-    const u32 i0 = w.inc[0], i2 = w.inc[1], i3 = w.inc[2], i6 = w.inc[3];
-    for (u32 n = 0; n < 64; ++n) {
+    const u32 i0 = w.inc[0] * step, i2 = w.inc[1] * step, i3 = w.inc[2] * step, i6 = w.inc[3] * step;
+    for (u32 n = 0; n < count; ++n) {
         p0 += i0; p2 += i2; p3 += i3; p6 += i6;
         const i32 m4 = static_cast<i32>(p0 ^ p2) >> 31, m5 = static_cast<i32>(p3 ^ p6) >> 31;
         x[n] = ((e4 ^ m4) - m4) + ((e5 ^ m5) - m5);
     }
 }
+// METAL's tilt on the wash's output. With `half` (while GRIT crushes, which
+// holds each output sample for 3 to 13 samples) at half the rate, each
+// half-sample's step heard between: the band retuned, its inputs scaled to
+// keep its level.
+template <bool half>
 __attribute__((noinline)) static void wash_pass(Core& v, const Wash& w, i32* __restrict out) {
     const i32* end = v.pair;
-    const Spec& s = v.spec;
     // The wash pairs' envelopes at the block's middle: they move slowly.
     i32 e[wash_pairs];
     for (u32 j = 0; j < wash_pairs; ++j) {
         e[j] = (v.e_start[j] + end[j]) >> 1;
         v.e_start[j] = end[j];
     }
-    const i32 dense = multiply(s.dense, v.velocity);
-    // The wash's level: 1.5 x WASH, rising faster near the top (the prototype had 1.4 x): it rings
-    // as long as its modes, so it needs less than twice. A slow flow (a hat's) is given back its level.
-    i32 wash_gain = multiply(multiply(multiply(dense, q31(2.0 / 8)) * 8 + (multiply(multiply(dense, s.dense) << 3, q31(3.0 / 4)) << 2), v.wash_trim), q31(0.76));
-    wash_gain += multiply(wash_gain, v.wash_lift);
+    const i32 dense = multiply(v.spec.dense, v.velocity);
     // Noise in the wash, as loud as modes 1 and 4 together and as dense: 0.7 x a unit normal.
     const i32 hiss = multiply(multiply((v.part[1].u + v.part[4].u) >> 1, q31(0.7 * 1.732 / 2)), dense << 2) << 1;
     // One noise for the hiss and the sine pairs' spray, at their summed power
     // (a pair of unit sines' product has RMS 1/2; the noise, RMS 1.155 of its gain).
     const i32 parts[5] = {e[0] >> 1, e[1] >> 1, e[2] >> 1, e[3] >> 1, multiply(hiss, q31(1.155 / 2)) << 1};
-    const i32 spray = multiply(root_sum_squares(parts, 5), q31(1 / 1.155));
-    const i32 e4 = e[4] >> 1, e5 = e[5] >> 1;
+    const i32 in = half ? multiply(v.wash_in, v.wash_half) : v.wash_in;
+    const i32 spray = multiply(multiply(root_sum_squares(parts, 5), q31(1 / 1.155)), in);
+    const i32 e4 = multiply(e[4] >> 1, in), e5 = multiply(e[5] >> 1, in);
     i32 x[64];
-    wash_squares(w, x, e4, e5);
+    wash_squares(w, x, e4, e5, half ? 32 : 64, half ? 2 : 1);
     u32 seed = v.seed;
     Chamberlin high = v.xh;
-    i32 low = v.wash_low;
-    const i32 c = v.wash_c;
-    for (u32 n = 0; n < 64; ++n) {
-        low += multiply(high.highpass(x[n] + (multiply(noise(seed), spray) << 1)) - low, c);
-        out[n] += multiply(low, wash_gain) << 3;
+    if (half) high.f = v.wash_f2;
+    i32 low = v.wash_low, last = v.tilt_last;
+    const i32 c = half ? v.wash_c2 : v.wash_c, gain = v.wash_gain;
+    if (!half) {
+        for (u32 n = 0; n < 64; ++n) {
+            low = opxy::q31::add(low, multiply(high.highpass(opxy::q31::add(x[n], multiply(noise(seed), spray) << 1)) - low, c));
+            // The tilt: the mean of this sample and the last.
+            out[n] += multiply((low >> 1) + (last >> 1), gain) << 3;
+            last = low;
+        }
+    } else {
+        for (u32 i = 0; i < 32; ++i) {
+            low = opxy::q31::add(low, multiply(high.highpass(opxy::q31::add(x[i], multiply(noise(seed), spray) << 1)) - low, c));
+            out[2 * i] += multiply((low >> 1) + (last >> 1), gain) << 3;
+            out[2 * i + 1] += multiply(low, gain) << 3;
+            last = low;
+        }
     }
     v.seed = seed;
+    high.f = v.xh.f;
     v.xh = high;
     v.wash_low = low;
+    v.tilt_last = last;
 }
 // The burst between strikes, samples [begin, begin + count): one band (its
 // low part's leftover is the air) and, when the model rings it, one ring on
@@ -536,9 +713,9 @@ __attribute__((noinline)) static void ring_run(Chamberlin& g, const i32* __restr
     i32 lo = g.low, bd = g.band;
     const i32 f = g.f, dm = g.damping;
     for (u32 n = 0; n < count; ++n) {
-        lo += multiply(f, bd) * 2;
+        lo = opxy::q31::add(lo, multiply(f, bd) * 2);
         const i32 hi = x[n] - lo - multiply(dm, bd) * 2;
-        bd += multiply(f, hi) * 2;
+        bd = opxy::q31::add(bd, multiply(f, hi) * 2);
         o[n] += multiply(multiply(dm, bd) * 2, rg) << 1;
     }
     g.low = lo;
@@ -570,11 +747,27 @@ __attribute__((noinline)) static void noise_run(NoiseRun& z, i32* __restrict out
     z.seed = seed;
     z.f1 = f1;
 }
+// The ring on the lowest mode once the burst is quiet: no input, so it only
+// rings out. It ends the run-on once both its states are under the floor.
+__attribute__((noinline)) static void ring_tail(Core& v, i32* __restrict o) {
+    Chamberlin& g = v.r0;
+    i32 lo = g.low, bd = g.band;
+    const i32 f = g.f, dm = g.damping, rg = v.spec.noise_ring;
+    for (u32 n = 0; n < 64; ++n) {
+        lo = opxy::q31::add(lo, multiply(f, bd) * 2);
+        const i32 hi = -lo - multiply(dm, bd) * 2;
+        bd = opxy::q31::add(bd, multiply(f, hi) * 2);
+        o[n] += multiply(multiply(dm, bd) * 2, rg) << 1;
+    }
+    g.low = lo;
+    g.band = bd;
+    v.noise_quiet = absolute(lo) < silent && absolute(bd) < silent ? 40u : v.noise_quiet + 1;
+}
 __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes, i32* __restrict out) {
     const Spec& s = v.spec;
     const i32 gain = multiply(v.velocity, q31(1.732 / 2));
     // The burst: established and pending level, the pending part ramping in.
-    i32 nb = v.nb, np = v.np, ramp = v.nramp, nd = v.nd;
+    i32 nb = v.nb, np = v.np, ramp = v.nramp, nd = v.nd, nd16 = v.nd16;
     const i32 step = v.nstep;
     NoiseRun z;
     z.seed = v.seed;
@@ -591,7 +784,7 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
         // its attack and its fall.
         for (u32 at = begin; at < end;) {
             const u32 count = end - at < 16 ? end - at : 16;
-            const i32 fall = power(nd, count);
+            const i32 fall = count == 16 ? nd16 : power(nd, count);
             const i32 ramp_end = ramp > one - static_cast<i32>(count) * step || static_cast<i32>(count) * step < 0 ? one
                                : ramp + static_cast<i32>(count) * step;
             const i32 from = multiply(nb + multiply(np, ramp), gain);
@@ -623,11 +816,14 @@ __attribute__((noinline)) static void noise_pass(Core& v, const Strikes& strikes
                 z.cn = v.cn;
                 z.cn.k = multiply(z.cn.k, q31(0.7071));
             }
-            if (strikes.last[i] && s.tail) nd = v.nd_tail;
+            if (strikes.last[i] && s.tail) {
+                nd = v.nd_tail;
+                nd16 = v.nd_tail16;
+            }
         }
         begin = end;
     }
-    v.nb = nb; v.np = np; v.nramp = ramp; v.nd = nd; v.seed = z.seed;
+    v.nb = nb; v.np = np; v.nramp = ramp; v.nd = nd; v.nd16 = nd16; v.seed = z.seed;
     v.n1 = z.f1; v.r0 = z.g0;
     v.noise_quiet = nb > silent || np > silent ? 0 : v.noise_quiet + 1;
 }
@@ -683,8 +879,7 @@ static inline void rattle_pass(Core& v, i32* out) {
     // The wires follow the head's swing a block at a time (0.6 ms, so they slap
     // with the stick); past the gap they buzz, answering at once (a 0.3 ms
     // rise) and settling over WIRE's time.
-    const i32 swing = v.tilt ? swing_pass<true>(out, v.tilt, v.tilt_last) : swing_pass<false>(out, 0, v.tilt_last);
-    if (!s.wires) return;
+    const i32 swing = swing_pass<false>(out, 0, v.tilt_last);
     v.follow += multiply(swing - v.follow, v.follow_c);
     if (v.follow > v.peak) v.peak = v.follow;
     const i32 past = positive(v.follow - multiply(v.peak, s.wire_gap));
@@ -713,31 +908,41 @@ static inline void rattle_pass(Core& v, i32* out) {
 
 // Plans the head's modes for the block; returns the ones to run (the others
 // are quiet and only advance).
-__attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, i32 energy_end, i32 glide_now, u32* live) {
-    u32 lives = 0;
+__attribute__((noinline)) static u32 plan_head(Core& v, const Strikes& strikes, const Reach& reach, u32* live) {
+    u32 lives = 0, bits = 0;
+    // The highest a mode's increment may reach: under the half rate's Nyquist
+    // (10.8 kHz), or the quarter rate's (5 kHz).
+    const u32 most_half = increment(lg(10800)), most_quarter = increment(lg(5000));
     for (u32 k = 0; k < head_modes; ++k) {
         Partial& m = v.part[k];
         // A quiet mode with no strike only falls and moves on (its level is
         // under -78 dB of a strike: it is set to rest).
         if (!strikes.count && quiet(m)) {
-            m.a = multiply(m.a, m.decay);
-            m.p = multiply(m.p, m.decay);
-            m.u = multiply(m.u, m.decay);
+            if (reach.decays) {
+                const i32 d = decay_for(m, reach.decays);
+                m.a = multiply(m.a, d);
+                m.p = multiply(m.p, d);
+                m.u = multiply(m.u, d);
+            }
             m.g = m.dg = 0;
             skip(m, 64);
             continue;
         }
-        plan_mode(v, m, k, energy_end, glide_now);
+        plan_mode(v, m, k, reach, v.quarter >> k & 1u ? most_quarter : most_half);
         for (u32 i = 0; i < strikes.count; ++i) m.u += strikes.level[i] >> 7;
-        if (!strikes.count && quiet(m)) {
+        // A dropped mode (no weight) only moves on, even when struck.
+        if (!m.weight || (!strikes.count && quiet(m))) {
             skip(m, 64);
             continue;
         }
         live[lives++] = k;
+        bits |= 1u << k;
     }
+    v.live_bits = bits;
     return lives;
 }
-static inline void render_core(Core& v, Scratch& scratch, i32* out) {
+// crushed: GRIT holds the output (+10 and up), so METAL's wash runs at half the rate.
+static inline void render_core(Core& v, Scratch& scratch, i32* out, bool crushed) {
     Strikes strikes;
     schedule(v, strikes);
     // The struck energy and the glide at the block's end.
@@ -756,8 +961,8 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         v.ramp = 0x80000000u;
         r[0] = one;
     } else {
-        u32 ramp = v.ramp, step = v.ramp_step, next = 0;
-        for (u32 n = 0; n < 64; ++n) {
+        u32 ramp = v.ramp, step = v.ramp_step, next = 0, n = 0;
+        for (; n < 64; ++n) {
             if (next < strikes.count && strikes.at[next] == n) {
                 ramp_at[next] = n ? r[n - 1] : (v.ramp >= 0x80000000u ? one : (one >> 1) - (sine(v.ramp + 0x40000000u) >> 1));
                 ramp = 0;
@@ -765,7 +970,10 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
             }
             ramp = ramp + step < ramp || ramp + step > 0x80000000u ? 0x80000000u : ramp + step;
             r[n] = ramp >= 0x80000000u ? one : (one >> 1) - (sine(ramp + 0x40000000u) >> 1);
+            // Done, with no strike to come this block: the rest is one.
+            if (ramp >= 0x80000000u && next >= strikes.count) break;
         }
+        for (++n; n < 64; ++n) r[n] = one;
         v.ramp = ramp;
     }
     const bool ramping = r[0] < one || strikes.count;
@@ -781,26 +989,66 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
     }
     // The head's modes: plan each, skip the quiet, run the rest between the
     // strikes, landing each strike as it comes.
+    // A block with no strike and no ramp plans two blocks; the next, if it
+    // has no strike either, runs that plan on. (Envelopes and glides step in
+    // 128-sample lines: their times are 5 ms and longer.)
     u32 live[head_modes];
-    const u32 lives = plan_head(v, strikes, energy_end, glide_now, live);
-    // The head, the body and the air at half the rate.
-    i32 h[32];
+    u32 lives = 0;
+    if (v.ahead && !ramping) {
+        v.ahead = 0;
+        for (u32 k = 0; k < head_modes; ++k) {
+            if (v.live_bits >> k & 1u) live[lives++] = k;
+            else skip(v.part[k], 64);
+        }
+    } else {
+        Reach reach;
+        reach.blocks = ramping ? 1 : 2;
+        reach.decays = reach.blocks - v.ahead;
+        reach.energy = energy_end;
+        reach.glide = glide_now;
+        reach.swell = v.swell_left;
+        if (reach.blocks == 2) {
+            reach.energy = multiply(energy_end, v.energy_decay);
+            if (v.spec.glide) reach.glide = v.spec.glide - multiply(v.spec.glide, multiply(v.glide_left, v.glide_decay));
+            if (v.spec.swell) reach.swell = multiply(v.swell_left, v.swell_decay);
+        }
+        lives = plan_head(v, strikes, reach, live);
+        v.ahead = reach.blocks - 1;
+    }
+    // The head at half the rate, its low modes at a quarter; the body and the air at a quarter.
+    i32 h[32], qs[19];
     for (u32 i = 0; i < 32; ++i) h[i] = 0;
+    qs[0] = v.qs[0];
+    qs[1] = v.qs[1];
+    qs[2] = v.qs[2];
+    i32* const q = qs + 3;
+    if (v.quarter)
+        for (u32 i = 0; i < 16; ++i) q[i] = 0;
+    bool quartered = qs[0] || qs[1] || qs[2];
     {
-        u32 begin = 0;
+        u32 hb = 0, qb = 0;
         for (u32 i = 0; i <= strikes.count; ++i) {
             const u32 end = i < strikes.count ? strikes.at[i] : 64;
-            // Half-samples: a strike lands on the half-sample it falls in.
-            const u32 hb = begin >> 1, he = end >> 1;
-            if (he > hb)
-                for (u32 j = 0; j < lives; ++j) {
-                    Partial& a = v.part[live[j]];
-                    if (ramping && a.pe) run_half<true>(a, h, r, hb, he - hb);
+            // A strike lands on the half-sample (quarter-sample) it falls in.
+            const u32 he = end >> 1, qe = end >> 2;
+            for (u32 j = 0; j < lives; ++j) {
+                Partial& a = v.part[live[j]];
+                const bool ramp = ramping && a.pe;
+                if (v.quarter >> live[j] & 1u) {
+                    quartered = true;
+                    if (qe > qb) {
+                        if (ramp) run_quarter<true>(a, q, r, qb, qe - qb);
+                        else run_quarter<false>(a, q, r, qb, qe - qb);
+                    }
+                } else if (he > hb) {
+                    if (ramp) run_half<true>(a, h, r, hb, he - hb);
                     else run_half<false>(a, h, r, hb, he - hb);
                 }
+            }
             if (i < strikes.count)
                 for (u32 j = 0; j < lives; ++j) land(v.part[live[j]], strikes.level[i], ramp_at[i]);
-            begin = end & ~1u;
+            hb = he;
+            qb = qe;
         }
     }
     // The body and the air (at half rate with the head; no model with wires has them).
@@ -816,8 +1064,14 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         const u32 target = increment(b.rest + multiply(energy_end, v.body_bend));
         b.dinc = (static_cast<i32>(target) - static_cast<i32>(b.inc)) >> 6;
         b.dg = (b.a - v.body_rise - b.g) >> 6;
-        if (absolute(b.a) < silent && absolute(b.g) < silent) skip(b, 64);
-        else run_half<false>(b, h, r, 0, 32);
+        if (absolute(b.a) < silent && absolute(b.g) < silent) {
+            skip(b, 64);
+        } else if (v.quarter >> 8 & 1u) {
+            run_quarter<false>(b, q, r, 0, 16);
+            quartered = true;
+        } else {
+            run_half<false>(b, h, r, 0, 32);
+        }
     }
     Partial& air = v.part[air_mode];
     if (air.weight && v.air_time < v.air_length + 64) {
@@ -828,30 +1082,65 @@ static inline void render_core(Core& v, Scratch& scratch, i32* out) {
         air.inc = increment(air.rest);
         air.dinc = 0;
         air.dg = (g_end - air.g) >> 6;
-        run_half<false>(air, h, r, 0, 32);
+        if (v.quarter >> 8 & 1u) {
+            run_quarter<false>(air, q, r, 0, 16);
+            quartered = true;
+        } else {
+            run_half<false>(air, h, r, 0, 32);
+        }
     }
     v.air_time += 64;
-    head_up(h, out, v.head_last);
-    // The wash, the noise and the rattle, a sample at a time.
+    if (quartered) {
+        quarter_up(qs, h);
+        v.qs[0] = qs[16];
+        v.qs[1] = qs[17];
+        v.qs[2] = qs[18];
+    }
     const Spec& s = v.spec;
-    // The burst runs on 4 blocks after it falls quiet for its band to settle,
-    // 40 when it also rings a mode (a narrow resonance takes that long).
-    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < (s.noise_ring ? 40u : 4u));
-    const bool rattling = s.wires > 0 || v.tilt;   // METAL always passes through: its tilt is there
-    // The wash and the noise add to the head; the wires then follow all of it.
+    const bool metal = v.tilt != 0;
+    // The wash, the noise and the rattle, a sample at a time.
+    // The burst runs on 2 blocks after it falls quiet, for its band to settle
+    // (a fraction of a millisecond). A ring on the lowest mode then rings out
+    // alone, with nothing more in, for at most 38 blocks more or until it is
+    // under the floor.
+    const bool noisy = s.noise > 0 && (v.nb > silent || v.np > silent || strikes.count || v.noise_quiet < 2u);
+    const bool ringing = !noisy && s.noise > 0 && s.noise_ring && v.noise_quiet < 40u;
+    const bool rattling = s.wires > 0 && !metal;   // the snare's wires
+    // METAL: its head tilted (and its wash, in the wash's pass).
+    if (metal) head_up_tilted(h, out, v.head_last, v.dc);
+    else head_up(h, out, v.head_last, v.dc);
+    // The wash and the noise add to the head; the snare's wires then follow all of it.
     if (metal_wash) {
         wash_envelopes(v, strikes);
-        wash_pass(v, wash, out);
+        if (crushed) wash_pass<true>(v, wash, out);
+        else wash_pass<false>(v, wash, out);
     }
     if (noisy) noise_pass(v, strikes, out);
+    else if (ringing) ring_tail(v, out);
     if (rattling) rattle_pass(v, out);
+    if (metal && s.wires > 0) {
+        // The wires follow the last block's swing (0.6 ms), past the gap they
+        // buzz, answering at once (0.3 ms) and settling over WIRE's time.
+        v.follow += multiply(v.swing - v.follow, v.follow_c);
+        if (v.follow > v.peak) v.peak = v.follow;
+        const i32 past = positive(v.follow - multiply(v.peak, s.wire_gap));
+        const i32 drive = v.drive + multiply(past - v.drive, past > v.drive ? v.wire_high_c : v.drive_c);
+        const i32 m0 = shl_clamp(multiply(v.drive, v.sizzle_k), 8), m1 = shl_clamp(multiply(drive, v.sizzle_k), 8);
+        v.drive = drive;
+        Rivets z = {v.wb.ic1, v.wb.ic2, v.buzz_last, v.seed};   // (METAL's wires keep their noise in the band's states)
+        v.swing = rivets(z, out, m0, ((m1 - m0) >> 6) * 2);
+        v.wb.ic1 = z.n1;
+        v.wb.ic2 = z.n2;
+        v.buzz_last = z.last;
+        v.seed = z.seed;
+    }
 }
 }
 
 namespace syahi {
 inline void Chamberlin::set(QClass q, i32 log2_hz) {
     // sin(pi fc / fs): half the phase increment, as a phase.
-    f = sine(increment(log2_hz < lg(8000) ? log2_hz : lg(8000)) >> 1);
+    f = sine_fine(increment_cold(log2_hz < lg(8000) ? log2_hz : lg(8000)) >> 1);
     damping = tables::svf_k[q];
 }
 }
