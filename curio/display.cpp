@@ -14,6 +14,27 @@ namespace view {
 using opxy::i32;
 using opxy::u32;
 using namespace opxy::draw;
+
+// opxy::draw's sine and rotation, the same math kept in this file. The SDK's
+// are plain inline: a copy GCC keeps out of line becomes a global symbol, and
+// another machine's copy then clashes with it in one firmware (open-xy
+// docs/toolchain.md, "One definition for shared code").
+// sin of a tenth-degree angle, Q10, interpolated between whole degrees.
+static inline i32 sine_tenths(i32 tenths) {
+    tenths %= 3600;
+    if (tenths < 0) tenths += 3600;
+    const i32 sign = tenths >= 1800 ? -1 : 1;
+    tenths %= 1800;
+    if (tenths > 900) tenths = 1800 - tenths;
+    const i32 degree = tenths / 10, fraction = tenths % 10;
+    const i32 low = sine_q10[degree], high = sine_q10[degree < 90 ? degree + 1 : 90];
+    return sign * (low + (high - low) * fraction / 10);
+}
+// A clockwise rotation by tenths of a degree.
+static inline Turn rotated(i32 tenths) {
+    const Turn turn = {sine_tenths(tenths + 900), sine_tenths(tenths)};
+    return turn;
+}
 const i32 idle = -1;
 const i32 u = 1024;   // Q10
 
@@ -137,7 +158,7 @@ struct Outline {
 inline void ellipse_ring(Path& p, i32 rx, i32 ry, i32 w, const i32* lift) {
     for (u32 i = 0; i < 32; ++i) {
         const i32 tenths = static_cast<i32>(i) * 3600 / 32;
-        const i32 cs = opxy::draw::sine(tenths + 900), sn = opxy::draw::sine(tenths);
+        const i32 cs = sine_tenths(tenths + 900), sn = sine_tenths(tenths);
         const i32 y = lift ? lift[i] : 0;
         p.points[i].x = cs * rx;
         p.points[i].y = sn * ry + y;
@@ -200,7 +221,7 @@ inline void surface(Point* pts, i32 half, i32 amp, i32 waves, i32 phase) {
     if (amp > most) amp = most;
     for (u32 i = 0; i < 32; ++i) {
         pts[i].x = (static_cast<i32>(i) * 2 * half * u / 31) - half * u;
-        pts[i].y = (opxy::draw::sine(static_cast<i32>(i) * 3600 * waves / 31 + phase) * amp) >> 10;
+        pts[i].y = (sine_tenths(static_cast<i32>(i) * 3600 * waves / 31 + phase) * amp) >> 10;
     }
 }
 inline u32 key_of(const Path& p) {
@@ -210,8 +231,8 @@ inline u32 key_of(const Path& p) {
 }
 inline void park(Frame& frame, u32 p) {
     for (u32 i = 0; i < 64; ++i) {
-        frame.paths[p].points[i].x = opxy::draw::sine(static_cast<i32>(i) * 3600 / 64 + 900) * 10;
-        frame.paths[p].points[i].y = opxy::draw::sine(static_cast<i32>(i) * 3600 / 64) * 10;
+        frame.paths[p].points[i].x = sine_tenths(static_cast<i32>(i) * 3600 / 64 + 900) * 10;
+        frame.paths[p].points[i].y = sine_tenths(static_cast<i32>(i) * 3600 / 64) * 10;
     }
     frame.paths[p].key = 0x51u + p * 2;
     hide(frame, p);
@@ -286,7 +307,7 @@ inline Stroke chalk_stroke(const i32* c, i32 age, i32 life) {
 inline Point stroke_at(const Stroke& s, i32 t) {
     Point q;
     q.x = s.len * t - 60 * u;
-    q.y = -(s.rise * t) + (opxy::draw::sine(t * s.waves * 36 / 10) * s.amp >> 10);
+    q.y = -(s.rise * t) + (sine_tenths(t * s.waves * 36 / 10) * s.amp >> 10);
     return q;
 }
 // The bull-roarer's slat on its orbit: the angle a hit has carried it to, and
@@ -297,8 +318,8 @@ inline i32 roar_angle(const i32* c, i32 age, i32 life) {
 }
 inline void roar_at(const i32* c, i32 a, i32& x, i32& y) {
     const i32 ry = 12 + dsp::sc(26, c[3]);
-    x = (210 + dsp::sc(16, c[2])) * u + 63 * opxy::draw::sine(a + 900);
-    y = 124 * u + ry * opxy::draw::sine(a);
+    x = (210 + dsp::sc(16, c[2])) * u + 63 * sine_tenths(a + 900);
+    y = 124 * u + ry * sine_tenths(a);
 }
 // The same on screen: moved with the bull-roarer to the screen's middle.
 inline void roar_on_screen(const i32* c, i32 a, i32& x, i32& y) {
@@ -340,11 +361,11 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
         // The dent comes when the ball lands.
         const i32 depth = (kick(age - ball_lands(c)) * (4 + sc(6, c[0])) >> 2) + (age >= ball_lands(c) ? r * 2 >> 2 : 0);
         for (u32 i = 0; i < 32; ++i) {
-            const i32 x = opxy::draw::sine(static_cast<i32>(i) * 3600 / 32 + 900) * rx;
+            const i32 x = sine_tenths(static_cast<i32>(i) * 3600 / 32 + 900) * rx;
             const i32 near = (x > spot * u ? x - spot * u : spot * u - x) >> 10;
             lift[i] = near < zone ? depth * (zone - near) / zone : 0;
             // Ripples run round the skin while it rings: three waves, at most 1.5 px.
-            if (age >= ball_lands(c)) lift[i] += ((r * 1536 >> 12) * opxy::draw::sine(static_cast<i32>(i) * 337 + age * 20)) >> 10;
+            if (age >= ball_lands(c)) lift[i] += ((r * 1536 >> 12) * sine_tenths(static_cast<i32>(i) * 337 + age * 20)) >> 10;
         }
         ellipse_ring(frame.paths[0], rx, ry, u / 2, lift);
         show_path(frame, m, 0, 200 * u, 164 * u - 24 * s, 4);
@@ -399,7 +420,7 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
                 const i32 f = ax < lim ? ax * 1024 / lim : 1024;   // ax under 64 px: no overflow
                 y = bottom * u - arch * (1024 - (f * f >> 10)) - rough[55 - i] * u / 10;
             } else { x = -hl * u; y = bottom * u - (bottom - top) * u * (i - 55) / 9; }
-            if (bend) y += bend * opxy::draw::sine(x * 1630 / (hl * u) + 900);
+            if (bend) y += bend * sine_tenths(x * 1630 / (hl * u) + 900);
             // Half as large again (the artwork's scale for it), at half size.
             q.points[i].x = x * 3 / 4;
             q.points[i].y = y * 3 / 4;
@@ -413,7 +434,7 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
             else if (i < 30) { x = (-hl + 6) * u + (2 * hl) * u * (i - 1) / 28; y = (top - 7) * u + rough[(i + 5) % 24] * u / 10 + (i >= 27 && i < 29 ? chip * u : 0); }
             else if (i == 30) { x = (hl + 6) * u; y = (bottom - 7) * u; }
             else { x = hl * u + u / 2; y = bottom * u; }
-            if (bend) y += bend * opxy::draw::sine(x * 1630 / (hl * u) + 900);
+            if (bend) y += bend * sine_tenths(x * 1630 / (hl * u) + 900);
             pts[i].x = x * 3 / 4;
             pts[i].y = y * 3 / 4;
         }
@@ -477,7 +498,7 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
             else if (q < 16) { x = hw * u; y = -hh * u + 2 * hh * u * (q - 4) / 12; }
             else if (q < 20) { x = hw * u - 2 * hw * u * (q - 16) / 4; y = hh * u; }
             else { x = -hw * u; y = hh * u - 2 * hh * u * (q - 20) / 12; }
-            const i32 bend = ((opxy::draw::sine(y * 40 / u + (age > 0 ? age * 8 : 0)) * amp) >> 12)
+            const i32 bend = ((sine_tenths(y * 40 / u + (age > 0 ? age * 8 : 0)) * amp) >> 12)
                              + sc(12 * u, c[1]) * ((y + hh * u) >> 4) / ((2 * hh > 0 ? 2 * hh : 1) * u >> 4);
             // At half size (it is wider than an outline reaches); the inner
             // edge two pixels in: the sheet's rolled hem.
@@ -595,13 +616,13 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
             for (i32 q = 0; q < mm; ++q, ++at) {
                 const i32 a = (j * 1024 + q * 1024 / mm) * 3600 / (n * 1024);
                 const i32 rr = 15 * u + 6 * u * q / (mm > 1 ? mm - 1 : 1);
-                frame.paths[0].points[at].x = rr * opxy::draw::sine(a + 900) >> 10;
-                frame.paths[0].points[at].y = rr * opxy::draw::sine(a) >> 10;
+                frame.paths[0].points[at].x = rr * sine_tenths(a + 900) >> 10;
+                frame.paths[0].points[at].y = rr * sine_tenths(a) >> 10;
             }
         }
         show_path(frame, m, 0, 128 * u, 124 * u, 4);
         const i32 turn = cog_turn(c, age, life);
-        if (turn) opxy::draw::turn(frame, 0, rotation(turn));
+        if (turn) opxy::draw::turn(frame, 0, rotated(turn));
         used[0] = true;
         break;
     }
@@ -612,12 +633,12 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
         const i32 s = 1050 + sc(400, c[3]);
         const i32 th = u + sc(5 * u, 4095 - c[2]);                      // the wall, Q10 px
         const i32 tilt = sc(200, c[5]);
-        const i32 cs = opxy::draw::sine(tilt + 900), sn = opxy::draw::sine(tilt);
+        const i32 cs = sine_tenths(tilt + 900), sn = sine_tenths(tilt);
         const i32 cy = -28 * s;                                         // the window's middle, Q10 px from the pod's foot
         Path& q = frame.paths[0];
         for (u32 i = 0; i < 32; ++i) {
             const i32 a = static_cast<i32>(i) * 3600 / 32;
-            const i32 ca = opxy::draw::sine(a + 900), sa = opxy::draw::sine(a);
+            const i32 ca = sine_tenths(a + 900), sa = sine_tenths(a);
             for (u32 side = 0; side < 2; ++side) {
                 // Outside the window's edge (its fill would hide it): inner at the edge, outer a wall beyond.
                 const i32 rx = (23 * s >> 1) + (side ? 0 : th * s >> 10), ry = (31 * s >> 1) + (side ? 0 : th * s >> 10);
@@ -643,8 +664,8 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
             // Up the left side, round the bottom, up the right: a U of 32 points as a ribbon.
             const i32 t = static_cast<i32>(i) * 1024 / 31;
             const i32 a = t * 1800 / 1024 + 900;                          // tenths of a degree, 90..270 round the bottom
-            pts[i].x = -(opxy::draw::sine(a) * (w + v));            // Q10 px: a smooth curve, not whole-pixel steps
-            pts[i].y = -(opxy::draw::sine(a + 900) * h);
+            pts[i].x = -(sine_tenths(a) * (w + v));            // Q10 px: a smooth curve, not whole-pixel steps
+            pts[i].y = -(sine_tenths(a + 900) * h);
         }
         band(frame.paths[0], pts, u / 2);
         show_path(frame, m, 0, 165 * u, (base - h) * u, 4);
@@ -703,8 +724,8 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
             const i32 t = static_cast<i32>(i) * 1024 / 31;
             const i32 a = t * 1800 / 1024;                                 // 0..180 degrees over the top
             const i32 flare = (t < 128 || t > 896) ? 3 : 0;
-            pts[i].x = -(opxy::draw::sine(a + 900) * (w + v + flare));   // Q10 px
-            pts[i].y = -(opxy::draw::sine(a) * h);
+            pts[i].x = -(sine_tenths(a + 900) * (w + v + flare));   // Q10 px
+            pts[i].y = -(sine_tenths(a) * h);
         }
         band(frame.paths[0], pts, u / 2);
         show_path(frame, m, 0, 165 * u, 144 * u, 4);
@@ -727,8 +748,8 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
         const i32 sweep = 900 + sc(2600, c[4]);   // tenths of a degree
         for (u32 i = 0; i < 32; ++i) {
             const i32 a = sweep * static_cast<i32>(i) / 31;
-            pts[i].x = 63 * opxy::draw::sine(a + 900);
-            pts[i].y = ry * opxy::draw::sine(a);
+            pts[i].x = 63 * sine_tenths(a + 900);
+            pts[i].y = ry * sine_tenths(a);
         }
         band(frame.paths[1], pts, u / 2);
         show_path(frame, m, 1, (210 + sc(16, c[2])) * u, 124 * u, 5);
@@ -737,8 +758,8 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
         i32 sx, sy;
         roar_at(c, roar_angle(c, age, life), sx, sy);
         const i32 size = 1300 - sc(600, c[1]), turn = sc(300, c[5]);
-        sx -= 35 * size * opxy::draw::sine(turn + 900) >> 10;
-        sy -= 35 * size * opxy::draw::sine(turn) >> 10;
+        sx -= 35 * size * sine_tenths(turn + 900) >> 10;
+        sy -= 35 * size * sine_tenths(turn) >> 10;
         const i32 x0 = 96 * u, y0 = 76 * u;
         const i32 mx = (x0 + sx) / 2, my = (y0 + sy) / 2;
         // At half size: the cord reaches further than an outline does.
@@ -856,7 +877,7 @@ inline void display(DisplayState& state, const Input& input, Frame& frame) {
                     if (age < tf) d = fall * age / tf * age / tf;
                     else if (age < life) {
                         const i32 b = age - tf;
-                        const i32 hop = (fall * (2 + sc(10, c[1])) / 14) * opxy::draw::sine(b * 1800 / 140 % 1800) >> 10;
+                        const i32 hop = (fall * (2 + sc(10, c[1])) / 14) * sine_tenths(b * 1800 / 140 % 1800) >> 10;
                         d = fall - ((hop < 0 ? -hop : hop) * r >> 12);
                     } else d = fall - fall * (age - life) / 200;
                 } else if (p.size == 2) {
@@ -887,7 +908,7 @@ inline void display(DisplayState& state, const Input& input, Frame& frame) {
         if (s < 16) s = 16;
         if (s > 2 * u) s = 2 * u;
         place(frame, p.node, x, y, s, 0, keep);
-        if (turn) opxy::draw::turn(frame, p.node, rotation(turn));
+        if (turn) opxy::draw::turn(frame, p.node, rotated(turn));
     }
     (void)r;
     draw_paths(frame, m, c, age, life);
