@@ -615,15 +615,7 @@ __attribute__((noinline)) inline void field_run(Voice& v, i32* x, bool drive, i3
     const u32 lines = small ? 2 : 4, stride = small ? small_stride : wide_stride;
     i32 most = 0;
     for (u32 l = 0; l < lines; ++l) most |= absolute(v.flp[l]);
-    // A quiet field (its lines' low-passes all under 2^24) loses on each pass
-    // what 16-bit rings, rounding every value toward zero, once took from it
-    // (half their 2^13 step of a value as large as half the largest): its
-    // tail falls away as theirs did.
-    i32 fg = v.fg;
-    if (most < (1 << 24)) {
-        const i32 l = 13 * octave - log2q(static_cast<u32>(most > 1 ? most : 1));
-        fg = l >= 0 ? 0 : fg - multiply(fg, frac2(l));
-    }
+    const i32 fg = v.fg;
     if (!drive && !v.dpos) {
         // with nothing driving it, stop once it has rung down for longer than
         // its longest line (fixed point would otherwise keep it circling just

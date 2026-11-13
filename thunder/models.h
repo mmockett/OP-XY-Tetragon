@@ -132,7 +132,7 @@ inline void setup_slap(Voice& v, const i32* c, i32 tune) {
     const i32 lf0 = mix(L(110), L(330), c[0]) + mix(-Q16(0.5), Q16(0.1), c[4]) + tune;
     const i32 lt0 = mix(L(0.45), L(0.035), c[1]);
     const i32 tension = mix(Q16(0.2), Q16(1.0), c[4]);
-    setup_modes(v, lf0, tension, Q16(0.05) + mul16(power16(c[3], Q16(0.6)), Q16(0.9)), lt0, Q16(0.6), Q16(0.4), 6, hardest);   // (its six lowest)
+    setup_modes(v, lf0, tension, Q16(0.05) + mul16(power16(c[3], Q16(0.6)), Q16(0.9)), lt0, Q16(0.6), Q16(0.4), 8, hardest);
     radiate(v, Q31(0.67));
     v.bend = mix(Q16(0.7), Q16(0.1), c[4]) << 12;   // a slack head sags 0.7 over 6 ms, a tight one 0.1: crisp, not a boing
     v.bend_env = one;
@@ -321,7 +321,7 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
     v.s[0] = one;
     const i32 lbase = log16(mix(Q16(1200.0 / 1024), Q16(300.0 / 1024), c[3])) + L(1024) + mix(L(0.35), L(2.0), c[0]) + tune;
     setup_field(v, lbase, mix(Q16(1.0), Q16(0.4), c[4]), log16(mul16(exp16(ltau), Q16(6)) + Q16(0.05)),
-                mix(Q16(0.45), Q16(0.9), nail), 0, true);
+                mix(Q16(0.25), Q16(1.0), nail), 0, true);
     field_raw(v);   // (its ring comes up to the full rate as it is)
     const i32 lcut = lhp + log16(mix(Q16(1.0), Q16(0.45), c[3])) + mul16(q31_root(nail) >> 15, Q16(0.8));   // a coin's edge rings brighter
     v.k[1] = onepole_k(lcut);
@@ -333,8 +333,8 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
     v.env[0].set(one, block_decay(ltau + L(6)));
     v.k[5] = static_cast<i32>(samples(ltau + L(0.9)) >> 6) + 1;   // blocks until the hand lands
     v.k[6] = block_decay(ltau - L(6));
-    v.k[4] = mix(Q31(0.9), Q31(0.5), c[4]);                   // the densest modes, as a sizzle: more on a slack sheet
-    v.k[3] = mix(Q31(0.03), Q31(0.12), nail);                     // and a noisy sizzle among them, the sheet's forest above them: more off a coin
+    v.k[4] = mix(Q31(0.9), Q31(0.5), c[4]);                   // the densest modes, as a sizzle: more on a slack sheet (x 1.25 at half rate: flick_sizzle)
+    v.k[3] = mix(Q31(0.045), Q31(0.075), nail);                  // and a noisy sizzle among them, the sheet's forest above them: more off a coin
     v.env[3].set(one, block_decay(ltau - L(0.17)));               // which fade under the hand, over six times DAMP's time
     // the sizzle, the body of the hat: six of the sheet's modes (its 2nd to
     // 7th at this TENSION), each a clang rich in overtones, three and a half
@@ -403,8 +403,8 @@ __attribute__((noinline)) inline void flick_squares(u32* phase, const u32* inc, 
 }
 // The squares (each +-1: no step at the start) and a noisy sizzle among
 // them, high-passed twice, at half rate, at a level stepping from e by es,
-// added to out at the full rate (each half-rate sample, and between two
-// their mean).
+// added to out at the full rate (each half-rate sample, and between two a
+// quarter of their mean, which keeps its images above 11 kHz: the sizzle's top).
 __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, const i32* t, u32 seed, i32* out, i32 e, i32 es) {
     i32 h4 = v.op[4].s, h5 = v.op[5].s, prev = v.s[4];
     const i32 k = v.k[7], kn = v.k[3];
@@ -414,8 +414,9 @@ __attribute__((noinline)) inline u32 flick_sizzle(Voice& v, const i32* t, u32 se
         h4 += multiply(x - h4, k);
         const i32 a = x - h4;
         h5 += multiply(a - h5, k);
-        const i32 y = multiply(a - h5, e);
-        out[0] += (prev + y) >> 1;
+        i32 y = multiply(a - h5, e);
+        y += y >> 2;   // (x 1.25: at half rate, with its images, it keeps its level)
+        out[0] += (prev + y) >> 3;   // (a quarter of the mean between: its images, the sizzle's top, stay)
         out[1] += y;
         prev = y;
         out += 2;
@@ -665,7 +666,7 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     // lifted for what the half-rate filters lose: lifted, SIZE moved the
     // crash too little for the sound checks.)
     // (and a higher sheet rings brighter: SIZE moves its high-pass 1.2 octaves)
-    v.k[1] = onepole_k(mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]) + mul16(c[0] - Q16(50.0 / 127), Q16(1.2)) + L(1.26) + octave);
+    v.k[1] = onepole_k(mix(L(500), L(2000), c[2]) + mix(-octave, Q16(0.6), c[3]) + mul16(c[0] - Q16(50.0 / 127), Q16(1.2)) + octave);
     v.k[2] = multiply(mix(Q31(0.12), Q31(0.9), c[4]), mix(Q31(0.99), Q31(0.3), c[3]));   // the body's share, less toward the edge
     v.env[0].set(one, block_decay(lt60 + log16(mix(Q16(1.0), Q16(0.12), c[4]))));
     // SWELL: noise into the high modes along (t / peak) e^(1 - t / peak)
@@ -682,8 +683,8 @@ inline void setup_crash(Voice& v, const i32* c, i32 tune) {
     strike(v, beater_time(c[2]), U);
     v.s[0] = U / 3;   // the strike into the wash: a third, so the hit doesn't spike over the wash
 }
-// The ring at half rate (the field's sound as it is): high-passed (once, its
-// corner a third of an octave higher than twice was), as the hand damps it,
+// The ring at half rate (the field's sound as it is, its input high-passed
+// twice: crash_hp), as the hand damps it,
 // at the level the full rate's held samples gave it; and the body (its modes
 // all at half rate) high-passed at its share, added: in place, in y.
 __attribute__((noinline)) inline void crash_sum(Voice& v, const i32* body, i32* y, i32 damp, i32 ds) {
@@ -697,17 +698,20 @@ __attribute__((noinline)) inline void crash_sum(Voice& v, const i32* body, i32* 
     }
     v.op[0].s = h0;
 }
-// what goes into the ring, high-passed (its high-pass, before the sheet
-// rather than after it: filtered only while the swell feeds it), in place
+// what goes into the ring, high-passed twice (its high-passes, before the
+// sheet rather than after it: filtered only while the swell feeds it), in place
 __attribute__((noinline)) inline void crash_hp(Voice& v, i32* x) {
     const i32 k1 = v.k[1];
-    i32 h = v.op[2].s;
+    i32 h = v.op[2].s, h2 = v.op[3].s;
     for (u32 n = 0; n < half; ++n) {
         const i32 xi = *x;
         h += multiply(xi - h, k1);
-        *x++ = xi - h;
+        const i32 a = xi - h;
+        h2 += multiply(a - h2, k1);
+        *x++ = a - h2;
     }
     v.op[2].s = h;
+    v.op[3].s = h2;
 }
 // the swell's noise into the high modes, at half rate
 __attribute__((noinline)) inline u32 crash_swell(i32* x, u32 seed, i32 sw, i32 sws) {
