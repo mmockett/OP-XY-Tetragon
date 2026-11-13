@@ -415,13 +415,13 @@ inline void run_modes_half(Voice& v, const i32* x, i32* y2) {
 // lbase: log2 Hz of the base line; spread: Q16, how unequal the lines are;
 // lt60: log2 s; bright: Q16 (the loop's low-pass, dark to open).
 const i32 lhalf = lsr - octave;   // log2 of the half rate
-// diffuse: 1 for a field struck by an impulse (its first 6 blocks' input is
+// diffuse: 1 for a field struck by an impulse (its first 3 blocks' input is
 // smeared).
 inline void setup_field(Voice& v, i32 lbase, i32 spread, i32 lt60, i32 bright, u32 diffuse = 0, bool wide = false) {
     static const i32 ratio[4] = {Q16(0.0), Q16(0.29), Q16(0.6), Q16(0.87)};
     const u32 stride = wide ? wide_stride : small_stride;
     v.floop = wide ? 0u : 4u;
-    v.fdiff = diffuse == 1 ? 7 : 0;
+    v.fdiff = diffuse == 1 ? 4 : 0;
     v.dpos = 0;
     for (u32 i = 0; i < 64; ++i) v.dbuf[i] = 0;
     i32 ld0 = lhalf - lbase;                                   // log2 half-rate samples

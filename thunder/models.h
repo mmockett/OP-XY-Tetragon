@@ -325,6 +325,7 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
     field_raw(v);   // (its ring comes up to the full rate as it is)
     const i32 lcut = lhp + log16(mix(Q16(1.0), Q16(0.45), c[3])) + mul16(q31_root(nail) >> 15, Q16(0.8));   // a coin's edge rings brighter
     v.k[1] = onepole_k(lcut);
+    v.k[7] = onepole_k(lcut + octave);   // (the same at half rate, for the sizzle)
     v.k[2] = onepole_k(lhp - L(1.25));
     // the hand: the sheet rings on (falling with six times DAMP's time) until
     // the hand lands, at 0.9 of it, then damps it in a sixth of it: a closed
@@ -346,7 +347,7 @@ inline void setup_flick(Voice& v, const i32* c, i32 tune) {
         const i32 lsz = lhp - Q16(3.5);
         for (u32 j = 0; j < 6; ++j) {
             const i32 r = mix(tables::mode_ratio[idx][j + 1] << 4, tables::mode_ratio[idx + (idx < 32)][j + 1] << 4, fr);
-            v.u[4 + j] = increment(lsz + r);
+            v.u[4 + j] = increment(lsz + r) << 1;   // (a half-rate sample's step)
             v.u[10 + j] = lcg(v.seed);
         }
     }
@@ -386,12 +387,13 @@ __attribute__((noinline)) inline u32 flick_excite(Voice& v, i32* exc, u32 seed) 
     v.s[0] = fall;
     return seed;
 }
-// Three of the sizzle's six squares, each -1 or 0, summed into t (or added to it).
+// Three of the sizzle's six squares, each -1 or 0, summed into t (or added
+// to it), at half rate.
 template <bool add>
 __attribute__((noinline)) inline void flick_squares(u32* phase, const u32* inc, i32* t) {
     u32 p0 = phase[0], p1 = phase[1], p2 = phase[2];
     const u32 i0 = inc[0], i1 = inc[1], i2 = inc[2];
-    for (u32 n = 0; n < frames; ++n) {
+    for (u32 n = 0; n < half; ++n) {
         p0 += i0; p1 += i1; p2 += i2;
         const i32 q = (static_cast<i32>(p0) >> 31) + (static_cast<i32>(p1) >> 31) + (static_cast<i32>(p2) >> 31);
         *t = add ? *t + q : q;
@@ -399,20 +401,28 @@ __attribute__((noinline)) inline void flick_squares(u32* phase, const u32* inc, 
     }
     phase[0] = p0; phase[1] = p1; phase[2] = p2;
 }
-// The squares (each +-1: no step at the start) and a noisy sizzle among them, high-passed twice.
-__attribute__((noinline)) inline u32 flick_sizzle(Voice& v, i32* t, u32 seed) {
-    i32 h4 = v.op[4].s, h5 = v.op[5].s;
-    const i32 k1 = v.k[1], kn = v.k[3];
-    for (u32 n = 0; n < frames; ++n) {
+// The squares (each +-1: no step at the start) and a noisy sizzle among
+// them, high-passed twice, at half rate, at a level stepping from e by es,
+// added to out at the full rate (each half-rate sample, and between two
+// their mean).
+__attribute__((noinline)) inline u32 flick_sizzle(Voice& v, const i32* t, u32 seed, i32* out, i32 e, i32 es) {
+    i32 h4 = v.op[4].s, h5 = v.op[5].s, prev = v.s[4];
+    const i32 k = v.k[7], kn = v.k[3];
+    for (u32 n = 0; n < half; ++n, e += es) {
         seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
-        const i32 x = *t * (U / 3 * 4) + U * 4 + multiply(static_cast<i32>(seed) >> 1, kn);
-        h4 += multiply(x - h4, k1);
+        const i32 x = *t++ * (U / 3 * 4) + U * 4 + multiply(static_cast<i32>(seed) >> 1, kn);
+        h4 += multiply(x - h4, k);
         const i32 a = x - h4;
-        h5 += multiply(a - h5, k1);
-        *t++ = a - h5;
+        h5 += multiply(a - h5, k);
+        const i32 y = multiply(a - h5, e);
+        out[0] += (prev + y) >> 1;
+        out[1] += y;
+        prev = y;
+        out += 2;
     }
     v.op[4].s = h4;
     v.op[5].s = h5;
+    v.s[4] = prev;
     return seed;
 }
 // out += x e, e stepping by es a sample.
@@ -492,15 +502,16 @@ __attribute__((noinline)) inline void block_flick(Voice& v, Work& w, i32* out) {
     if (flicking || tick > (1 << 16)) flick_tick(v, w.exc, out, tick, ts);
     if (multiply(fizz, hand0) > (1 << 20)) {
         // the densest modes: the sizzle, under the hand, high-passed twice
-        i32 t[frames];
+        i32 t[half];
         flick_squares<false>(v.u + 10, v.u + 4, t);
         flick_squares<true>(v.u + 13, v.u + 7, t);
-        seed = flick_sizzle(v, t, seed);
         // at its share, under the sizzle's fade and the hand: their product,
         // ramped through the block
         const i32 p0 = multiply(multiply(fizz, hand0), v.k[4]);
         const i32 p1 = multiply(multiply(fizz + static_cast<i32>(frames) * zs, hand0 + static_cast<i32>(frames) * hs), v.k[4]);
-        add_ramped1(t, out, p0, (p1 - p0) >> 6);
+        seed = flick_sizzle(v, t, seed, out, p0, (p1 - p0) >> 5);
+    } else {
+        v.s[4] = 0;
     }
     v.seed = seed;
     if (v.c_amount) {
@@ -1319,7 +1330,8 @@ inline void setup_shake(Voice& v, const i32* c, i32 tune) {
     v.k[2] = mix(L(0.008), L(0.0015), crack);                          // a jolt's push (log2 s)
     setup_field(v, lf0 + L(12), 65535 - c[4], lt0, Q16(0.5), 0, true);
     v.flevel = Q31(0.5);
-    v.k[3] = onepole_k(mix(L(900), L(3000), crack));
+    field_raw(v);   // (its ring is low-passed at half rate)
+    v.k[3] = onepole_k(mix(L(900), L(3000), crack) + octave);
     v.k[4] = onepole_k(mix(L(200), L(900), crack));
     v.k[5] = onepole_k(L(22));
     v.k[6] = mix(Q31(0.3), Q31(0.6), crack);    // the field's share
@@ -1336,18 +1348,27 @@ inline void setup_shake(Voice& v, const i32* c, i32 tune) {
     shake_jolt(v);
     v.waiting = 1;
 }
-// the body and the field low-passed at its share, high-passed at 22 Hz
+// the body and the field (at half rate, low-passed there at its share,
+// brought to the full rate), high-passed at 22 Hz
 __attribute__((noinline)) inline void shake_out(Voice& v, const i32* body, const i32* x, i32* out) {
     const i32 k3 = v.k[3], k5 = v.k[5], k6 = v.k[6];
-    i32 l = v.op[1].s, h = v.op[2].s;
-    for (u32 n = 0; n < frames; ++n) {
+    i32 l = v.op[1].s, h = v.op[2].s, prev = v.s[1];
+    for (u32 n = 0; n < half; ++n) {
         l += multiply(*x++ - l, k3);
-        const i32 y = *body++ + multiply(l, k6);
-        h += multiply(y - h, k5);
-        *out++ = y - h;
+        const i32 r = multiply(l, k6);
+        const i32 y0 = body[0] + ((prev + r) >> 1);
+        h += multiply(y0 - h, k5);
+        out[0] = y0 - h;
+        const i32 y1 = body[1] + r;
+        h += multiply(y1 - h, k5);
+        out[1] = y1 - h;
+        prev = r;
+        body += 2;
+        out += 2;
     }
     v.op[1].s = l;
     v.op[2].s = h;
+    v.s[1] = prev;
 }
 __attribute__((noinline)) inline void block_shake(Voice& v, Work& w, i32* out) {
     // the wobble: the modes' pitch swings by up to 4% with the storm
@@ -1375,11 +1396,13 @@ __attribute__((noinline)) inline void block_shake(Voice& v, Work& w, i32* out) {
         ++i;
     }
     clear(w.body);
-    clear(w.aux);
     v.waiting = v.left != 0;
     run_modes(v, w.exc, w.body);
-    low_into(w.fin, w.fin, v.op[0].s, v.k[4], 2);
-    run_field(v, w.fin, w.aux, Q31(0.5));
+    // the jolts low-passed into the sheet (while there is any of them)
+    if (absolute(v.op[0].s) > (1 << 12) || block_or(w.fin)) low_into(w.fin, w.fin, v.op[0].s, v.k[4], 2);
+    else v.op[0].s = 0;
+    if (v.fon) run_field(v, w.fin, w.aux, one);
+    else for (u32 i = 0; i < half; ++i) w.aux[i] = 0;
     shake_out(v, w.body, w.aux, out);
     run_chain(v, w.body, out);
 }
