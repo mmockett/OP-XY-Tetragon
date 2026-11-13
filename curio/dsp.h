@@ -53,8 +53,13 @@ static __attribute__((noinline)) inline u32 ex2(i32 x) {
 // log2(v) in Q12, for v >= 1 (0 gives -32 octaves).
 static __attribute__((noinline)) inline i32 lg2(u32 v) {
     if (!v) return -(32 << 12);
+    // The top bit in five halvings, not a step a bit.
     i32 o = 31;
-    while (!(v & 0x80000000u)) { v <<= 1; --o; }
+    if (!(v >> 16)) { v <<= 16; o -= 16; }
+    if (!(v >> 24)) { v <<= 8; o -= 8; }
+    if (!(v >> 28)) { v <<= 4; o -= 4; }
+    if (!(v >> 30)) { v <<= 2; o -= 2; }
+    if (!(v >> 31)) { v <<= 1; o -= 1; }
     const u32 i = (v >> 23) & 255u, r = (v >> 15) & 255u;
     const u32 a = table::log2[i], b = table::log2[i + 1];
     return (o << 12) + static_cast<i32>(a + (((b - a) * r) >> 8));
@@ -128,9 +133,23 @@ inline i32 sine(u32 phase) { return static_cast<i32>(table::sine[phase >> 20]) <
 // decaying sine of the struck amplitude; an input passes at unity at its peak.
 struct Res { i32 y1, y2, x1, x2; };
 struct ResK { i32 c, r2, s, g, b; };   // r cos w, r^2 / 2, sin w (all Q31), input gains Q31
+// The sine table at a phase, interpolated: Q30.
+inline i32 sine_q30(u32 phase) {
+    const u32 i = phase >> 20, f = (phase >> 4) & 0xffffu;
+    const i32 s0 = table::sine[i], s1 = table::sine[(i + 1) & 4095u];
+    return (s0 << 15) + ((s1 - s0) * static_cast<i32>(f) >> 1);
+}
 inline void tune(ResK& k, u32 increment, i32 r) {
     i32 s, c;
-    sincos(increment, s, c);
+    if (increment < 29217000u) {
+        sincos(increment, s, c);   // under 300 Hz the series, for the pole's place
+    } else {
+        // Above it the table: sin w, and cos w = 1 - 2 sin^2(w / 2), within
+        // a few cents of the series at a fraction of its work.
+        s = sine_q30(increment);
+        const i32 h = sine_q30(increment >> 1);
+        c = (1 << 30) - (mq(h, h) << 1);
+    }
     k.c = mul(r, c) << 1;
     k.r2 = mul(r, r) >> 1;
     k.s = s << 1;
@@ -180,7 +199,15 @@ __attribute__((always_inline)) inline void ring_free(Res& z, const ResK& k, i32*
     z.y1 = a;
     z.y2 = b;
 }
-static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) { ring_free(z, k, y, n); }
+// Whether a free resonator still rings: its last two outputs over -108 dB
+// of a unit (a rung-out one is set still, and costs nothing until struck).
+inline bool ringing(Res& z) {
+    const i32 e = (z.y1 < 0 ? -z.y1 : z.y1) + (z.y2 < 0 ? -z.y2 : z.y2);
+    if (CURIO_LIKELY(e > 2048)) return true;
+    z.y1 = z.y2 = 0;
+    return false;
+}
+static __attribute__((noinline)) inline void ring_into(Res& z, const ResK& k, i32* y, u32 n) { if (ringing(z)) ring_free(z, k, y, n); }
 // A band-pass (bp) through n samples of x, each output o handed with its
 // place in y to emit(y[j], o): two samples a turn so the states trade
 // places (a hardware loop), the odd one first.
@@ -236,7 +263,34 @@ template <class In, class Emit> __attribute__((always_inline)) inline void drive
 }
 // A bank of free resonators in one call, each rung in turn.
 static __attribute__((noinline)) inline void ring_bank(Res* z, const ResK* k, u32 count, i32* y, u32 n) {
-    for (u32 m = 0; m < count; ++m) ring_free(z[m], k[m], y, n);
+    for (u32 m = 0; m < count; ++m)
+        if (ringing(z[m])) ring_free(z[m], k[m], y, n);
+}
+
+// Half-rate parts drawn back up to the full rate: each new sample halfway
+// between two (a sample later); last carries the previous block's last
+// half-rate sample. up_into adds into y, up_onto writes it.
+static __attribute__((noinline)) inline void up_into(const i32* h, i32* y, i32& last) {
+    i32 l = last;
+    for (u32 j = 0; j < frames / 2; ++j) {
+        const i32 x = h[j];
+        y[0] += (l >> 1) + (x >> 1);
+        y[1] += x;
+        l = x;
+        y += 2;
+    }
+    last = l;
+}
+static __attribute__((noinline)) inline void up_onto(const i32* h, i32* y, i32& last) {
+    i32 l = last;
+    for (u32 j = 0; j < frames / 2; ++j) {
+        const i32 x = h[j];
+        y[0] = (l >> 1) + (x >> 1);
+        y[1] = x;
+        l = x;
+        y += 2;
+    }
+    last = l;
 }
 
 // A one-pole low-pass's coefficient for a pitch: 1 - exp(-w), Q31.
@@ -270,6 +324,16 @@ constexpr i32 F(double x) { return static_cast<i32>(x >= 1.0 ? 2147483647.0 : x 
 constexpr i32 U(double x) { return static_cast<i32>(x * 268435456.0); }                                // Q28
 constexpr i32 C(double x) { return static_cast<i32>(x * 4096.0); }                                     // Q12
 
+// A cheaper soft clip than tanh for the sample loops: x - 4 x^3 / 27 up to
+// 1.5, where it reaches 1 flat, and 1 past it (x Q28, output Q28). Two
+// multiplies and a clamp, no table and no branch.
+inline i32 soft(i32 x) {
+    const i32 m = U(1.5);
+    x = x > m ? m : x < -m ? -m : x;
+    const i32 x2 = mul(x, x) << 3;                     // Q28
+    return x - (mul(mul(x2, x), F(4.0 / 27.0)) << 3);
+}
+
 // What a specimen reads at a strike: its eight controls (Q12, VARY's moves
 // included), the key's pitch offset (TUNE and VARY, Q12 octaves) and a seed.
 struct Ctx {
@@ -293,6 +357,11 @@ static __attribute__((noinline)) inline void band(ResK& k, i32 lp, i32 q) {
     // r = exp(-pi f / (q 44100)): a time constant of q / (pi f).
     const u32 tau_us = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875);   // log2(1e6 / pi) = 18.28
     tune(k, inc(lp), decay(tau_us));
+}
+// The same for a resonator stepped at half the rate (two samples a step).
+static __attribute__((noinline)) inline void band_half(ResK& k, i32 lp, i32 q) {
+    const u32 tau_us = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875 - (1 << 12));
+    tune(k, inc(lp + (1 << 12)), decay(tau_us));
 }
 }
 }

@@ -24,12 +24,14 @@ struct Glass {
     i32 rub_amp;
     u32 chink_at;
     i32 chink_amp, sec_amp[4];
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
         t = 0;
+        hlast = 0;
         // The rim: 1500 Hz for a thin glass down to 495 for a goblet; water
         // lowers it up to 42%.
         const i32 lpe = hz(1500) - sc(C(1.6), c[3]) + tune;
@@ -52,8 +54,12 @@ struct Glass {
             for (int b = 0; b < 6; ++b) k[m] = mul(k[m], k[m]);   // a block's worth
             amp[m] = static_cast<i32>(ex2((28 << 12) - (lk[m] * (aex >> 2) >> 10)));   // (k + 1)^-aex, Q28; the doublet halves it
             v[m] = amp[m];
+            // The shell rings at half the rate (two samples a step): a mode
+            // over 10 kHz is left out.
+            if (incs[2 * m] > 974000000u) v[m] = amp[m] = 0;
             // The second glass, a major third up: 0.6 of the decays and levels.
-            dsp::tune(secondk[m], static_cast<u32>(mul(static_cast<i32>(incs[2 * m] >> 1), F(1.26 / 2.0)) << 2), decay60(static_cast<u32>(mul(static_cast<i32>(t60), F(0.6)))));
+            const u32 i2 = static_cast<u32>(mul(static_cast<i32>(incs[2 * m] >> 1), F(1.26 / 2.0)) << 2);
+            dsp::tune(secondk[m], i2 < 974000000u ? i2 << 1 : 0, decay60(static_cast<u32>(mul(static_cast<i32>(t60), F(0.3)))));
             second[m] = Res();
             sec_amp[m] = mul(amp[m], F(0.6));
         }
@@ -65,10 +71,10 @@ struct Glass {
         click.v = U(0.25) + sc(U(0.6), c[1]);
         click.k = decay(1000);
         // The crack's buzz.
-        band(crackk, hz(4000), C(0.7));
+        band_half(crackk, hz(4000), C(0.7));
         crackr = Res();
-        crk.v = sc(U(0.2), c[6]);
-        crk.k = decay(60000);
+        crk.v = sc(U(0.2 * 0.7071), c[6]);   // its band at half the rate passes sqrt 2 more of the noise
+        crk.k = decay(30000);   // at half the rate
         ph90 = ph42 = ph55 = 0;
         slosh = sc(F(0.05), c[5]);
         slosh_env = full;
@@ -78,7 +84,7 @@ struct Glass {
         rub.inc = incs[0];
         rub.v = rub.a = 0;
         rub_amp = sc(U(0.7), c[4]);
-        if (rub_amp) rub.hit(rub_amp, decay(static_cast<u32>(600000 + sc(1500000, c[4]))), decay(static_cast<u32>(150000 + sc(400000, c[4]))));
+        if (rub_amp) rub.hit(rub_amp, decay(static_cast<u32>(300000 + sc(750000, c[4]))), decay(static_cast<u32>(75000 + sc(200000, c[4]))));   // at half the rate
         chink_at = c[7] > 0 ? samples(static_cast<u32>(20000 + sc(60000, c[7]))) : 0;
         chink_amp = sc(U(1.4), c[7]);
     }
@@ -93,7 +99,6 @@ struct Glass {
         u32 pa = ph[2 * m], pb = ph[2 * m + 1];
         const u32 dn = nb - na, hd0 = (pb - pa) >> 1, hd1 = hd0 + (frames / 2) * dn;
         u32 pc = pa + hd0;
-        const u32 nc = na + (dn >> 1);
         const i32 v0 = v[m], v1 = mul(v0, k[m]);
         i32 l0 = mul(v0, sine(hd0 + 0x40000000u)), l1 = mul(v1, sine(hd1 + 0x40000000u));
         if (slosh) {
@@ -101,10 +106,11 @@ struct Glass {
             l0 += mul(l0, vib) * 6;
             l1 += mul(l1, vib) * 6;
         }
-        const i32 dl = (l1 - l0) >> 6;
+        const i32 dl = (l1 - l0) >> 5;
         i32 l = l0;
-        for (u32 j = 0; j < frames; ++j) {
-            pc += nc;
+        const u32 nc2 = na + nb;   // two samples a step
+        for (u32 j = 0; j < frames / 2; ++j) {
+            pc += nc2;
             l += dl;
             y[j] += mul(l, sine(pc));
         }
@@ -112,53 +118,47 @@ struct Glass {
         ph[2 * m + 1] = pb + frames * nb;
         v[m] = v1;
     }
-    __attribute__((noinline)) void noise_pass(i32* nb) {
-        u32 r = rng;
-        for (u32 j = 0; j < frames; ++j) nb[j] = noise(r);
-        rng = r;
-    }
-    // The strike's tick of band noise.
-    __attribute__((noinline)) void click_pass(i32* y, const i32* nb) {
+    // The strike's tick of band noise, at the full rate while it sounds.
+    __attribute__((noinline)) void click_pass(i32* y) {
         i32 cv = click.v, y1 = clickr.y1, y2 = clickr.y2, x1 = clickr.x1, x2 = clickr.x2;
         const i32 ck = click.k, c = clickk.c, r2 = clickk.r2, b = clickk.b, g = click_gain;
+        u32 r = rng;
         for (u32 j = 0; j < frames; ++j) {
-            if (CURIO_LIKELY(cv > 4096)) {
-                const i32 in = mul(nb[j], b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                cv = mul(cv, ck);
-                y[j] += lev(gn(o, g), cv);
-            }
+            const i32 in = mul(noise(r), b);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            cv = mul(cv, ck);
+            y[j] += lev(gn(o, g), cv);
         }
         click.v = cv;
         clickr.y1 = y1;
         clickr.y2 = y2;
         clickr.x1 = x1;
         clickr.x2 = x2;
+        rng = r;
     }
-    // The crack's buzz, gated at 90 Hz.
-    __attribute__((noinline)) void crack_pass(i32* y, const i32* nb) {
+    // The crack's buzz, gated at 90 Hz, at half the rate.
+    __attribute__((noinline)) void crack_pass(i32* y) {
         i32 cv = crk.v, y1 = crackr.y1, y2 = crackr.y2, x1 = crackr.x1, x2 = crackr.x2;
-        u32 p = ph90;
-        const i32 ck = crk.k, c = crackk.c, r2 = crackk.r2, b = crackk.b;
-        for (u32 j = 0; j < frames; ++j) {
-            if (CURIO_LIKELY(cv > 4096)) {
-                p += 8765280u;   // 90 Hz
-                const i32 in = mul(nb[j], b);
-                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
-                x2 = x1;
-                x1 = in;
-                y2 = y1;
-                y1 = o;
-                if (static_cast<i32>(p) >= 0) y[j] += lev(o, cv);
-                cv = mul(cv, ck);
-            }
+        u32 p = ph90, r = rng;
+        const i32 ck = crk.k, c = crackk.c, r2 = crackk.r2, g = crackk.b;   // a band-pass: no response at 0 Hz
+        for (u32 j = 0; j < frames / 2; ++j) {
+            p += 2 * 8765280u;   // 90 Hz
+            const i32 in = mul(noise(r), g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            if (static_cast<i32>(p) >= 0) y[j] += lev(o, cv);
+            cv = mul(cv, ck);
         }
         crk.v = cv;
         ph90 = p;
+        rng = r;
         crackr.y1 = y1;
         crackr.y2 = y2;
         crackr.x1 = x1;
@@ -174,24 +174,27 @@ struct Glass {
         u32 now[8];
         for (int o = 0; o < 8; ++o) now[o] = incs[o] + static_cast<u32>(mul(static_cast<i32>(incs[o]), vib));
         const u32 rub_inc = rub.inc + static_cast<u32>(mul(static_cast<i32>(rub.inc), rubvib));
-        for (u32 i = 0; i < frames; ++i) out[i] = 0;
-        for (int m = 0; m < 4; ++m) doublet_pass(m, out, now[2 * m], now[2 * m + 1], vib);
-        i32 nb[frames];
-        noise_pass(nb);
+        // The shell, the finger, the crack and the second glass at half the
+        // rate; the strike's tick at the full rate.
+        i32 h[frames / 2];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
+        for (int m = 0; m < 4; ++m)
+            if (v[m]) doublet_pass(m, h, now[2 * m], now[2 * m + 1], vib);
         // Once under its floor a part stays there.
-        if (click.v > 4096) click_pass(out, nb);
-        if (crk.v > 4096) crack_pass(out, nb);
-        if (rub_amp) tone_into(rub, out, frames, rub_inc);
+        if (crk.v > 4096) crack_pass(h);
+        if (rub_amp) tone_into(rub, h, frames / 2, rub_inc << 1);
         // The second glass rings from its chink.
         if (chink_at) {
             const u32 d = chink_at - t;
             if (d < frames) {
                 for (int m = 0; m < 4; ++m) dsp::strike(second[m], secondk[m], lev(sec_amp[m], chink_amp));
-                ring_bank(second, secondk, 4, out + d, frames - d);
+                ring_bank(second, secondk, 4, h + (d >> 1), frames / 2 - (d >> 1));
             } else if (t >= chink_at) {
-                ring_bank(second, secondk, 4, out, frames);
+                ring_bank(second, secondk, 4, h, frames / 2);
             }
         }
+        up_onto(h, out, hlast);
+        if (click.v > 4096) click_pass(out);
         t += frames;
     }
 };
@@ -329,7 +332,7 @@ struct Chalk {
     Res slate, gritr, dustr;
     ResK slatek, gritk, dustk;
     i32 grit_gain, dust_gain, grit_amp;
-    i32 att, attk;
+    i32 att, attk, attk64, fallk64;   // and their falls over a block
     u32 ph_ch, inc_ch;
     i32 chatter;
     Env dust, fall;
@@ -376,6 +379,9 @@ struct Chalk {
         dust.k = decay(40000);
         att = full;
         attk = decay(6000);
+        attk64 = attk;
+        fallk64 = fall.k;
+        for (int i = 0; i < 6; ++i) { attk64 = mul(attk64, attk64); fallk64 = mul(fallk64, fallk64); }
         ph_ch = 0;
         inc_ch = static_cast<u32>(97392 * 20) + static_cast<u32>(sc(97392 * 40, c[6]));
         chatter = sc(F(0.8), c[6]);
@@ -407,29 +413,31 @@ struct Chalk {
         lp1 = a1;
         lp2 = a2;
     }
-    // The stroke's envelope (an eighth, as the parts take it), and the glide.
+    // The stroke's envelope (an eighth, as the parts take it), planned at
+    // the block's two ends and glided between them; the glide a block's step.
+    i32 env_at(u32 tt, i32 at, i32 fv, i32 gate, u32 fade_step) const {
+        i32 env = full - at;
+        if (tt > len) env = tt >= len + fade ? 0 : mul(env, static_cast<i32>((len + fade - tt) * fade_step));
+        return mul(mul(env, gate), fv) >> 3;
+    }
     __attribute__((noinline)) void env_pass(i32* eb, u32 sq, i32 gate, u32 fade_step) {
-        i32 at = att, fv = fall.v, g = glide;
-        const i32 ak = attk, fk = fall.k, gs = glide_step;
-        const u32 l = len, end = len + fade;
-        u32 tt = t;
-        for (u32 j = 0; j < sq; ++j, ++tt) {
-            g = g + gs < F(0.8) ? g + gs : F(0.8);
-            at = mul(at, ak);
-            i32 env = full - at;
-            if (CURIO_UNLIKELY(tt > l)) env = mul(env, static_cast<i32>((end - tt) * fade_step));
-            fv = mul(fv, fk);
-            eb[j] = mul(mul(env, gate), fv) >> 3;
+        const i32 a1 = mul(att, attk64), f1 = mul(fall.v, fallk64);
+        const i32 e0 = env_at(t, att, fall.v, gate, fade_step), e1 = env_at(t + frames, a1, f1, gate, fade_step);
+        const i32 de = (e1 - e0) >> 6;
+        i32 e = e0;
+        for (u32 j = 0; j < sq; ++j) {
+            e += de;
+            eb[j] = e;
         }
-        att = at;
-        fall.v = fv;
-        glide = g;
+        att = a1;
+        fall.v = f1;
+        glide = glide + glide_step * static_cast<i32>(frames) < F(0.8) ? glide + glide_step * static_cast<i32>(frames) : F(0.8);
     }
     // The grit: its own noise through a 4 kHz band, following the stroke.
     __attribute__((noinline)) void grit_pass(i32* y, const i32* eb, u32 sq) {
         i32 y1 = gritr.y1, y2 = gritr.y2, x1 = gritr.x1, x2 = gritr.x2;
         u32 r = grng;
-        const i32 c = gritk.c, r2 = gritk.r2, b = gritk.b, g = grit_gain, amp = grit_amp;
+        const i32 c = gritk.c, r2 = gritk.r2, b = gritk.b, ga = gn(grit_amp, grit_gain);   // the band's gain and the grit's level as one
         if (sq & 1) {
             const i32 in = mul(noise(r), b);
             const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
@@ -437,17 +445,17 @@ struct Chalk {
             x1 = in;
             y2 = y1;
             y1 = o;
-            *y++ += lev(lev(gn(o, g), *eb++), amp);
+            *y++ += lev(lev(o, ga), *eb++);
         }
         for (u32 j = 0; j < (sq >> 1); ++j) {   // two samples a turn: the states trade places
             const i32 i0 = mul(noise(r), b);
             y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
             x2 = i0;
-            y[0] += lev(lev(gn(y2, g), eb[0]), amp);
+            y[0] += lev(lev(y2, ga), eb[0]);
             const i32 i1 = mul(noise(r), b);
             y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
             x1 = i1;
-            y[1] += lev(lev(gn(y1, g), eb[1]), amp);
+            y[1] += lev(lev(y1, ga), eb[1]);
             y += 2;
             eb += 2;
         }
@@ -500,7 +508,7 @@ struct Chalk {
     // noise through a 7 kHz band, fading after the stroke ends.
     template <bool fading> __attribute__((always_inline)) void dust_run(i32* y, u32 n) {
         i32 dv = dust.v, y1 = dustr.y1, y2 = dustr.y2, x1 = dustr.x1, x2 = dustr.x2;
-        const i32 dk = dust.k, c = dustk.c, r2 = dustk.r2, b = dustk.b, g = dust_gain;
+        const i32 dk = dust.k, c = dustk.c, r2 = dustk.r2, b = gn(dustk.b, dust_gain);   // the band's gain taken at its input
         u32 r = drng;
         if (dv <= 4096) return;   // and so it stays (checked once a run: past it the band is far under hearing)
         if (n & 1) {
@@ -511,19 +519,19 @@ struct Chalk {
             y2 = y1;
             y1 = o;
             if (fading) dv = mul(dv, dk);
-            *y++ += lev(gn(o, g), dv);
+            *y++ += lev(o, dv);
         }
         for (u32 j = 0; j < (n >> 1); ++j) {   // two samples a turn: the states trade places
             const i32 i0 = mul(noise(r), b);
             y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
             x2 = i0;
             if (fading) dv = mul(dv, dk);
-            y[0] += lev(gn(y2, g), dv);
+            y[0] += lev(y2, dv);
             const i32 i1 = mul(noise(r), b);
             y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
             x1 = i1;
             if (fading) dv = mul(dv, dk);
-            y[1] += lev(gn(y1, g), dv);
+            y[1] += lev(y1, dv);
             y += 2;
         }
         drng = r;
@@ -590,6 +598,7 @@ struct Roar {
     i32 att, attk, throb;
     u32 hum_ph, hum_inc;
     i32 hum_amp;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
@@ -601,28 +610,31 @@ struct Roar {
         lpc = hz(1400) - sc(C(2.2), c[1]) + tune;
         swing = F(0.05) + sc(F(0.4), c[2]);
         q = C(6.0) + sc(C(6.0), 4095 - c[7]);
-        bp_gain = band_gain(lpc, q);
+        // The whole roar is under 11 kHz: it runs at half the rate, two
+        // samples a step, drawn back up once a block.
+        bp_gain = band_gain(lpc + (1 << 12), q);
+        hlast = 0;
         roar = windr = Res();
         len = samples(static_cast<u32>(300000 + sc(2200000, c[4])));
         // It fades over the last 0.1 + 0.2 L of its L seconds.
         fade = samples(static_cast<u32>(100000)) + len / 5;
         len -= fade;
         att = full;
-        attk = decay(static_cast<u32>(20000 + sc(600000, c[3])));
+        attk = decay(static_cast<u32>(20000 + sc(600000, c[3])) >> 1);
         throb = c[5];
         flut_ph = 0;
         // The slat's flutter sits three octaves under its hum, so the two
         // make one pitched drone that follows TUNE.
-        flut_inc = inc(lpc - C(3.0));
+        flut_inc = inc(lpc - C(3.0)) << 1;
         hum_ph = 0;
-        hum_inc = inc(lpc);
+        hum_inc = inc(lpc) << 1;
         hum_amp = U(0.35);
         flut_swing = sc(F(0.3), c[2]);
         buzz_amp = sc(U(0.6), c[6]);
         buzz_lp = 0;
-        buzz_a = pole(hz(1200));
-        band(windk, hz(900), C(0.5));
-        wind_gain = band_gain(hz(900), C(0.5));
+        buzz_a = pole(hz(1200) + (1 << 12));
+        band_half(windk, hz(900), C(0.5));
+        wind_gain = band_gain(hz(900) + (1 << 12), C(0.5));
         wind_amp = sc(U(0.4), c[7]);
     }
     bool waiting() const { return t < len; }
@@ -632,8 +644,8 @@ struct Roar {
         const i32 s = sine(rot);
         const i32 m = mul(swing, s);
         const i32 lp = lpc + lg2(static_cast<u32>((full >> 1) + (m >> 1)) >> 19) - (11 << 12);   // log2(1 + swing sin)
-        band(roark, lp, q);
-        hum_inc = inc(lp);
+        band_half(roark, lp, q);
+        hum_inc = inc(lp) << 1;
         // The pulse: (1 - throb) + throb |sin(pi r t)|^1.5, twice a turn's half.
         const i32 hs = sine(rot >> 1);
         const i32 ah = hs < 0 ? -hs : hs;
@@ -641,20 +653,22 @@ struct Roar {
         const i32 am = full - mul(throb << 19, full - p15);
         const u32 fl = flut_inc + static_cast<u32>(mul(static_cast<i32>(flut_inc), mul(flut_swing, s)));
         const u32 fade_step = 0x7fffffffu / fade;   // the fade's slope, once a block
-        // The block in passes, each with its state in registers, for the sq
-        // samples before the roar has faded; then silence.
+        // The block in passes at half the rate, each with its state in
+        // registers, until the roar has faded; then silence.
         const u32 end = len + fade;
-        const u32 sq = t < end ? (end - t < frames ? end - t : frames) : 0;
-        if (sq) {
-            i32 nb[frames];
-            noise_pass(nb, sq);
-            roar_pass(out, nb, sq);
-            hum_pass(out, sq);
-            if (buzz_amp) buzz_pass(out, sq, fl);
-            if (wind_amp) wind_pass(out, nb, sq);
-            env_pass(out, sq, am, fade_step);
+        if (t < end) {
+            const u32 n = frames / 2;
+            i32 h[frames / 2], nb[frames / 2];
+            noise_pass(nb, n);
+            roar_pass(h, nb, n);
+            hum_pass(h, n);
+            if (buzz_amp) buzz_pass(h, n, fl);
+            if (wind_amp) wind_pass(h, nb, n);
+            env_pass(h, n, am, fade_step);
+            up_onto(h, out, hlast);
+        } else {
+            for (u32 i = 0; i < frames; ++i) out[i] = 0;
         }
-        for (u32 i = sq; i < frames; ++i) out[i] = 0;
         t += frames;
     }
     __attribute__((noinline)) void noise_pass(i32* nb, u32 n) {
@@ -703,10 +717,10 @@ struct Roar {
         const i32 k = attk;
         const u32 l = len, end = len + fade;
         u32 tt = t;
-        for (u32 j = 0; j < n; ++j, ++tt) {
+        for (u32 j = 0; j < n; ++j, tt += 2) {
             a = mul(a, k);
             i32 env = full - a;
-            if (CURIO_UNLIKELY(tt > l)) env = mul(env, static_cast<i32>((end - tt) * fade_step));
+            if (CURIO_UNLIKELY(tt > l)) env = tt >= end ? 0 : mul(env, static_cast<i32>((end - tt) * fade_step));
             y[j] = mul(mul(y[j], am), env);
         }
         att = a;
