@@ -1,0 +1,67 @@
+kick
+kick, 60 ms after a hit
+kick, 250 ms after a hit
+snare
+snare, 60 ms after a hit
+snare, 250 ms after a hit
+tom
+tom, 60 ms after a hit
+tom, 250 ms after a hit
+fill
+fill, 60 ms after a hit
+fill, 250 ms after a hit
+hand
+hand, 60 ms after a hit
+hand, 250 ms after a hit
+rim
+rim, 60 ms after a hit
+rim, 250 ms after a hit
+hat
+hat, 60 ms after a hit
+hat, 250 ms after a hit
+ride
+ride, 60 ms after a hit
+ride, 250 ms after a hit
+bell
+bell, 60 ms after a hit
+bell, 250 ms after a hit
+tine
+tine, 60 ms after a hit
+tine, 250 ms after a hit
+clock
+clock, 60 ms after a hit
+clock, 250 ms after a hit
+block
+block, 60 ms after a hit
+block, 250 ms after a hit
+clap
+clap, 60 ms after a hit
+clap, 250 ms after a hit
+shaker
+shaker, 60 ms after a hit
+shaker, 250 ms after a hit
+ratchet
+ratchet, 60 ms after a hit
+ratchet, 250 ms after a hit
+kick, control 1 at 0
+kick, control 1 at 127
+kick, control 2 at 0
+kick, control 2 at 127
+kick, control 3 at 0
+kick, control 3 at 127
+kick, control 4 at 0
+kick, control 4 at 127
+kick, control 5 at 0
+kick, control 5 at 127
+kick, control 6 at 0
+kick, control 6 at 127
+kick, control 7 at 0
+kick, control 7 at 127
+kick, control 8 at 0
+kick, control 8 at 127
+kick, all at 0
+kick, all at 0, 60 ms after a hit
+kick, all at 127
+kick, all at 127, 60 ms after a hit
+kick, Shift, row 1
+kick, Shift, row 2

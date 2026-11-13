@@ -1,0 +1,59 @@
+name: Screen frames
+# Runs each kit's real display code (tools/frames.cpp) over the review scenes
+# (tools/review/*.scenes, from tools/review/scenes.py) and keeps the frames as
+# an artifact, with the artwork they apply to. tools/review/render.py draws
+# them in the device's face, which is stock content and never on CI.
+on:
+  push:
+    branches: ['screen/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  # As Kit checks: etcetc000/open-xy staging, where SDK 1.15 (per-key sends) now is.
+  OPEN_XY_REPO: etcetc000/open-xy
+  OPEN_XY_REF: staging
+jobs:
+  frames:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: tetragon
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.OPEN_XY_REPO }}
+          ref: ${{ env.OPEN_XY_REF }}
+          path: open-xy
+      - name: Frames from each kit's display code
+        run: |
+          mkdir -p out
+          for kit in thunder curio syahi galileo; do
+            extra=""
+            [ "$kit" = galileo ] && extra="tetragon/galileo/tables.cpp"
+            g++ -std=c++11 -O2 -Iopen-xy/sdk/include -Itetragon/$kit tetragon/$kit/tools/frames.cpp $extra -o frames-$kit
+            ./frames-$kit < tetragon/tools/review/$kit.scenes > out/$kit.jsonl
+            cp tetragon/tools/review/$kit.names out/$kit.names
+            cp tetragon/$kit/panel.svg.fragment out/$kit.svg.fragment
+            echo "$kit: $(wc -l < out/$kit.jsonl) frames for $(wc -l < out/$kit.names) scenes"
+          done
+          git -C tetragon rev-parse HEAD > out/commit.txt
+      - name: Frames for the docs tools (tools/review/replay.py)
+        run: |
+          for kit in thunder curio syahi galileo; do
+            mkdir -p out/docs/$kit
+            for ask in tetragon/tools/review/docs/$kit/*.in; do
+              [ -e "$ask" ] || continue
+              ./frames-$kit < "$ask" > out/docs/$kit/$(basename "$ask" .in).out
+            done
+            echo "$kit: $(ls out/docs/$kit | wc -l) answers"
+          done
+      - name: CURIO's extents (tests/clear.cpp)
+        run: |
+          g++ -std=c++11 -O2 -Iopen-xy/sdk/include -Itetragon/curio tetragon/curio/tests/clear.cpp -o clear-curio
+          ./clear-curio | tee out/curio-clear.txt || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frames
+          path: out
+          retention-days: 14

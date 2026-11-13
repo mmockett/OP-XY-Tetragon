@@ -30,9 +30,11 @@ struct Cicada {
     u32 start_at[6], kk[6], next_at[6];
     i32 period;         // samples per click, Q8
     i32 lcf[2];         // each shell's pitch (the main, the swarm's)
+    i32 tuned[2];       // the pitch each shell is tuned to now
     Res shell[4];       // the main's two, the swarm's two
     ResK shellk[4];
-    i32 q;
+    i32 q, lq, lq9;     // log2 of the shell's quality and of the sizzle band's (0.9), less 12 octaves
+    i32 slide, slide_step;   // the sizzle's place along the train (Q31) and its step a block
     Env env[2];
     i32 tone_amp, sizzle_amp, tone_norm, sizzle_norm;
     Res hi, lo, wingr;
@@ -40,30 +42,69 @@ struct Cicada {
     i32 hi_gain, lo_gain, wing_gain, band_gain_now, last_pos, sizzle_level;
     Env wing, wingatt, tick;
     i32 tick_lp, tick_a;
+    u32 srng, wrng;     // the sizzle's and the wing's own noise
+    // Each cicada's rib quotients and remainders, and their steps a rib.
+    u32 fall_k[6], fall_r[6], amp_k[6], amp_r[6];
+    u32 fall_q, fall_rq, amp_q, amp_rq;
     i32 chirp, len;
+    i32 wlast;   // the wing's last half-rate sample
+    i32 swarm_lp, main_lp;   // the shells' pitches for the next block
+    i32 tone_g;              // a rib's strike of the shell, before its size
 
-    void tune_shell(int s, i32 lp) {
-        // The shell rings for q / (pi f): its decay from its quality.
-        const u32 tau = ex2(lg2(static_cast<u32>(q)) - (12 << 12) - lp + 74875);
-        dsp::tune(shellk[s * 2], inc(lp), decay(tau));
-        dsp::tune(shellk[s * 2 + 1], inc(lp + 2276), decay(static_cast<u32>(mul(static_cast<i32>(tau), F(0.68)))));   // 1.47
+    __attribute__((noinline)) void tune_shell(int s, i32 lp) {
+        // A train that doesn't fall keeps its shell's tuning from rib to rib.
+        if (lp == tuned[s]) return;
+        tuned[s] = lp;
+        // The shell rings for q / (pi f): its decay from its quality, found
+        // from the log of that time without leaving the log (decay's own sum).
+        tune_quick(shellk[s * 2], inc(lp), decay_log(lq - lp));
+        tune_quick(shellk[s * 2 + 1], inc(lp + 2276), decay_log(lq - lp - 2279));   // 1.47, 0.68 of the time
     }
-    void click(u32 who) {
-        const u32 k = kk[who];
+    // decay(2^(l / 4096) us), from l.
+    static i32 decay_log(i32 l) {
+        if (l < 27213) l = 27213;   // 100 us, as decay's floor
+        const u32 d = ex2(145421 - l);
+        return d >= 0x7fffffffu ? 0 : static_cast<i32>(0x7fffffffu - d);
+    }
+    // dsp::tune with sin and cos read from the sine table and interpolated
+    // (to about 3e-5, a fraction of a hertz in the pole) rather than summed
+    // from their series: a rib's retune is a quarter of the work.
+    static void tune_quick(ResK& k, u32 increment, i32 r) {
+        const u32 f = (increment >> 4) & 0xffffu;   // 16 bits between table entries
+        const u32 is = increment >> 20, ic = (increment + 0x40000000u) >> 20;
+        const i32 s0 = table::sine[is], s1 = table::sine[(is + 1) & 4095u];
+        const i32 c0 = table::sine[ic], c1 = table::sine[(ic + 1) & 4095u];
+        const i32 sn = (s0 << 15) + ((s1 - s0) * static_cast<i32>(f) >> 1);   // Q30
+        const i32 cs = (c0 << 15) + ((c1 - c0) * static_cast<i32>(f) >> 1);
+        k.c = mul(r, cs) << 1;
+        k.r2 = mul(r, r) >> 1;
+        k.s = sn << 1;
+        k.g = mul(full - r, sn) << 2;
+        k.b = full - r;
+    }
+    __attribute__((noinline)) i32 click(u32 who) {
         const int s = who ? 1 : 0;
-        // The train falls up to 1.2 octaves by its last rib.
-        const i32 fall = n > 1 ? static_cast<i32>(static_cast<u32>(sc(C(1.2), chirp)) * k / (n - 1)) : sc(C(0.6), chirp);
-        tune_shell(s, lcf[s] - fall);
-        const i32 a = mul(full - static_cast<i32>(static_cast<u32>(F(0.45) >> 8) * k / n << 8), F(0.8) + sc(F(0.2), draw(rng)));
+        // The train falls up to 1.2 octaves by its last rib: fall_k[who] is
+        // 1.2 chirp k / (n - 1), carried from rib to rib without a division.
+        const i32 fall = n > 1 ? static_cast<i32>(fall_k[who]) : sc(C(0.6), chirp);
+        // Each shell takes its latest rib's pitch once a block (the swarm's
+        // is shared by all the swarm).
+        if (s) swarm_lp = lcf[1] - fall;
+        else main_lp = lcf[0] - fall;
+        const i32 a = mul(full - static_cast<i32>(amp_k[who] << 8), F(0.8) + sc(F(0.2), draw(rng)));   // 0.45 k / n
+        // The next rib's quotients: q + x / d, the remainders carried.
+        fall_k[who] += fall_q;
+        fall_r[who] += fall_rq;
+        if (fall_r[who] >= n - 1) { fall_r[who] -= n - 1; ++fall_k[who]; }
+        amp_k[who] += amp_q;
+        amp_r[who] += amp_rq;
+        if (amp_r[who] >= n) { amp_r[who] -= n; ++amp_k[who]; }
         const i32 g = who ? mul(a, F(0.7)) : a;
-        dsp::strike(shell[s * 2], shellk[s * 2], mul(lev(tone_amp, tone_norm), g));
-        dsp::strike(shell[s * 2 + 1], shellk[s * 2 + 1], mul(mul(lev(tone_amp, tone_norm), F(0.6)), g));
         // The swarm's clicks feed the same envelope, an eighth of a unit a click:
         // a long tail piles up to about 0.8 n of them, which a whole unit would
         // overflow; a swarm's pile stops at seven units.
         const i32 add = mul(one >> 3, g);
         env[0].v = env[0].v < 7 * one - add ? env[0].v + add : 7 * one;
-        tick.v += mul(U(0.18), g);
         ++kk[who];
         if (kk[who] < n) {
             // Each rib a little early or late, +-6% of the period.
@@ -71,11 +112,14 @@ struct Cicada {
             const i32 at = static_cast<i32>(start_at[who]) + (period * static_cast<i32>(kk[who]) >> 8) + (dp >> 8);
             next_at[who] = at > static_cast<i32>(t) ? static_cast<u32>(at) : t + 1;
         }
+        return g;
     }
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
+        srng = (x.seed * 2654435761u) | 1u;
+        wrng = (x.seed * 2246822519u + 0x9e3779b9u) | 1u;
         t = 0;
         n = 1 + static_cast<u32>(sc(31, pw(c[0], C(1.5))));
         const i32 lrate = hz(120) + sc(C(3.0), c[1]);
@@ -85,16 +129,23 @@ struct Cicada {
         lcf[0] = dsp::lo(hz(3500) + sc(C(1.6), c[2]) + tune, hz(12000));
         lcf[1] = dsp::lo(lcf[0] + mul(jitter(rng), F(0.3)), hz(12000));
         q = C(2.0) + sc(C(28.0), pw(c[3], C(1.5)));
+        lq = lg2(static_cast<u32>(q)) - (12 << 12) + 74875;   // log2 of q / pi, us, less the pitch: each click's shell
+        lq9 = lg2(static_cast<u32>(C(0.9))) - (12 << 12);
         chirp = c[5];
         for (int s = 0; s < 4; ++s) shell[s] = Res();
+        tuned[0] = tuned[1] = -(1 << 30);   // nothing yet
         tune_shell(0, lcf[0]);
         tune_shell(1, lcf[1]);
+        swarm_lp = lcf[1];
+        main_lp = lcf[0];
         // The tail: 12..412 ms.
         const i32 tl = 12000 + sc(400000, pw(c[4], C(1.7)));
         env[0].v = env[1].v = 0;
         env[0].k = env[1].k = decay(static_cast<u32>(tl));
         // The train's length, for the sizzle's slide.
         len = static_cast<i32>(static_cast<u32>(period) * n >> 8) + 1323;
+        slide = 0;
+        slide_step = static_cast<i32>((static_cast<u32>(frames) << 15) / static_cast<u32>(len)) << 16;   // a block's share of the train
         // The prototype scales tone and sizzle each to a peak of 1: the
         // tone's ring by the overlap of rings, the sizzle by its envelope's
         // pile-up over the train (1 / (1 - exp(-1 / (tl rate))), at most n).
@@ -108,6 +159,7 @@ struct Cicada {
         // A pile of p clicks reaches about 0.8 p; noise peaks near 3.5 sigma.
         sizzle_norm = static_cast<i32>(static_cast<u32>(U(1.2)) / static_cast<u32>(pile));
         tone_amp = U(0.25) + sc(U(0.6), c[3]);
+        tone_g = lev(tone_amp, tone_norm);
         sizzle_amp = U(1.0) - sc(U(0.45), c[3]);
         band(hik, lcf[0] + 826, C(0.9));      // 1.15
         band(lok, lcf[0] - 3533, C(0.9));     // 0.55
@@ -117,18 +169,27 @@ struct Cicada {
         sizzle_level = lev(sizzle_amp, sizzle_norm) << 3;
         lo_gain = band_gain(lcf[0] - 3533, C(0.9));
         hi = lo = wingr = Res();
-        band(wingk, hz(2500), C(0.7));
-        wing_gain = band_gain(hz(2500), C(0.7));
+        band_half(wingk, hz(2500), C(0.7));   // the wing at half the rate
+        wing_gain = band_gain(hz(2500) + (1 << 12), C(0.7));
+        wlast = 0;
         wing.v = wingatt.v = sc(U(0.5), c[6]);
-        wing.k = decay(80000);
-        wingatt.k = mul(wing.k, decay(10000));
+        wing.k = decay(40000);
+        wingatt.k = mul(wing.k, decay(5000));
         tick.v = 0;
         tick.k = decay(300);
         tick_lp = 0;
         tick_a = pole(hz(3000));
         // The swarm: up to five more, starting within 30 ms.
         cicadas = 1 + static_cast<u32>(c[7] * 5 >> 12);
+        {
+            const u32 fx = static_cast<u32>(sc(C(1.2), chirp)), ax = static_cast<u32>(F(0.45) >> 8);
+            fall_q = n > 1 ? fx / (n - 1) : 0;
+            fall_rq = n > 1 ? fx % (n - 1) : 0;
+            amp_q = ax / n;
+            amp_rq = ax % n;
+        }
         for (u32 w = 0; w < 6; ++w) {
+            fall_k[w] = fall_r[w] = amp_k[w] = amp_r[w] = 0;
             kk[w] = 0;
             start_at[w] = w ? samples(static_cast<u32>(draw(rng) * 30000 >> 12)) + 1 : 0;
             next_at[w] = start_at[w];
@@ -140,41 +201,168 @@ struct Cicada {
         return false;
     }
     void run(i32* out) {
-        // The sizzle slides from the high band to the low one as the train falls.
-        const i32 pos = n > 1 ? mul(t >= static_cast<u32>(len) ? full : static_cast<i32>((static_cast<u32>(t) << 15) / static_cast<u32>(len)) << 16, chirp << 19)
-                              : sc(F(0.5), chirp);
+        // The sizzle slides from the high band to the low one as the train
+        // falls: its place along the train steps on a block at a time.
+        i32 pos;
+        if (n > 1) {
+            pos = mul(slide, chirp << 19);
+            slide = slide < full - slide_step ? slide + slide_step : full;
+        } else {
+            pos = sc(F(0.5), chirp);
+        }
         // One band slides from 1.15 to 0.55 of the shell (the prototype
-        // crossfaded two), retuned once a block while the train falls.
+        // crossfaded two), retuned once a block while the train falls, its
+        // quality's log worked out at the strike and its sin and cos read
+        // from the sine table.
         if (pos != last_pos || !band_gain_now) {
             const i32 lp = lcf[0] + 826 - mul(4359, pos);
-            band(hik, lp, C(0.9));
-            band_gain_now = band_gain(lp, C(0.9));
+            tune_quick(hik, inc(lp), decay(ex2(lq9 - lp + 74875)));
+            band_gain_now = static_cast<i32>(ex2(((56431 + lq9 - lp) >> 1) + (16 << 12)));
             last_pos = pos;
         }
-        for (u32 i = 0; i < frames; ++i, ++t) {
+        tune_shell(0, main_lp);
+        if (cicadas > 1) tune_shell(1, swarm_lp);
+        // The block's ribs, every cicada's in time order, gathered first:
+        // where each falls, its size, and whose shell it strikes.
+        u32 at[32], who[32], ribs = 0;
+        i32 size[32];
+        const u32 t0 = t;
+        for (;;) {
+            u32 e = frames;
             for (u32 w = 0; w < cicadas; ++w)
-                if (kk[w] < n && t == next_at[w]) click(w);
-            i32 y = 0;
-            y += ring(shell[0], shellk[0], 0) + ring(shell[1], shellk[1], 0);
-            if (cicadas > 1) y += ring(shell[2], shellk[2], 0) + ring(shell[3], shellk[3], 0);
-            const i32 e = env[0].step();
-            if (e > 4096) {
-                // The sizzle, driven into a soft clip: denser and less peaky,
-                // so a hat carries its loudness under the kit's ceiling.
-                const i32 sz = clamp(lev(lev(gn(bp(hi, hik, noise(rng)), band_gain_now), e), sizzle_level), -U(1.9), U(1.9));
-                y += tanh(sz << 1) >> 1;
-            }
-            if (tick.v > 4096) {
-                const i32 tk = lev(noise(rng), tick.step());
-                tick_lp += mul(tick_a, tk - tick_lp);
-                y += tk - tick_lp;
-            }
-            if (wing.v > 4096) {
-                const i32 wv = wing.step() - (wingatt.v = mul(wingatt.v, wingatt.k));
-                y += lev(gn(bp(wingr, wingk, noise(rng)), wing_gain), wv);
-            }
-            out[i] = y;
+                if (kk[w] < n) { const u32 d = next_at[w] - t0; if (d < e) e = d; }
+            if (e >= frames) break;
+            t = t0 + e;
+            for (u32 w = 0; w < cicadas; ++w)
+                if (kk[w] < n && t == next_at[w]) {
+                    const i32 g = click(w);
+                    if (ribs < 32) { at[ribs] = e; size[ribs] = g; who[ribs] = w ? 1 : 0; ++ribs; }
+                }
         }
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        shells_pass(out, at, size, who, ribs);
+        tick_pass(out, at, size, ribs);
+        // The sizzle and the wing run over the whole block, the clicks'
+        // swells taken from its start: a click's sizzle sounds at most a
+        // block (1.5 ms) early, its shell and tick on the sample.
+        t = t0;
+        sizzle_pass(out, frames);
+        if (wing.v > 4096) wing_pass(out);
+        t = t0 + frames;
+    }
+    // The shells through the block, each struck by its own cicadas' ribs
+    // where they fall (rung between them in one call).
+    __attribute__((noinline)) void shells_pass(i32* y, const u32* at, const i32* size, const u32* who, u32 ribs) {
+        const u32 count = cicadas > 1 ? 4 : 2;
+        for (u32 m = 0; m < count; ++m) {
+            Res& z = shell[m];
+            const ResK& k = shellk[m];
+            const u32 pair = m >> 1;
+            const i32 g = m & 1 ? mul(tone_g, F(0.6)) : tone_g;
+            u32 i = 0;
+            for (u32 q = 0; q < ribs; ++q) {
+                if (who[q] != pair) continue;
+                if (at[q] > i) ring_into(z, k, y + i, at[q] - i);
+                i = at[q];
+                dsp::strike(z, k, mul(g, size[q]));
+            }
+            if (frames > i) ring_into(z, k, y + i, frames - i);
+        }
+    }
+    // Each rib's tick: high-passed noise, rung by every rib where it falls.
+    __attribute__((always_inline)) void tick_run(i32* y, u32 n, i32& tv, i32& lp, u32& r) {
+        const i32 tk = tick.k, ta = tick_a;
+        for (u32 j = 0; j < n; ++j) {
+            tv = mul(tv, tk);
+            const i32 x = lev(noise(r), tv);
+            lp += mul(ta, x - lp);
+            y[j] += x - lp;
+        }
+    }
+    __attribute__((noinline)) void tick_pass(i32* y, const u32* at, const i32* size, u32 ribs) {
+        i32 tv = tick.v, lp = tick_lp;
+        u32 r = rng, i = 0;
+        for (u32 q = 0; q < ribs; ++q) {
+            if (at[q] > i && tv > 4096) tick_run(y + i, at[q] - i, tv, lp, r);
+            i = at[q];
+            tv += mul(U(0.18), size[q]);
+        }
+        if (frames > i && tv > 4096) tick_run(y + i, frames - i, tv, lp, r);
+        tick.v = tv;
+        tick_lp = lp;
+        rng = r;
+    }
+    // The sizzle, driven into a soft clip: denser and less peaky, so a hat
+    // carries its loudness under the kit's ceiling.
+    __attribute__((noinline)) void sizzle_pass(i32* y, u32 n) {
+        i32 ev = env[0].v, y1 = hi.y1, y2 = hi.y2, x1 = hi.x1, x2 = hi.x2;
+        u32 r = srng;
+        // The band's loudness gain and the sizzle's level taken at its input, Q28.
+        const i32 gq = dsp::lo(lev(gn(hik.b >> 3, band_gain_now), sizzle_level), U(7.9));
+        const i32 ek = env[0].k, c = hik.c, r2 = hik.r2;
+        if (ev <= 4096) {   // under its floor until the next click: only the envelope moves
+            for (u32 j = 0; j < n; ++j) ev = mul(ev, ek);
+            env[0].v = ev;
+            return;
+        }
+        // The band (its RMS the sizzle's level) peaks near 4 times that;
+        // driven under 0.3 the curve is a straight line (within 1.5%), so a
+        // quiet block skips it.
+        if (mul(ev, sizzle_level) < U(0.15 / 32.0)) {   // ev sl / 8 under 0.15 / 32: no overflow at a swarm's pile
+            for (u32 j = 0; j < n; ++j) {
+                ev = mul(ev, ek);
+                const i32 in = lev(noise(r), gq);
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                y[j] += lev(o, ev);
+            }
+        } else {
+            for (u32 j = 0; j < n; ++j) {
+                ev = mul(ev, ek);
+                const i32 in = lev(noise(r), gq);
+                const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+                x2 = x1;
+                x1 = in;
+                y2 = y1;
+                y1 = o;
+                y[j] += soft(lev(o, ev) << 1) >> 1;   // flat from 0.75
+            }
+        }
+        env[0].v = ev;
+        srng = r;
+        hi.y1 = y1;
+        hi.y2 = y2;
+        hi.x1 = x1;
+        hi.x2 = x2;
+    }
+    // The wing's flick.
+    __attribute__((noinline)) void wing_pass(i32* y) {
+        i32 wv = wing.v, av = wingatt.v, y1 = wingr.y1, y2 = wingr.y2, x1 = wingr.x1, x2 = wingr.x2;
+        u32 r = wrng;
+        const i32 wk = wing.k, ak = wingatt.k, c = wingk.c, r2 = wingk.r2, g = gn(wingk.b, wing_gain);   // a band-pass: no response at 0 Hz
+        i32 h[frames / 2];
+        for (u32 j = 0; j < frames / 2; ++j) {
+            wv = mul(wv, wk);
+            av = mul(av, ak);
+            const i32 in = mul(noise(r), g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            h[j] = lev(o, wv - av);
+        }
+        wing.v = wv;
+        wingatt.v = av;
+        wrng = r;
+        wingr.y1 = y1;
+        wingr.y2 = y2;
+        wingr.x1 = x1;
+        wingr.x2 = x2;
+        up_into(h, y, wlast);
     }
 };
 
@@ -241,25 +429,52 @@ struct Ratchet {
         return w > static_cast<i32>(t) ? static_cast<u32>(w) : t + 1;
     }
     bool waiting() const { return k < n; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (k < n && t == next) {
-                const i32 a = mul(U(1.0) - static_cast<i32>(static_cast<u32>(U(0.3) >> 8) * k / n << 8),
-                                  full - mul(sc(F(0.9), c[7]), draw(rng) << 19));
-                tooth(a);
-                ++k;
-                gap = (per >> 4) * static_cast<i32>(ex2(static_cast<i32>(k) * slow_step + (16 << 12)) >> 4) >> 8;
-                if (gap > 66150) gap = 66150;
-                due += static_cast<u32>(gap);
-                next = k < n ? jittered(due) : 0;
-            }
-            i32 y = ring(slat[0], slatk[0], 0) + ring(slat[1], slatk[1], 0) + ring(slat[2], slatk[2], 0);
-            y += ring(spring, springk, 0) + ring(box, boxk, 0);
-            const i32 tk = lev(noise(rng), tick.step());
-            tick_lp += mul(tick_a, tk - tick_lp);
-            y += tk - tick_lp;
-            out[i] = y;
+    // The next tooth flicks the slat.
+    __attribute__((noinline)) void next_tooth() {
+        const i32 a = mul(U(1.0) - static_cast<i32>(static_cast<u32>(U(0.3) >> 8) * k / n << 8),
+                          full - mul(sc(F(0.9), c[7]), draw(rng) << 19));
+        tooth(a);
+        ++k;
+        gap = (per >> 4) * static_cast<i32>(ex2(static_cast<i32>(k) * slow_step + (16 << 12)) >> 4) >> 8;
+        if (gap > 66150) gap = 66150;
+        due += static_cast<u32>(gap);
+        next = k < n ? jittered(due) : 0;
+    }
+    // The tick of each tooth.
+    __attribute__((noinline)) void tick_pass(i32* y, u32 n) {
+        i32 v = tick.v, lp = tick_lp;
+        const i32 tk = tick.k, a = tick_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            v = mul(v, tk);
+            const i32 x = lev(noise(r), v);
+            lp += mul(a, x - lp);
+            y[j] += x - lp;
         }
+        tick.v = v;
+        tick_lp = lp;
+        rng = r;
+    }
+    // The block in passes, each with its state in registers, split at the teeth.
+    void run(i32* out) {
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        const u32 t0 = t;
+        for (u32 i = 0;;) {
+            u32 e = frames;
+            if (k < n) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
+            if (e > i) {
+                const u32 m = e - i;
+                ring_bank(slat, slatk, 3, out + i, m);
+                ring_into(spring, springk, out + i, m);
+                ring_into(box, boxk, out + i, m);
+                tick_pass(out + i, m);
+            }
+            i = e;
+            if (i >= frames) break;
+            t = t0 + i;
+            if (k < n && t == next) next_tooth();
+        }
+        t = t0 + frames;
     }
 };
 
@@ -279,11 +494,15 @@ struct Pod {
     u32 late_p;
     Env late_env;
     u32 late_end, stop;
+    i32 late_k64;   // the stragglers' fall over a block
+    i32 dk64, uk64, bdk64, buk64;   // the envelopes' decays over a block
+    u32 srng;                       // the swish's own noise
 
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
+        srng = (x.seed * 2654435761u) | 1u;
         t = 0;
         const i32 a_us = 4000 + sc(40000, c[1]), d_us = 30000 + sc(220000, c[1]);
         down.v = full;
@@ -296,6 +515,16 @@ struct Pod {
         bump_up.v = bump_down.v = 0;
         bump_down.k = decay(20000);
         bump_up.k = mul(bump_down.k, decay(12000));
+        dk64 = down.k;
+        uk64 = up.k;
+        bdk64 = bump_down.k;
+        buk64 = bump_up.k;
+        for (int i = 0; i < 6; ++i) {
+            dk64 = mul(dk64, dk64);
+            uk64 = mul(uk64, uk64);
+            bdk64 = mul(bdk64, bdk64);
+            buk64 = mul(buk64, buk64);
+        }
         // The envelope's own peak, for the seeds' rate: (1 - e^-t/a) e^-t/d
         // at its top, about 1 - a / d for a short attack.
         const i32 pk = full - static_cast<i32>((static_cast<u32>(a_us) << 15) / static_cast<u32>(d_us) << 16 >> 0) ;
@@ -330,42 +559,169 @@ struct Pod {
         late_p = c[7] > 0 ? per_sample(static_cast<u32>(40 + sc(400, c[7]))) : 0;
         late_env.v = full;
         late_env.k = decay(250000);
-        late_end = samples(static_cast<u32>(60000 + sc(500000, c[1]) + sc(300000, c[7])));
+        late_k64 = late_env.k;
+        for (int i = 0; i < 6; ++i) late_k64 = mul(late_k64, late_k64);
+        // They straggle on up to 0.3 s past the shake (one draw a sample
+        // decides seeds and stragglers alike, so under the shake they hide).
+        late_end = samples(static_cast<u32>(160000 + sc(500000, c[1]) + sc(300000, c[7])));
         late_norm = sc(U(1.4), c[7]);
     }
-    bool waiting() const { return false; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (t == bump_at && bump_amp) {
-                // The pulse (two decays apart) peaks at 0.43 of its size.
-                bump_down.v = bump_up.v = bump_amp;
-            }
-            i32 e = down.step() - (up.v = mul(up.v, up.k));
-            // The tilt: a second rush of seeds as the pod is tipped, on top.
-            const i32 b = bump_down.step() - (bump_up.v = mul(bump_up.v, bump_up.k));
-            if (t + 882 > stop) e = t >= stop ? 0 : mul(e, static_cast<i32>((stop - t) * 2434995u));   // / 882
-            // Seeds: a strike when the draw falls under the envelope's share of the rate.
-            noise(rng);
-            const u32 p = (static_cast<u32>(mul(static_cast<i32>(rate_p >> 1), mul(e, peak_inv << 16) << 1)) << 1) +
-                          (static_cast<u32>(mul(static_cast<i32>(rate_p >> 1), b)) << 3);   // up to 1.7 times the shake's rate
-            i32 imp = 0;
-            if (rng < p) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(rng));   // 0.5 .. 1.5
-            i32 y = ring(r[0], rk[0], mul(imp, rk[0].g)) + mul(ring(r[1], rk[1], mul(imp, rk[1].g)), F(0.7)) +
-                    mul(ring(r[2], rk[2], mul(imp, rk[2].g)), F(0.5));
-            y = gn(y, norm);
-            if (c[4] > 0) {
-                dry_lp += mul(dry_a, y - dry_lp);
-                y = mul(y, F(1.0) - sc(F(0.6), c[4])) + mul((y - dry_lp), sc(F(0.75), c[4])) * 4;
-            }
-            y += lev(gn(bp(sw, swk, noise(rng)), sw_gain), lev(sw_amp, (e >> 3) + (b >> 1)));
-            if (late_norm && t > 2205 && t < late_end) {
-                noise(rng);
-                const i32 le = late_env.step();
-                const i32 li = rng < late_p ? le >> 3 : 0;
-                y += lev(gn(ring(late, latek, mul(li, latek.g)), norm), late_norm);
-            }
-            out[i] = y;
+    bool waiting() const { return late_p && t < late_end; }
+    // The block in passes, each with its state in registers; the noise is
+    // drawn in the same order as ever.
+    // The shake's envelope and the tilt's pulse.
+    __attribute__((noinline)) void env_pass(i32* eb, i32* bb) {
+        i32 dv = down.v, uv = up.v, bd = bump_down.v, bu = bump_up.v;
+        const i32 dk = down.k, uk = up.k, bdk = bump_down.k, buk = bump_up.k;
+        for (u32 j = 0; j < frames; ++j) {
+            const u32 tt = t + j;
+            // The pulse (two decays apart) peaks at 0.43 of its size.
+            if (CURIO_UNLIKELY(tt == bump_at && bump_amp)) bd = bu = bump_amp;
+            dv = mul(dv, dk);
+            uv = mul(uv, uk);
+            i32 e = dv - uv;
+            bd = mul(bd, bdk);
+            bu = mul(bu, buk);
+            bb[j] = bd - bu;
+            if (CURIO_UNLIKELY(tt + 882 > stop)) e = tt >= stop ? 0 : mul(e, static_cast<i32>((stop - tt) * 2434995u));   // / 882
+            eb[j] = e;
         }
+        down.v = dv;
+        up.v = uv;
+        bump_down.v = bd;
+        bump_up.v = bu;
+    }
+    // Seeds: a strike when the draw falls under the envelope's share of the
+    // rate, planned once a block from its middle; a straggler when it falls
+    // in the scatter's share just above. One draw a sample.
+    __attribute__((noinline)) void seed_pass(const i32* eb, const i32* bb, i32* ib, i32* lb) {
+        u32 r = rng;
+        const i32 rp = static_cast<i32>(rate_p >> 1), pi = peak_inv << 16;
+        const u32 p = (static_cast<u32>(mul(rp, mul(eb[frames / 2], pi) << 1)) << 1) +
+                      (static_cast<u32>(mul(rp, bb[frames / 2])) << 3);   // up to 1.7 times the shake's rate
+        u32 q = p;
+        i32 la = 0;
+        if (late_p && t + frames / 2 > 2205 && t + frames / 2 < late_end) {
+            q = p + late_p;
+            // A straggler rings its own resonance, a little under the shell's.
+            la = late_env.v >> 3;
+        }
+        for (u32 j = 0; j < frames; ++j) {
+            noise(r);
+            const u32 x = r;
+            i32 imp = 0, late = 0;
+            if (CURIO_UNLIKELY(x < q)) {
+                if (x < p) imp = one / 2 + static_cast<i32>(static_cast<u32>(one) >> 12) * (draw(r));   // 0.5 .. 1.5
+                else late = la;
+            }
+            ib[j] = imp;
+            lb[j] = late;
+        }
+        rng = r;
+        if (t + frames > 2205) late_env.v = mul(late_env.v, late_k64);
+    }
+    // A shell resonance rung by the seeds, weighted into y.
+    template <bool weighted> __attribute__((noinline)) static void shell_pass(Res& z, const ResK& k, const i32* ib, i32* y, i32 w) {
+        i32 y1 = z.y1, y2 = z.y2;
+        const i32 c = k.c, r2 = k.r2, g = k.g;
+        for (u32 j = 0; j < frames / 2; ++j) {   // two samples a turn: the states trade places
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + mul(ib[0], g);
+            y[0] += weighted ? mul(y2, w) : y2;
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + mul(ib[1], g);
+            y[1] += weighted ? mul(y1, w) : y1;
+            ib += 2;
+            y += 2;
+        }
+        z.y1 = y1;
+        z.y2 = y2;
+    }
+    // The seeds' level, and the dry pod's crackle.
+    __attribute__((noinline)) void dry_pass(i32* y) {
+        const i32 nm = norm;
+        if (c[4] > 0) {
+            i32 lp = dry_lp;
+            const i32 a = dry_a, wet = F(1.0) - sc(F(0.6), c[4]), crisp = sc(F(0.75), c[4]);
+            for (u32 j = 0; j < frames; ++j) {
+                const i32 v = gn(y[j], nm);
+                lp += mul(a, v - lp);
+                y[j] = mul(v, wet) + mul((v - lp), crisp) * 4;
+            }
+            dry_lp = lp;
+        } else {
+            for (u32 j = 0; j < frames; ++j) y[j] = gn(y[j], nm);
+        }
+    }
+    // The swish of the shake: its level (with the band's gain) glided
+    // across the block from its two ends.
+    __attribute__((noinline)) void swish_pass(i32* y, const i32* eb, const i32* bb) {
+        i32 y1 = sw.y1, y2 = sw.y2, x1 = sw.x1, x2 = sw.x2;
+        u32 r = srng;
+        // The band's loudness gain in the level.
+        const i32 c = swk.c, r2 = swk.r2, b = swk.b, sg = sw_gain, amp = sw_amp;
+        const i32 l0 = gn(lev(amp, (eb[0] >> 3) + (bb[0] >> 1)), sg);
+        const i32 l1 = gn(lev(amp, (eb[frames - 1] >> 3) + (bb[frames - 1] >> 1)), sg);
+        const i32 dl = (l1 - l0) >> 6;
+        i32 l = l0;
+        for (u32 j = 0; j < frames; j += 2) {   // two samples a turn: the states trade places
+            const i32 i0 = mul(noise(r), b);
+            y2 = twice(mul(c, y1) - mul(r2, y2)) + i0 - x2;
+            x2 = i0;
+            y[j] += lev(y2, l);
+            l += dl;
+            const i32 i1 = mul(noise(r), b);
+            y1 = twice(mul(c, y2) - mul(r2, y1)) + i1 - x1;
+            x1 = i1;
+            y[j + 1] += lev(y1, l);
+            l += dl;
+        }
+        srng = r;
+        sw.y1 = y1;
+        sw.y2 = y2;
+        sw.x1 = x1;
+        sw.x2 = x2;
+    }
+    // Scatter: stragglers after 50 ms, ringing their own resonance.
+    __attribute__((noinline)) void late_pass(i32* y, const i32* lb) {
+        const i32 nm = norm, ln = late_norm;
+        drive_run(late, latek, y, frames, [&lb, this](i32) { return mul(*lb++, latek.g); },
+                  [nm, ln](i32& to, i32 o) { to += lev(gn(o, nm), ln); });
+    }
+    // The shake's envelope and the tilt's pulse planned at the block's ends
+    // and glided between them (they move slowly).
+    __attribute__((noinline)) void ramp_pass(i32* eb, i32* bb, bool shaking) {
+        const i32 e0 = down.v - up.v, b0 = bump_down.v - bump_up.v;
+        down.v = mul(down.v, dk64);
+        up.v = mul(up.v, uk64);
+        bump_down.v = mul(bump_down.v, bdk64);
+        bump_up.v = mul(bump_up.v, buk64);
+        const i32 e1 = shaking ? down.v - up.v : 0, b1 = bump_down.v - bump_up.v;
+        const i32 de = shaking ? (e1 - e0) >> 6 : 0, db = (b1 - b0) >> 6;
+        i32 e = shaking ? e0 : 0, b = b0;
+        for (u32 j = 0; j < frames; ++j) {
+            e += de;
+            b += db;
+            eb[j] = e;
+            bb[j] = b;
+        }
+    }
+    void run(i32* out) {
+        i32 eb[frames], bb[frames], ib[frames], lb[frames];
+        // Sample by sample only where the tilt's pulse starts or the shake
+        // fades out.
+        const bool bumping = bump_amp && bump_at - t < frames;
+        const bool fading = t + frames - 1 + 882 > stop && t < stop;
+        if (bumping || fading) env_pass(eb, bb);
+        else ramp_pass(eb, bb, t < stop);
+        seed_pass(eb, bb, ib, lb);
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        shell_pass<false>(r[0], rk[0], ib, out, 0);
+        shell_pass<true>(r[1], rk[1], ib, out, F(0.7));
+        shell_pass<true>(r[2], rk[2], ib, out, F(0.5));
+        dry_pass(out);
+        swish_pass(out, eb, bb);
+        // Scatter: the stragglers' resonance, while they come and ring on.
+        if (late_p && t + frames > 2205 && t < late_end + 4410) late_pass(out, lb);
+        t += frames;
     }
 };
 
@@ -423,37 +779,95 @@ struct Match {
         puff_a = pole(hz(250));
     }
     bool waiting() const { return t < ds; }
-    void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            i32 y = 0;
-            if (t < ds) {
-                noise(rng);
-                const i32 slip = rng < slip_p ? one : 0;
-                sc_att = mul(sc_att, sc_attk);
-                const i32 s = ring(sc_, sck, mul(slip, sck.g));
-                y = lev(gn(s, sc_norm), lev(sc_amp, (full - sc_att) >> 3));
-            } else {
-                y = ring(sc_, sck, 0);
-                y = lev(gn(y, sc_norm), lev(sc_amp, (full - sc_att) >> 3));
-                const i32 env = fl_d.step() - (fl_a.v = mul(fl_a.v, fl_a.k));
-                const i32 n = noise(rng);
-                y += lev(lev(gn(bp(fl, flk, n), fl_gain), env >> 3), fl_amp);
-                if (phos_amp) {
-                    noise(rng);
-                    const i32 cr = rng < phos_p ? lev(noise(rng), env >> 3) : 0;
-                    y += lev(ring(phos, phosk, mul(cr, phosk.g)), phos_amp);
-                }
-                if (wood_amp) {
-                    wood_lp += mul(wood_a, n - wood_lp);
-                    y += lev(lev(wood_lp, env >> 3), wood_amp);
-                }
-                if (puff.v > 4096) {
-                    puff_lp += mul(puff_a, lev(n, puff.step()) - puff_lp);
-                    y += puff_lp;
-                }
-            }
-            out[i] = y;
+    // The block in passes, each with its state in registers, split where the
+    // draw ends; the noise is drawn in the same order as ever.
+    // The draw: the head stick-slips, ringing its squeal.
+    __attribute__((noinline)) void draw_pass(i32* y, u32 n) {
+        i32 at = sc_att;
+        const i32 ak = sc_attk, g = sck.g, nm = sc_norm, amp = sc_amp;
+        const u32 p = slip_p;
+        u32 r = rng;
+        drive_run(sc_, sck, y, n, [&r, p, g](i32) { noise(r); return mul(r < p ? one : 0, g); },
+                  [&at, ak, nm, amp](i32& to, i32 o) { at = mul(at, ak); to = lev(gn(o, nm), lev(amp, (full - at) >> 3)); });
+        sc_att = at;
+        rng = r;
+    }
+    // The flare's envelope (an eighth, as the parts take it).
+    __attribute__((noinline)) void flare_pass(i32* eb, u32 n) {
+        i32 dv = fl_d.v, av = fl_a.v;
+        const i32 dk = fl_d.k, ak = fl_a.k;
+        for (u32 j = 0; j < n; ++j) {
+            dv = mul(dv, dk);
+            av = mul(av, ak);
+            eb[j] = (dv - av) >> 3;
         }
+        fl_d.v = dv;
+        fl_a.v = av;
+    }
+    // The flame's noise, and the phosphorus's crackle, in draw order.
+    template <bool phos_on> __attribute__((noinline)) void noise_pass(const i32* eb, i32* nb, i32* cb, u32 n) {
+        u32 r = rng;
+        const u32 p = phos_p;
+        for (u32 j = 0; j < n; ++j) {
+            nb[j] = noise(r);
+            if (phos_on) {
+                noise(r);
+                cb[j] = CURIO_UNLIKELY(r < p) ? lev(noise(r), eb[j]) : 0;
+            }
+        }
+        rng = r;
+    }
+    // The head's squeal ringing on after the draw.
+    __attribute__((noinline)) void squeal_pass(i32* y, u32 n) {
+        const i32 nm = sc_norm, lv = lev(sc_amp, (full - sc_att) >> 3);
+        drive_run(sc_, sck, y, n, [](i32) { return 0; }, [nm, lv](i32& to, i32 o) { to = lev(gn(o, nm), lv); });
+    }
+    __attribute__((noinline)) void flame_pass(i32* y, const i32* eb, const i32* nb, u32 n) {
+        const i32 g = fl_gain, amp = fl_amp;
+        bp_run(fl, flk, nb, y, n, [&eb, g, amp](i32& to, i32 o) { to += lev(lev(gn(o, g), *eb++), amp); });
+    }
+    __attribute__((noinline)) void phos_pass(i32* y, const i32* cb, u32 n) {
+        const i32 g = phosk.g, amp = phos_amp;
+        drive_run(phos, phosk, y, n, [&cb, g](i32) { return mul(*cb++, g); }, [amp](i32& to, i32 o) { to += lev(o, amp); });
+    }
+    // The burning wood's roar under the flare, and the puff.
+    template <bool wood_on> __attribute__((noinline)) void wood_pass(i32* y, const i32* eb, const i32* nb, u32 n) {
+        i32 wl = wood_lp, pl = puff_lp, pv = puff.v;
+        const i32 wa = wood_a, amp = wood_amp, pa = puff_a, pk = puff.k;
+        for (u32 j = 0; j < n; ++j) {
+            const i32 x = nb[j];
+            if (wood_on) {
+                wl += mul(wa, x - wl);
+                y[j] += lev(lev(wl, eb[j]), amp);
+            }
+            if (pv > 4096) {
+                pv = mul(pv, pk);
+                pl += mul(pa, lev(x, pv) - pl);
+                y[j] += pl;
+            }
+        }
+        wood_lp = wl;
+        puff_lp = pl;
+        puff.v = pv;
+    }
+    void run(i32* out) {
+        // The draw's samples in this block, then the flame's.
+        const u32 d = t < ds ? (ds - t < frames ? ds - t : frames) : 0;
+        if (d) draw_pass(out, d);
+        if (d < frames) {
+            const u32 n = frames - d;
+            i32* y = out + d;
+            i32 eb[frames], nb[frames], cb[frames];
+            flare_pass(eb, n);
+            if (phos_amp) noise_pass<true>(eb, nb, cb, n);
+            else noise_pass<false>(eb, nb, cb, n);
+            squeal_pass(y, n);
+            flame_pass(y, eb, nb, n);
+            if (phos_amp) phos_pass(y, cb, n);
+            if (wood_amp) wood_pass<true>(y, eb, nb, n);
+            else if (puff.v > 4096) wood_pass<false>(y, eb, nb, n);
+        }
+        t += frames;
     }
 };
 }

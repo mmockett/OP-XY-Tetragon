@@ -1,0 +1,29 @@
+scene sh0
+model 1
+slots 57 76 44 64 88 64 30 0
+pad 0 0 0 0
+row 0
+shift 1 0
+choices 0 0 0 0
+pan -40
+level -6
+run 0.1 60
+emit
+scene sh1
+model 1
+slots 57 76 44 64 88 64 30 0
+pad -6 9 0 4
+row 1
+shift 1 1
+choices 0 0 0 0
+
+run 0.1 60
+emit
+scene rowa
+model 1
+slots 57 76 44 64 88 64 30 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

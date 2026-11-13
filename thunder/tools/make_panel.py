@@ -5,7 +5,7 @@ display.cpp places. Run it after changing anything here and commit both.
     python3 thunder/tools/make_panel.py
 
 The screen is a theatre thunder sheet hung in its gallows frame, drawn in
-fine outline. The frame, the batten and its chains never move, so they are
+fine outline. The frame and its fittings never move, so they are
 plain artwork. Everything a control or a hit moves is a bound node, drawn
 here around its own pivot (0, 0); display.cpp places it. Parts that must meet
 share a pivot and a transform. Lines are thin closed ribbons; no path has
@@ -18,11 +18,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 ID = "thunder"
 PATHS, POINTS = 2, 64
 
-# greys: the object's line, its secondary parts, its fine detail
-INK, MID, DIM, FAINT = "#E6E6E6", "#9C9C9C", "#666666", "#3C3C3C"
+# greys: the object's line, its secondary parts
+INK, MID = "#E6E6E6", "#9C9C9C"
 RIG = "#8C8C8C"    # the frame's one grey, bright enough to hold at 1 px
+GRAIN = "#7E7E7E"  # the oak's grain, the dimmest line drawn: still holds on the device
+FLOOR = "#7A7A7A"  # the stage floor the frame stands on
 WOOD = "#181818"   # the oak's dark body, static: GALILEO's wood, so the kits match
 IRON = "#262626"   # the frame's iron fittings, filled as GALILEO's metal
+FELT = "#1C1C1C"   # the damper's felt and the sandbag's canvas, filled so they stand in front
 
 # The palette: 0 black (parked); 1..8 a ramp of greys at the parts' line
 # weight, 1 px; 9 the outline's grey at half weight (it is drawn at scale 2,
@@ -33,7 +36,10 @@ IRON = "#262626"   # the frame's iron fittings, filled as GALILEO's metal
 LINE = 1.0
 LINK_K = 1.3   # display.cpp: link_k
 BEAD_K = 1.15  # display.cpp: bead_k (a small bead still draws 0.7 px)
-RAMP = ["#2E2E2E", "#444444", "#5C5C5C", "#767676", "#909090", "#ACACAC", "#C8C8C8", "#E6E6E6"]
+# The ramp's low steps are fade tails, but parts rest on 3 to 6 too (the
+# damper's felt, the far echoes and arcs, the chain's hanging run), so step 3
+# is already the dimmest grey a 1 px line holds on the device.
+RAMP = ["#3C3C3C", "#5A5A5A", "#7A7A7A", "#8A8A8A", "#9C9C9C", "#B2B2B2", "#CACACA", "#E6E6E6"]
 PALETTE = [("#000000", 1.0)] + [(g, LINE) for g in RAMP] + [
     ("#E6E6E6", LINE / 2), ("#ACACAC", LINE / 2), ("#767676", LINE / 2), ("#4A4A4A", LINE / 2), ("#E6E6E6", 1.6), ("#FFFFFF", 1.0),
     ("#000000", 1.0)]
@@ -44,7 +50,49 @@ def fmt(v):
     return "0" if s in ("-0", "") else s
 
 
+SHARPEST = 150.0   # degrees: the sharpest turn an outline may make
+
+
+def turns(points):
+    """Each corner's turn, degrees."""
+    n, out = len(points), []
+    for i in range(n):
+        (ax, ay), (bx, by), (cx, cy) = points[i - 1], points[i], points[(i + 1) % n]
+        ux, uy, vx, vy = bx - ax, by - ay, cx - bx, cy - by
+        out.append(math.degrees(math.atan2(abs(ux * vy - uy * vx), ux * vx + uy * vy)))
+    return out
+
+
+def blunt(points, cut=0.4):
+    """Each corner sharper than SHARPEST cut across back along both its edges, so
+    the device's mitred join (it has no mitre limit) draws no spike: the one
+    sharp turn becomes two gentle ones, the cut's ends at least 1/8 px apart."""
+    for _ in range(4):
+        out, n, changed = [], len(points), False
+        for i in range(n):
+            p0, p1, p2 = points[i - 1], points[i], points[(i + 1) % n]
+            v1 = (p1[0] - p0[0], p1[1] - p0[1])
+            v2 = (p2[0] - p1[0], p2[1] - p1[1])
+            l1, l2 = math.hypot(*v1), math.hypot(*v2)
+            turn = math.degrees(math.atan2(abs(v1[0] * v2[1] - v1[1] * v2[0]), v1[0] * v2[0] + v1[1] * v2[1]))
+            need = 0.3 / max(1e-6, 2 * math.sin(math.radians(180 - turn) / 2))
+            c = min(max(cut, need), 0.48 * l1, 0.48 * l2, l1 - 0.3, l2 - 0.3)
+            if turn > SHARPEST - 1 and c >= need:
+                out += [(p1[0] - v1[0] / l1 * c, p1[1] - v1[1] / l1 * c), (p1[0] + v2[0] / l2 * c, p1[1] + v2[1] / l2 * c)]
+                changed = True
+            else:
+                out.append(p1)
+        points = out
+        if not changed:
+            break
+    return points
+
+
 def poly(points):
+    """An outline as written (to a hundredth), checked against the device's
+    rules: 3 to 64 points, none within 1/8 px of the next, a closing edge of at
+    least 1/4 px, and no turn sharper than SHARPEST (the device strokes with
+    mitred joins and no mitre limit, so a turn near straight back draws a spike)."""
     out = []
     for p in points:
         q = (round(p[0], 2), round(p[1], 2))
@@ -54,6 +102,12 @@ def poly(points):
         out.pop()
     assert 3 <= len(out) <= 64, len(out)
     assert len(set(out)) == len(out), "repeated point"
+    n = len(out)
+    for i in range(n):
+        (ax, ay), (bx, by) = out[i], out[(i + 1) % n]
+        assert math.hypot(bx - ax, by - ay) >= (0.25 if i == n - 1 else 0.125), ("points merge", i, out[i])
+    sharp = [(i, round(t)) for i, t in enumerate(turns(out)) if t > SHARPEST]
+    assert not sharp, ("turns sharper than SHARPEST", sharp, out[:4])
     return "M" + " L".join(f"{fmt(x)},{fmt(y)}" for x, y in out) + " Z"
 
 
@@ -135,19 +189,49 @@ def wavy(x0, y0, x1, y1, amp, waves, n=24, w=0.4):
 
 
 def frame():
-    # A quiet gallows: a slim oak beam across the top and two posts at the
-    # screen's edges, cropped by it; the batten the sheet is clipped to, hung
-    # from the beam by two iron straps; eye bolts on the posts for the stays
-    # and a cleat on the left post for the chain. One grey, one weight.
-    static([(0, 41), (480, 41), (480, 47), (0, 47)], RIG, LINE, WOOD)
-    for x0 in (2, 470):
-        static([(x0, 47), (x0 + 8, 47), (x0 + 8, 222), (x0, 222)], RIG, LINE, WOOD)
-    static(rect(70, 51, 410, 58, 1.2, 2), RIG, LINE, WOOD)
-    for x in (130, 350):
-        static(rect(x - 2, 46.5, x + 2, 51.5, 0.5, 1), RIG, LINE, IRON)
-    for x in (10 + 4.5, 470 - 4.5):
-        static(ellipse(x, 200, 3.2, 3.2, 12), RIG, LINE, IRON)
-    static([(10, 94), (16, 92.5), (18, 94), (14.5, 96), (14.5, 98), (18, 100), (16, 101.5), (10, 100)], RIG, LINE, IRON)
+    # The gallows, whole inside the screen: an oak beam on two posts, its ends
+    # standing just clear of the posts' outer faces, iron knee plates bolted
+    # across both inside corners, the posts on chamfered feet on the stage
+    # floor. The sheet is clamped straight to the beam's underside (y 58,
+    # where display.cpp hangs it); the eye bolts the stays run to (x 15 and
+    # 465, y 200) and the cleat the chain hangs from (x 17, from y 102) sit on
+    # the posts' inner faces, where display.cpp aims them. One grey, one
+    # weight; the oak's grain a step dimmer and finer.
+    def grain(x0, y0, x1, y1, amp=0.45, waves=1.5, n=24):
+        static(wavy(x0, y0, x1, y1, amp, waves, n, 0.3), GRAIN, 0.6)
+
+    # the stage floor, the one line that runs to the screen's edges
+    static([(0, 219.6), (480, 219.6), (480, 220.4), (0, 220.4)], FLOOR, 0.6)
+    for side in (0, 1):
+        def m(pts):   # mirrored for the right post
+            return [(480 - x, y) for x, y in pts][::-1] if side else pts
+        # the post, from under the beam down to its foot
+        static(m([(7.5, 57), (14, 57), (14, 215), (7.5, 215)]), RIG, LINE, WOOD)
+        static(m([(6, 220), (6, 216.2), (7.2, 215), (14.8, 215), (16, 216.2), (16, 220)]), RIG, LINE, WOOD)
+        # its grain, broken where the knee plate, cleat and eye bolt cover it
+        for y0, y1, x in ((76, 136, 10.6), (128, 192, 11.0)):
+            static(m(wavy(x, y0, x + 0.2, y1, 0.35, 1.2, 20, 0.3)), GRAIN, 0.6)
+    # the beam across the posts' tops, its ends chamfered
+    static([(6, 50.2), (7.2, 49), (472.8, 49), (474, 50.2), (474, 56.8), (472.8, 58), (7.2, 58), (6, 56.8)], RIG, LINE, WOOD)
+    # its grain: long runs a little wavy, staggered so no two lie closer than
+    # about 3 px; the clamps and the damper's bracket cover parts of it
+    for x0, x1, y in ((30, 126, 52.4), (112, 214, 55.2), (200, 296, 52.6), (282, 384, 55.0), (370, 452, 52.5)):
+        grain(x0, y, x1, y + 0.2, 0.45, (x1 - x0) / 64)
+    for side in (0, 1):
+        def m(pts):
+            return [(480 - x, y) for x, y in pts][::-1] if side else pts
+        # the knee plate: an iron triangle across the inside corner, lapping
+        # the post and the beam, a bolt into each
+        static(m([(9, 52.2), (30.5, 52.2), (31, 53), (10, 74), (9, 73.5)]), RIG, LINE, IRON)
+        static(m(ellipse(24, 55.4, 1.5, 1.5, 10)), RIG, LINE, IRON)
+        static(m(ellipse(11.6, 67.4, 1.5, 1.5, 10)), RIG, LINE, IRON)
+        # the eye bolt the stay runs to: an eye with its hole, screwed into the post
+        x = 465 if side else 15
+        static(ellipse(x, 200, 3.2, 3.2, 14), RIG, LINE, IRON)
+        static(ellipse(x, 200, 1.2, 1.2, 8), RIG, 0.8, "#000000")
+    # the horn cleat on the left post's inner face, the chain hung over its foot
+    static([(14, 87), (15.6, 87), (15.6, 89.6), (18.4, 89.6), (18.4, 86.6), (19.5, 85.4), (20.6, 86.6), (20.6, 96.4), (19.5, 97.6),
+            (18.4, 96.4), (18.4, 93.4), (15.6, 93.4), (15.6, 96), (14, 96)], RIG, LINE, IRON)
 
 
 # ---------------------------------------------------------------- bound parts
@@ -164,26 +248,30 @@ def scaled(points, k):
 
 def parts():
     # ---------------- the sheet's own detail (placed from its size; still while it rings)
-    # C-clips holding its top hem to the batten, each with its bolt
+    # C-clips holding its top hem to the beam: a plate on the beam's face, a
+    # narrower jaw gripping the hem, the bolt through it; iron, filled
     for side in ("l", "r", "m"):
-        node(f"clamp_{side}", [(-6, -7), (6, -7), (6, 6), (3, 6), (3, -3), (-3, -3), (-3, 6), (-6, 6)])
+        node(f"clamp_{side}", [(-5.8, -6.2), (-5, -7), (5, -7), (5.8, -6.2), (5.8, -1.4), (4.2, -1.4), (4.2, 4.6), (3.2, 5.8),
+                               (-3.2, 5.8), (-4.2, 4.6), (-4.2, -1.4), (-5.8, -1.4)], fill=IRON)
         node(f"clamp_bolt_{side}", circle=(0, 1.5, 1.7))
     # rivets along its hem and one down each side: few, and rings large
     # enough to read on the device (5 px across)
     for k in range(7):
         node(f"rivet_{k}", circle=(0, 0, 2.6))
     # ---------------- the damper: a felt pad on a lever pivoted on a bracket
-    # hung from the batten; a counterweight on the lever's short end. Pivot
+    # hung from the beam; a counterweight on the lever's short end. Pivot
     # at the bracket's pin; the lever points along +x and turns down.
-    node("damper_bracket", [(-5, -9), (5, -9), (5, 2), (3, 4), (-3, 4), (-5, 2)])
-    node("damper_arm", [(-5, -1.8), (0, -2.2), (32, -1.2), (32, 1.2), (0, 2.2), (-5, 1.8)])
+    node("damper_bracket", [(-5, -9), (5, -9), (5, 2), (3, 4), (-3, 4), (-5, 2)], fill=IRON)
+    # the lever, an iron flat, its counterweight a block on the short end
+    node("damper_arm", [(-11, -2.4), (-10.2, -3.4), (-5.6, -3.4), (-4.8, -2.4), (-4.4, -2), (0, -2.2), (32, -1.2), (32, 1.2), (0, 2.2),
+                        (-4.4, 2), (-4.8, 2.4), (-5.6, 3.4), (-10.2, 3.4), (-11, 2.4)], fill=IRON)
     node("damper_pivot", circle=(0, 0, 2.6))
     # the pad, centred on the lever's end: a backing plate and the felt
     node("damper_plate", rect(-7.5, -12, 7.5, -9.5, 0.6, 1))
-    node("damper_pad", rect(-7, -9.5, 7, 11, 3.5, 2))
-    node("damper_felt_a", line(-4, -4.5, 4, -3.8, 0.4))
-    node("damper_felt_b", line(-4, 0.5, 4, 1.2, 0.4))
-    node("damper_felt_c", line(-4, 5.5, 4, 6.2, 0.4))
+    node("damper_pad", rect(-7, -9.5, 7, 11, 3.5, 2), fill=FELT)
+    node("damper_felt_a", line(-4, -4.5, 4, -3.8, 0.6))
+    node("damper_felt_b", line(-4, 0.5, 4, 1.2, 0.6))
+    node("damper_felt_c", line(-4, 5.5, 4, 6.2, 0.6))
     # ---------------- the stays: wire rope from a grommet at each lower corner
     # out to an eye bolt on its post, each through a turnbuckle (an open
     # frame the wire's screws run into). Along +x, 100 long: display.cpp
@@ -191,14 +279,17 @@ def parts():
     for side in ("l", "r"):
         node(f"stay_{side}", line(0, 0, 100, 0, 0.5, 1))
         node(f"grommet_{side}", circle=(0, 0, 2.8))
-        node(f"buckle_{side}", [(-10, -1.4), (-6.5, -3.4), (6.5, -3.4), (10, -1.4), (10, 1.4), (6.5, 3.4), (-6.5, 3.4), (-10, 1.4)])
+        # the turnbuckle: a threaded rod into each end boss of an open
+        # frame, the wire's screw showing through it
+        up = [(-13, -0.9), (-8.8, -0.9), (-8.2, -2.2), (-6.6, -2.4), (-5.6, -3.4), (5.6, -3.4), (6.6, -2.4), (8.2, -2.2), (8.8, -0.9), (13, -0.9)]
+        node(f"buckle_{side}", up + [(x, -y) for x, y in up[::-1]])
     # ---------------- the rigging sandbag: canvas, a seam, a tied neck, on a
     # rope from a snap hook under the sheet (pivot: the hook's eye)
     node("bag_hook", [(-1.4, 0), (1.4, 0), (2.2, 2), (1.2, 4), (-1.2, 4), (-2.2, 2)])
     node("bag_rope", ribbon([(0, 4), (0.4, 5.5), (0, 7)], 0.9))
     node("bag_neck", rect(-3, 7, 3, 9.5, 0.8, 1))
     node("bag", [(-2.5, 9.5), (2.5, 9.5), (6.5, 12), (9.5, 15.5), (10.5, 19.5), (9.5, 23.5), (6, 25.8), (0, 26.5), (-6, 25.8),
-                 (-9.5, 23.5), (-10.5, 19.5), (-9.5, 15.5), (-6.5, 12)])
+                 (-9.5, 23.5), (-10.5, 19.5), (-9.5, 15.5), (-6.5, 12)], fill=FELT)
     node("bag_seam", line(0, 12.5, 0.5, 25, 0.5, 4))
     # ---------------- the chain: twelve links, alternately flat and edge-on, along +x,
     # authored LINK_K larger than they were and placed that much smaller, so
@@ -224,8 +315,8 @@ def parts():
     node("mallet_cord_a", [along(61, -3.1), along(63.5, -3.1), along(63.5, 3.1), along(61, 3.1)])
     node("mallet_cord_b", [along(69, -3.1), along(71.5, -3.1), along(71.5, 3.1), along(69, 3.1)])
     node("mallet_felt", ellipse(0, 0, 11 * K, 10.4 * K, 28, -43))
-    node("mallet_wrap_a", arc(0, 0, 7.5 * K, 150, 300, 10, 0.4))
-    node("mallet_wrap_b", arc(0, 0, 7.5 * K, -30, 120, 10, 0.4))
+    node("mallet_wrap_a", arc(0, 0, 7.5 * K, 150, 300, 10, 0.6))
+    node("mallet_wrap_b", arc(0, 0, 7.5 * K, -30, 120, 10, 0.6))
     node("mallet_wood", rotate(rect(-6.5 * K, -9.5 * K, 6.5 * K, 9.5 * K, 3, 2), -43))
     node("mallet_rod", rotate(rect(-2.8 * K, -7 * K, 2.8 * K, 8 * K, 1.2, 1), -43))
     node("mallet_ferrule", rotate(rect(-3.8 * K, 9 * K, 3.8 * K, 12.5 * K, 0.6, 1), -43))
@@ -249,7 +340,7 @@ def parts():
     node("shackle_pin", scaled(rect(-2.2, -20, 2.2, -2.8, 1.1, 1), H))
     node("shackle_eye", circle=(0, -23 * H, 3.2 * H))
     node("shackle_nut", scaled(rotate(ellipse(0, 0, 4.6, 4.6, 6), 30), H))
-    node("shackle_strap", scaled(rect(-1.6, -32, 1.6, -26, 0.6, 1), H))
+    node("shackle_strap", scaled(rect(-1.8, -31.4, 1.8, -25.6, 1.2, 2), H), fill=IRON)
 
     # ---------------- FLICK: a strip of spring steel clamped in a turned
     # wooden grip; its tip on the sheet (pivot), the grip up and right

@@ -50,15 +50,15 @@ NODE = 0.552               # a free bar's first nodes, as a share of its half-le
 # subject, struck and path line) at 0.8 of a pixel; the near ring, drawn at
 # about half, takes about 2. Lines between outlines and ribbons (the coupling,
 # the parts' engraving) draw up to about 1.4 across. Greys: F0 subject, C8
-# structure, 96 detail, 64 dim, 50 engraving (the faintest that still shows
-# where a 1 px line falls between pixels).
+# structure, 96 detail, 84 dim, 7A engraving (the faintest a line about a pixel
+# wide still reads at on the device's panel).
 PALETTE = [
     ("#000000", "#000000", 1.0),   # 0 black (a port, a hole)
     ("none", "#F0F0F0", 0.83),     # 1 subject: the head, the striker (paths at 1.15 to 1.25)
     ("none", "#C8C8C8", 1.0),      # 2 structure: rims, stands, the coupling's wires and spring
     ("none", "#969696", 1.0),      # 3 detail; also the nodal lines faintly lit
-    ("none", "#646464", 1.0),      # 4 dim
-    ("none", "#505050", 1.0),      # 5 engraving
+    ("none", "#848484", 1.0),      # 4 dim
+    ("none", "#7A7A7A", 1.0),      # 5 engraving
     ("#2E2E2E", "#969696", 0.9),   # 6 paste: the syahi, felts, bolts
     ("#141414", "#969696", 1.0),   # 7 cloth and dark bodies
     ("none", "#FFFFFF", 0.85),     # 8 struck: the head and the nodal lines lit by a hit
@@ -630,6 +630,154 @@ def wing_nut():
     return ("path", pts + left)
 
 
+# ------------------------------------------------------------------ hardware
+# The parts' own outlines, each one closed path in local px (y down), with the
+# few tells that make them the real thing at the screen's size: a hoop's flange
+# and the ear its tension rod runs through, a lug's casing, a rod's square head
+# on its washer, rubber feet, T-screws on the stands' clamps, a snare's
+# throw-off lever, the tabla's braid and barrel-shaped gatte, the marimba rail's
+# felt, a cymbal stand's tilter, cup washer and wing nut.
+def arcp(cx, cy, r, a0, a1, n, ry=None):
+    """n points along an arc (degrees: 0 along +x, 90 down), both ends included."""
+    ry = r if ry is None else ry
+    return [(cx + r * math.cos(math.radians(a0 + (a1 - a0) * j / (n - 1))),
+             cy + ry * math.sin(math.radians(a0 + (a1 - a0) * j / (n - 1)))) for j in range(n)]
+
+
+def flip_x(points):
+    return [(-x, y) for x, y in points[::-1]]
+
+
+def flip_y(points):
+    return [(x, -y) for x, y in points[::-1]]
+
+
+def hoop(head=False):
+    """A drum's hoop cut through at the rim, the right side, about its node (the
+    head's edge at x -1.5): the flanged wall over the head's collar and, along
+    its top, the ear the tension rod passes through (the rod 4 px out). With
+    head, the rod's square head sits on the ear (the bottom hoop, flipped)."""
+    pts = arcp(-1.7, -2.7, 0.8, 180, 270, 3)
+    if head:
+        pts += [(2.9, -3.5), (2.9, -5.7), (3.3, -6.1), (4.7, -6.1), (5.1, -5.7), (5.1, -3.5)]
+    pts += arcp(5.6, -2.75, 0.75, 270, 450, 4)
+    pts += [(1.0, -2.0), (0.4, -1.4)]
+    pts += arcp(-0.4, 2.7, 0.8, 0, 90, 3) + arcp(-1.7, 2.7, 0.8, 90, 180, 3)
+    return pts
+
+
+def rod():
+    """A tension rod: the shaft down into the lug, its washer on the hoop's ear
+    and the square head a drum key turns."""
+    right = [(0.45, 11.6), (0.45, -3.5), (1.5, -3.5), (1.5, -4.1), (1.1, -4.1), (1.1, -6.0), (0.7, -6.4)]
+    return right + flip_x(right)
+
+
+def lug_casing():
+    """A lug, side on (the right side): flat against the shell, its casing
+    swelling out between the two screws that hold it."""
+    front = [(0.7 + 1.55 * math.cos(math.pi * y / 13.6), y) for y in (-6.0, -4.5, -2.5, 0.0, 2.5, 4.5, 6.0)]
+    return [(-2.25, -5.8), (-1.55, -6.5), (0.25, -6.5)] + front + [(0.25, 6.5), (-1.55, 6.5), (-2.25, 5.8)]
+
+
+def foot(w, h):
+    """A rubber foot: flat on the floor, domed over."""
+    dome = [((w / 2) * math.cos(math.radians(t)), (h / 2 - 0.45) - (h - 0.45) * math.sin(math.radians(t)) ** 0.7)
+            for t in (0, 25, 55, 90, 125, 155, 180)]
+    return [(-w / 2 + 0.45, h / 2), (w / 2 - 0.45, h / 2)] + dome
+
+
+def spur_foot():
+    """A spur's rubber foot, a bell standing on the floor."""
+    right = [(2.3, 1.6), (2.0, 0.9), (1.35, 0.15), (1.1, -1.15), (0.6, -1.6)]
+    return [(-x, y) for x, y in right[::-1]] + right
+
+
+def clamp_screw(w, h, r):
+    """A stand's clamp, w by h, its corners rounded by r, with a T-screw out of
+    its right side: the stem and the grip across it."""
+    x = w / 2
+    screw = [(x, -0.6), (x + 1.3, -0.6), (x + 1.3, -1.6), (x + 1.7, -2.0), (x + 2.1, -2.0), (x + 2.5, -1.6),
+             (x + 2.5, 1.6), (x + 2.1, 2.0), (x + 1.7, 2.0), (x + 1.3, 1.6), (x + 1.3, 0.6), (x, 0.6)]
+    return (arcp(x - r, -h / 2 + r, r, 270, 360, 3) + screw + arcp(x - r, h / 2 - r, r, 0, 90, 3)
+            + arcp(-x + r, h / 2 - r, r, 90, 180, 3) + arcp(-x + r, -h / 2 + r, r, 180, 270, 3))
+
+
+def lever():
+    """The snare's throw-off: a lever on its pivot (the node's origin), tapering
+    up to a thumb tab."""
+    right = [(1.6, -0.2), (1.25, -4.5), (0.9, -8.3), (1.6, -9.3)]
+    return right + arcp(0, -10.0, 1.6, 0, -180, 7)[1:-1] + [(-x, y) for x, y in right[::-1]] + arcp(0, -0.2, 1.6, 180, 0, 7)[1:-1]
+
+
+def butt_end():
+    """The snare's butt end: a plate on the shell, its fine-tuning knob under it."""
+    right = [(1.2, -4.0), (1.8, -3.4), (1.8, 2.0), (1.2, 2.6), (0.5, 2.6), (0.5, 3.6), (1.2, 3.6), (1.7, 4.1), (1.7, 5.5), (1.2, 6.0)]
+    return right + [(-x, y) for x, y in right[::-1]]
+
+
+def barrel(w, h):
+    """A gatta: a wooden block turned as a little barrel, its ends seen from just above."""
+    right = [(w / 2 - 1.0, -h / 2 + 0.1), (w / 2 - 0.55, -h / 2 + 0.75), (w / 2 - 0.1, -h / 4.4), (w / 2 + 0.1, 0),
+             (w / 2 - 0.1, h / 4.4), (w / 2 - 0.55, h / 2 - 0.75), (w / 2 - 1.0, h / 2 - 0.1)]
+    return right + [(1.0, h / 2), (-1.0, h / 2)] + [(-x, y) for x, y in right[::-1]] + [(-1.0, -h / 2), (1.0, -h / 2)]
+
+
+def braid(r, lobes=5, depth=0.24, n=30):
+    """The gajra cut through: a braid of leather, its strands' ridges round it."""
+    return [((r + depth * math.cos(lobes * t)) * math.cos(t), (r + depth * math.cos(lobes * t)) * math.sin(t))
+            for t in (2 * math.pi * j / n for j in range(n))]
+
+
+def cushion_ring(w, h):
+    """The tabla's ring cushion side on: a stuffed ring, round at either end."""
+    r = h / 2
+    return arcp(w / 2 - r, 0, r, -90, 90, 7) + arcp(-w / 2 + r, 0, r, 90, 270, 7)
+
+
+def pin():
+    """A marimba frame's post: the pin the bar's cord loops over, its head over the cord's groove."""
+    right = [(1.0, 5.5), (1.0, -3.0), (0.65, -3.0), (0.65, -3.9), (1.4, -3.9), (1.4, -4.9), (0.9, -5.5)]
+    return right + [(-x, y) for x, y in right[::-1]]
+
+
+def felt_rail(w, h):
+    """The frame's rail under the bars' nodes, cut across, the felt strip along its top."""
+    x, y = w / 2, h / 2
+    right = [(3.4, -y), (3.8, -y + 0.4), (3.8, -y + 1.35), (x - 0.6, -y + 1.35), (x, -y + 1.95), (x, y - 0.6), (x - 0.6, y)]
+    return right + [(-a, b) for a, b in right[::-1]]
+
+
+def cup_washer():
+    """The cup washer the cymbal's lower felt sits in, cut through: dished up at its rim."""
+    right = [(1.8, 0.1), (4.1, -0.3), (5.3, -1.2), (6.0, -1.0), (4.6, 0.4), (2.0, 0.9)]
+    return right + [(-x, y) for x, y in right[::-1]]
+
+
+def tilter():
+    """A cymbal stand's tilter: the round ratchet housing it locks at, on the
+    block that clamps the stand's top tube (spanning 10 px down, about its node)."""
+    cx, cy, r = 0.0, -1.4, 3.6
+    block = [(2.6, 1.2), (2.6, 4.4), (2.0, 5.0), (-2.0, 5.0), (-2.6, 4.4), (-2.6, 1.2)]
+    a0 = math.degrees(math.atan2(1.2 - cy, -2.6 - cx))
+    return block + arcp(cx, cy, r, a0 + 8, 540 - a0 - 8, 13)
+
+
+def plan_wing_nut():
+    """A wing nut from above: the boss and its two wings, flared at their tips."""
+    pts = arcp(0, 0, 2.9, 196, 344, 6)
+    pts += [(4.4, -0.85)] + arcp(6.2, 0, 1.3, 270, 450, 6) + [(4.4, 0.85)]
+    pts += arcp(0, 0, 2.9, 16, 164, 6)
+    pts += [(-4.4, 0.85)] + arcp(-6.2, 0, 1.3, 90, 270, 6) + [(-4.4, -0.85)]
+    return pts
+
+
+def ear():
+    """A drum's hoop from above at a tension rod: the ear, round at its outer end
+    (local -y, outward), reaching in over the hoop (+y)."""
+    return arcp(0, 0.6, 2.1, 180, 360, 7) + [(2.1, 4.7), (1.6, 5.2), (-1.6, 5.2), (-2.1, 4.7)]
+
+
 def tripod(n, prefix, top, floor, spread, models, w=2.4):
     """A stand's tripod: a collar, two legs splayed either way, a third leg behind
     (back), braces from the tube to the legs, and rubber feet."""
@@ -638,8 +786,8 @@ def tripod(n, prefix, top, floor, spread, models, w=2.4):
         sx = -1 if side == "l" else 1
         n.append(Node(f"{prefix}_leg_{side}", leg(sx * spread, floor - top - 1.5, w), 0, top + 1.5, BODY, True, models))
         n.append(Node(f"{prefix}_brace_{side}", leg(sx * (spread * .52 - 2.6), (floor - top) * .52 - 9, 1.3), sx * 2.6, top + 9, BODY, True, models))
-        n.append(Node(f"{prefix}_foot_{side}", rect(6, 2.6, 1.0), sx * (spread + 1), floor - 1.3, PASTE, True, models))
-    n.append(Node(f"{prefix}_collar", rect(8, 6, 1.6), 0, top, CHROME, True, models))
+        n.append(Node(f"{prefix}_foot_{side}", poly(foot(6, 2.6)), sx * (spread + 1), floor - 1.3, PASTE, True, models))
+    n.append(Node(f"{prefix}_collar", poly(clamp_screw(8, 6, 1.6)), 0, top, CHROME, True, models))
 
 
 def fixed_parts():
@@ -662,21 +810,21 @@ def fixed_parts():
         sx = -1 if side == "l" else 1
         n.append(Node(f"plan_rail_{side}", rect(10, 124, 2), sx * NODE * 62, 0, BODY, True, ["BAR"], "plan", True))
         n.append(Node(f"cord_{side}", line(0, -62, 0, 62, 0.6), sx * NODE * 62, 0, MID, models=["BAR"], frame="plan", back=True))
-        n.append(Node(f"post_{side}", rect(2.4, 11, 0.8), sx * NODE * A, 15.5, CHROME, True, ["BAR"], back=True))
+        n.append(Node(f"post_{side}", poly(pin()), sx * NODE * A, 15.5, CHROME, True, ["BAR"], back=True))
         h = (F["BAR"] - 28) / 2   # centred on its middle: a path reaches 64 px either way
         n.append(Node(f"trestle_{side}", ("path", ribbon([(-sx * 7.5, -h), (sx * 7.5, h)], 3.0)), sx * (NODE * A + 7.5), 28 + h, BODY, True, ["BAR"], back=True))
-        n.append(Node(f"bar_foot_{side}", rect(7, 2.6, 1.0), sx * (NODE * A + 15), F["BAR"] - 1.3, PASTE, True, ["BAR"], back=True))
+        n.append(Node(f"bar_foot_{side}", poly(foot(7, 2.6)), sx * (NODE * A + 15), F["BAR"] - 1.3, PASTE, True, ["BAR"], back=True))
     n.append(Node("stretcher", line(-44, 0, 44, 0, 2.4), 0, F["BAR"] - 9, BODY, True, ["BAR"], back=True))
     # The plan's dark bodies: a drum's hoop and head, the snare's muffling ring,
     # a tabla's braid and head, the cymbal, the bar.
-    n.append(Node("plan_hoop", circle(R + 7), 0, 0, BODY, True, DRUMS, "plan", True))
+    n.append(Node("plan_hoop", circle(R + 4.5), 0, 0, BODY, True, DRUMS, "plan", True))
     n.append(Node("plan_muffle", circle(R), 0, 0, CHROME, True, ["SNARE"], "plan", True))
     n.append(Node("plan_head", circle(R), 0, 0, CLOTH, True, DRUMS + ["TABLA"], "plan", True))
     n.append(Node("plan_rim", circle(R * TP + 4.5), 0, 0, BODY, True, ["TABLA"], "plan", True))
     n.append(Node("plan_tabla_head", circle(R * TP), 0, 0, CLOTH, True, ["TABLA"], "plan", True))
     for i, (r, shade) in enumerate(((R * TP * .44, PASTE), (R * TP * .33, CLOTH), (R * TP * .21, BODY))):
         n.append(Node(f"syahi_{i}", circle(r), 0, 0, shade, True, ["TABLA"], "plan", True))
-    n.append(Node("plan_cymbal", circle(R * CYMBAL), 0, 0, CLOTH, True, ["METAL"], "plan", True))
+    n.append(Node("plan_cymbal", circle(R + 4.5), 0, 0, CLOTH, True, ["METAL"], "plan", True))
     n.append(Node("plan_bar", rect(124, 28, 3), 0, -BAR_Y, BODY, True, ["BAR"], "plan", True))
     n.append(Node("plan_twin", rect(118, 26, 3), 0, BAR_Y, BODY, True, ["BAR"], "plan", True))
     # The keys either side on the frame: the next one up the keyboard, shorter,
@@ -692,17 +840,18 @@ def fixed_parts():
     # A drum's hoops, lugs and rods.
     for side in ("l", "r"):
         sx = -1 if side == "l" else 1
-        n.append(Node(f"hoop_t{side}", rect(5, 7, 1.5), sx * (A + 1.5), 0, CHROME, True, DRUMS))
-        n.append(Node(f"hoop_b{side}", rect(5, 7, 1.5), sx * (A + 1.5), 48, CHROME, True, DRUMS))
-        n.append(Node(f"lug_{side}", rect(4.5, 13, 1.5), sx * (A + 5.5), 17, CHROME, True, DRUMS))
-        n.append(Node(f"lug2_{side}", rect(4.5, 13, 1.5), sx * (A + 5.5), 60, CHROME, True, ["BOOM", "TOM", "WIRE"]))
-        n.append(Node(f"rod_{side}", line(0, -6, 0, 12, 0.6), sx * (A + 5.5), 0, MID, models=DRUMS))
+        side_of = (lambda pts: pts) if sx > 0 else flip_x
+        n.append(Node(f"hoop_t{side}", poly(side_of(hoop())), sx * (A + 1.5), 0, CHROME, True, DRUMS))
+        n.append(Node(f"hoop_b{side}", poly(side_of(flip_y(hoop(head=True)))), sx * (A + 1.5), 48, CHROME, True, DRUMS))
+        n.append(Node(f"lug_{side}", poly(side_of(lug_casing())), sx * (A + 5.5), 17, CHROME, True, DRUMS))
+        n.append(Node(f"lug2_{side}", poly(side_of(lug_casing())), sx * (A + 5.5), 60, CHROME, True, ["BOOM", "TOM", "WIRE"]))
+        n.append(Node(f"rod_{side}", poly(rod()), sx * (A + 5.5), 0, MID, models=DRUMS))
     # BOOM: spurs down to the floor (the display stretches them as SHELL deepens
     # the drum), the port in the shell's side and the air it pushes, a click pad.
     for side in ("l", "r"):
         sx = -1 if side == "l" else 1
         n.append(Node(f"spur_{side}", leg(sx * 14, 40, 2.4), sx * (A + 3), 66, BODY, True, ["BOOM"]))
-        n.append(Node(f"spur_tip_{side}", rect(4.2, 3.2, 1.2), 0, 0, PASTE, True, ["BOOM"]))
+        n.append(Node(f"spur_tip_{side}", poly(spur_foot()), 0, 0, PASTE, True, ["BOOM"]))
     n.append(Node("port", circle(4.6), -(A + 1), 50, BLACK, True, ["BOOM"]))
     for i in range(3):
         n.append(Node(f"air_{i}", arc(12 + 10 * i, 125, 235, 0.7, 14), -(A + 1), 50, [LINE, MID, DIM][i], models=["BOOM"]))
@@ -712,9 +861,8 @@ def fixed_parts():
     # stand: the basket's arms under the bottom hoop, the post, a tripod.
     # The strainer's lever turns about its foot, below the lug: SNAP throws it
     # from hanging out (the wires loose) up against the shell (drawn tight).
-    lever = [(x, y - 5.2) for x, y in rect(3.2, 12.4, 1.4)[1]]
-    n.append(Node("strainer", poly(lever), A + 5.5, 37, CHROME, True, ["SNARE"]))
-    n.append(Node("butt", rect(4, 8, 1.2), -(A + 6), 30, CHROME, True, ["SNARE"]))
+    n.append(Node("strainer", poly(lever()), A + 5.5, 37, CHROME, True, ["SNARE"]))
+    n.append(Node("butt", poly(butt_end()), -(A + 6), 30, CHROME, True, ["SNARE"]))
     n.append(Node("oring_l", circle(2.6), 0, -1.5, MARK, True, ["SNARE"]))
     n.append(Node("oring_r", circle(2.6), 0, -1.5, MARK, True, ["SNARE"]))
     sb = DEPTH["SNARE"] + 4
@@ -731,28 +879,28 @@ def fixed_parts():
     for side in ("l", "r"):
         sx = -1 if side == "l" else 1
         n.append(Node(f"leg_{side}", leg(sx * 12, F["TOM"] - 58, 2.2), sx * (A + 6), 58, BODY, True, ["TOM"]))
-        n.append(Node(f"leg_foot_{side}", rect(5, 2.6, 1.0), sx * (A + 18), F["TOM"] - 1.3, PASTE, True, ["TOM"]))
+        n.append(Node(f"leg_foot_{side}", poly(foot(5, 2.6)), sx * (A + 18), F["TOM"] - 1.3, PASTE, True, ["TOM"]))
     n.append(Node("plan_second", circle(R * 0.94), 0, 0, DIM, models=["TOM"], frame="plan"))
     # BOUNCE: a practice drum on a tripod stand.
     n.append(Node("post", leg(0, 34, 2.8), 0, DEPTH["BOUNCE"] + 4, BODY, True, ["BOUNCE"]))
-    n.append(Node("pad_tilt", rect(7, 6, 1.8), 0, DEPTH["BOUNCE"] + 6, CHROME, True, ["BOUNCE"]))
+    n.append(Node("pad_tilt", poly(clamp_screw(7, 6, 1.8)), 0, DEPTH["BOUNCE"] + 6, CHROME, True, ["BOUNCE"]))
     tripod(n, "bounce", DEPTH["BOUNCE"] + 40, F["BOUNCE"], 32, ["BOUNCE"])
     # WIRE: the thunder drum stands in a frame: two legs splayed from brackets
     # under the lower lugs down to the floor, on rubber feet; the spring's clamp at its end.
     for side in ("l", "r"):
         sx = -1 if side == "l" else 1
-        n.append(Node(f"frame_bracket_{side}", rect(6, 5, 1.5), sx * (A + 6), 70, CHROME, True, ["WIRE"]))
+        n.append(Node(f"frame_bracket_{side}", poly(clamp_screw(6, 5, 1.5) if sx > 0 else flip_x(clamp_screw(6, 5, 1.5))), sx * (A + 6), 70, CHROME, True, ["WIRE"]))
         n.append(Node(f"frame_leg_{side}", leg(sx * 13, F["WIRE"] - 72, 2.4), sx * (A + 6), 72, BODY, True, ["WIRE"]))
-        n.append(Node(f"frame_foot_{side}", rect(7, 2.6, 1.0), sx * (A + 20), F["WIRE"] - 1.3, PASTE, True, ["WIRE"]))
+        n.append(Node(f"frame_foot_{side}", poly(foot(7, 2.6)), sx * (A + 20), F["WIRE"] - 1.3, PASTE, True, ["WIRE"]))
     n.append(Node("clamp", rect(12, 5, 1.5), 0, 0, CHROME, True, ["WIRE"]))
     n.append(Node("plan_boss", circle(6), 0, 0, CHROME, True, ["WIRE"], "plan"))
     n.append(Node("plan_coil", circle(14), 0, 0, MID, models=["WIRE"], frame="plan"))
     # TABLA: the cushion it sits in on the floor, the braid at the rim, the gatte under the straps.
-    n.append(Node("cushion", rect(124, 12, 4.5), 0, F["TABLA"] - 6, BODY, True, ["TABLA"]))
-    n.append(Node("braid_l", circle(3.4), -(TABLA_A + 2), 1, PASTE, True, ["TABLA"]))
-    n.append(Node("braid_r", circle(3.4), TABLA_A + 2, 1, PASTE, True, ["TABLA"]))
+    n.append(Node("cushion", poly(cushion_ring(124, 12)), 0, F["TABLA"] - 6, BODY, True, ["TABLA"]))
+    n.append(Node("braid_l", poly(braid(3.4)), -(TABLA_A + 2), 1, PASTE, True, ["TABLA"]))
+    n.append(Node("braid_r", poly(braid(3.4)), TABLA_A + 2, 1, PASTE, True, ["TABLA"]))
     for i in range(5):
-        n.append(Node(f"gatte_{i}", rect(5.5, 12, 2.2), 0, 0, CHROME, True, ["TABLA"]))
+        n.append(Node(f"gatte_{i}", poly(barrel(5.5, 12)), 0, 0, CHROME, True, ["TABLA"]))
     n.append(Node("kinar", circle(R * TP * 0.86), 0, 0, DIM, models=["TABLA"], frame="plan"))
     for i in range(16):
         t = math.radians(360 * i / 16 + 11.25)
@@ -764,7 +912,7 @@ def fixed_parts():
     # the bracket holding the resonator, its stopper; the wood's grain.
     for side in ("l", "r"):
         sx = -1 if side == "l" else 1
-        n.append(Node(f"rail_{side}", rect(11, 7.5, 2), sx * NODE * A, 24.5, BODY, True, ["BAR"]))
+        n.append(Node(f"rail_{side}", poly(felt_rail(11, 7.5)), sx * NODE * A, 24.5, BODY, True, ["BAR"]))
         n.append(Node(f"hole_{side}", circle(2.1), 0, 0, MID, models=["BAR"]))
         n.append(Node(f"cord_end_{side}", circle(1.0), 0, 0, MARK, True, ["BAR"]))
     n.append(Node("bracket", line(-NODE * A + 5, 0, NODE * A - 5, 0, 1.8), 0, 25, CHROME, True, ["BAR"]))
@@ -793,9 +941,9 @@ def fixed_parts():
     n.append(Node("sleeve", rect(3.0, 9, 0.8), 0, 0, PASTE, True, ["METAL"]))
     n.append(Node("felt_top", rect(10, 3.6, 1.5), 0, 0, PASTE, True, ["METAL"]))
     n.append(Node("felt_bottom", rect(10, 3.6, 1.5), 0, 0, PASTE, True, ["METAL"]))
-    n.append(Node("washer", rect(12, 1.6, 0.6), 0, 0, CHROME, True, ["METAL"]))
+    n.append(Node("washer", poly(cup_washer()), 0, 0, CHROME, True, ["METAL"]))
     n.append(Node("nut", wing_nut(), 0, 0, CHROME, True, ["METAL"]))
-    n.append(Node("tilter", rect(7.5, 10, 2), 0, 9, CHROME, True, ["METAL"]))
+    n.append(Node("tilter", poly(tilter()), 0, 9, CHROME, True, ["METAL"]))
     n.append(Node("tilt_key", circle(2.3), 5.6, 8, CHROME, True, ["METAL"]))
     n.append(Node("height_clamp", rect(8, 6, 1.6), 0, 52, CHROME, True, ["METAL"]))
     n.append(Node("height_key", circle(2.3), 6, 52, CHROME, True, ["METAL"]))
@@ -810,13 +958,13 @@ def fixed_parts():
         n.append(Node(f"groove_{i}", circle(C * (0.37 + 0.1 * i)), 0, 0, MID, models=["METAL"], frame="plan"))
     n.append(Node("plan_cup", circle(C * 0.24), 0, 0, PASTE, True, ["METAL"], "plan"))
     n.append(Node("plan_felt", circle(5.5), 0, 0, PASTE, True, ["METAL"], "plan"))
-    n.append(Node("plan_nut", rect(15, 4, 1.8), 0, 0, CHROME, True, ["METAL"], "plan"))
+    n.append(Node("plan_nut", poly(plan_wing_nut()), 0, 0, CHROME, True, ["METAL"], "plan"))
     n.append(Node("plan_hole", circle(2.6), 0, 0, CHROME, True, ["METAL"], "plan"))
     for i in range(6):
         n.append(Node(f"rivet_{i}", circle(2.0), 0, 0, MARK, True, ["METAL"], "plan"))
     # A drum's lugs from above.
     for i in range(8):
-        n.append(Node(f"plan_lug_{i}", rect(5, 6.5, 1.8), 0, 0, CHROME, True, DRUMS, "plan"))
+        n.append(Node(f"plan_lug_{i}", poly(ear()), 0, 0, CHROME, True, DRUMS, "plan"))
     n.append(Node("collar", circle(R * 0.9), 0, 0, FAINT, models=DRUMS, frame="plan"))
     # BOUNCE: the stick's marks from above, one per strike.
     for i in range(8):
@@ -839,23 +987,59 @@ def fixed_parts():
 
 
 # ------------------------------------------------------------------ writers
+def restart(points):
+    """The same loop started where its closing edge is longest on an axis, as
+    view.hpp's outline() does: the device draws a short closing edge (a ribbon's
+    end) as a sliver along the next."""
+    n = len(points)
+    def span(a, b):
+        return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
+    best = max(range(n), key=lambda i: (span(points[i - 1], points[i]), -i))
+    return points[best:] + points[:best]
+
+
 def svg_shape(node, index):
     kind, data = node.shape
+    if kind == "path":
+        data = restart(data)
     p = PALETTE[node.shade]
     fill = p[0] if node.fill else "none"
     stroke, width = p[1], p[2]
-    tid = f'id="{ID}_node_{index}" transform="matrix(1 0 0 1 640 320)"'
+    tid = f'id="{ID}_node_{index}"'   # the display places every node each frame
     if kind == "circle":
         return f'<circle {tid} cx="0" cy="0" r="{fmt(data)}" fill="{fill}" stroke="{stroke}" stroke-width="{fmt(width)}"/>'
-    return f'<path {tid} d="{path_d(data)}" fill="{fill}" stroke="{stroke}" stroke-width="{fmt(width)}" stroke-linejoin="round"/>'
+    return f'<path {tid} d="{path_d(data)}" fill="{fill}" stroke="{stroke}" stroke-width="{fmt(width)}"/>'
 
 
-def check_outline(points, what):
-    assert len(points) <= 64, f"{what}: {len(points)} points"
+SHARPEST = 150.0   # degrees: the sharpest turn a fixed part's outline may make
+SHARP = []         # the parts that turn sharper, reported and refused
+
+
+def turns(points):
+    """Each point's turn in degrees (0 straight on, 180 straight back)."""
+    out, n = [], len(points)
+    for i in range(n):
+        p0, p1, p2 = points[i - 1], points[i], points[(i + 1) % n]
+        v1, v2 = (p1[0] - p0[0], p1[1] - p0[1]), (p2[0] - p1[0], p2[1] - p1[1])
+        out.append(math.degrees(math.atan2(abs(v1[0] * v2[1] - v1[1] * v2[0]), v1[0] * v2[0] + v1[1] * v2[1])))
+    return out
+
+
+def check_outline(points, what, sharp=True):
+    """The device's rules for a path, as written (to the artwork's decimals): 3 to
+    64 points, each an eighth of a pixel from the next, the closing edge a quarter,
+    within 64 px of the node; and (sharp) no turn past SHARPEST, which the device
+    strokes with a mitre and no limit: a spike."""
+    points = [(float(fmt(x)), float(fmt(y))) for x, y in points]
+    assert 3 <= len(points) <= 64, f"{what}: {len(points)} points"
     for i, a in enumerate(points):
         b = points[(i + 1) % len(points)]
         assert abs(a[0] - b[0]) >= 0.125 or abs(a[1] - b[1]) >= 0.125, f"{what}: points {i} too close"
         assert all(abs(v) <= 64 for v in a), f"{what}: beyond 64 px"
+    a, b = points[-1], points[0]
+    assert max(abs(a[0] - b[0]), abs(a[1] - b[1])) >= 0.25, f"{what}: closing edge under a quarter pixel"
+    if sharp:
+        SHARP.extend((what, i, round(t)) for i, t in enumerate(turns(points)) if t > SHARPEST)
 
 
 def header_block():
@@ -894,19 +1078,20 @@ def main():
     # reshaping outlines, then everything drawn over them.
     for i, node in enumerate(parts):
         if node.shape[0] == "path":
-            check_outline(node.shape[1], node.name)
+            check_outline(restart(node.shape[1]), node.name)
         if node.back:
             svg.append(svg_shape(node, first + i))
     for p in range(PATHS):
         pts = [(-32 + i, 0.0) for i in range(32)] + [(31 - i, 1.0) for i in range(32)]
-        svg.append(f'<path id="{ID}_node_{p}" transform="matrix(1 0 0 1 640 320)" d="{path_d(pts)}" fill="none" '
-                   f'stroke="{PALETTE[SUBJECT][1]}" stroke-width="{PALETTE[SUBJECT][2]}" stroke-linejoin="round"/>')
+        svg.append(f'<path id="{ID}_node_{p}" d="{path_d(pts)}" fill="none" '
+                   f'stroke="{PALETTE[SUBJECT][1]}" stroke-width="{PALETTE[SUBJECT][2]}"/>')
     for i, node in enumerate(parts):
         if not node.back:
             svg.append(svg_shape(node, first + i))
     for i, (fill, stroke, width) in enumerate(PALETTE):
         svg.append(f'<circle id="{ID}_palette_{i}" cx="640" cy="0" r="1" fill="{fill if fill != "none" else "#000000"}" stroke="{stroke}" stroke-width="{fmt(width)}"/>')
     svg.append("</g>")
+    assert not SHARP, f"turns sharper than {SHARPEST:g} degrees: {SHARP}"
     (HERE / "panel.svg.fragment").write_text("\n".join(svg) + "\n")
     # ---- art.h
     h = ["#pragma once",
@@ -972,7 +1157,7 @@ def main():
         mids[m] = round((min(ys) + max(ys)) / 2)
         shells[m] = tuple(centred(kf, mids[m]) for kf in shells[m])
         for kf in shells[m]:
-            check_outline(kf, m + " shell")
+            check_outline(kf, m + " shell", sharp=False)   # view.hpp's outline() blunts these
     h.append("// Where each shell's node sits below the head's centre, px at TUNE 0 (its points are centred on it).")
     h.append("const int shell_mid[8] = {" + ", ".join(str(mids[m]) for m in from_models) + "};")
     h.append(f"const i16 shell[8][2][{count}][2] = {{")

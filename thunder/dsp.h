@@ -57,23 +57,26 @@ inline i32 frac2(i32 l) {
     const u32 v = pow2(l + 31 * octave);
     return v > 0x7fffffffu ? one : static_cast<i32>(v);
 }
-// log2 of a positive integer, Q16 (note-on work: two searches of the exp2 table).
+// log2 of a positive integer, Q16: the exp2 table's step under it, then the
+// rest of the way as ln(1 + x) ~ x (under half a unit off).
 inline i32 log2q(u32 x) {
     if (!x) return -32 * octave;
+    // the top bit's place, in five halvings
     u32 n = 0, y = x;
-    while (y >= 2u) { y >>= 1; ++n; }
+    if (y >> 16) { y >>= 16; n += 16; }
+    if (y >> 8) { y >>= 8; n += 8; }
+    if (y >> 4) { y >>= 4; n += 4; }
+    if (y >> 2) { y >>= 2; n += 2; }
+    if (y >> 1) n += 1;
     const u32 m = n <= 30 ? x << (30 - n) : x >> (n - 30);   // the mantissa, Q30
-    u32 lo = 0, hi = 256;
-    while (hi - lo > 1) {
-        const u32 mid = (lo + hi) >> 1;
-        if (tables::exp2[mid] <= m) lo = mid; else hi = mid;
-    }
-    const u32 a = tables::exp2[lo], d = tables::exp2[lo + 1] - a;
-    u32 rl = 0, rh = 256;
-    while (rh - rl > 1) {
-        const u32 mid = (rl + rh) >> 1;
-        if (a + ((d * mid) >> 8) <= m) rl = mid; else rh = mid;
-    }
+    // the last exp2 entry at or under it: from the table's guess for its top
+    // eight bits, at most two steps on
+    u32 lo = tables::log2_start[(m >> 22) & 0xffu];
+    while (tables::exp2[lo + 1] <= m) ++lo;
+    // (m - a) / a in 1/65536 octaves: (m - a) 2^(-lo / 256) / 2^30 / ln 2 x 65536
+    const i32 t = multiply(static_cast<i32>((m - tables::exp2[lo]) << 8), static_cast<i32>(tables::exp2[256 - lo] >> 1));
+    u32 rl = static_cast<u32>(multiply(t & ~0x7f, 94548 << 8)) >> 14;   // (t x 1/ln 2, as mul16 does it)
+    if (rl > 255) rl = 255;
     return static_cast<i32>(n * 65536u + lo * 256u + rl);
 }
 // exp(-x), Q31, for x = 2^(lx / 65536).

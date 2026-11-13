@@ -1,0 +1,72 @@
+scene RATCHETd
+model 14
+slots 51 38 57 76 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RATCHET00
+model 14
+slots 0 38 57 76 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RATCHET0127
+model 14
+slots 127 38 57 76 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RATCHET10
+model 14
+slots 51 0 57 76 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RATCHET1127
+model 14
+slots 51 127 57 76 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RATCHET20
+model 14
+slots 51 38 0 76 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RATCHET2127
+model 14
+slots 51 38 127 76 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RATCHET30
+model 14
+slots 51 38 57 0 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene RATCHET3127
+model 14
+slots 51 38 57 127 100 47 0 0
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

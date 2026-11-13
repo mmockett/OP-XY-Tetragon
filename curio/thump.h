@@ -13,12 +13,34 @@ struct Tone {
     i32 level() {
         v = mul(v, vk);
         // The attack is over in a few ms: then it costs nothing.
-        if (a) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
+        if (CURIO_UNLIKELY(a)) { a = mul(a, ak); if (a < 64 && a > -64) a = 0; }
         return v - a;
     }
     // Adds a strike of amplitude g (Q28) with decay k and attack decay ka.
     void hit(i32 g, i32 k, i32 ka) { v += g; a += g; vk = k; ak = mul(k, ka); }
 };
+// A tone at its own pitch through n samples, added into y: ph += inc and
+// y += level() sine(ph) each sample, its state held in registers.
+static __attribute__((noinline)) inline void tone_into(Tone& o, i32* y, u32 n, u32 in) {
+    // Each sample's table address is found a sample ahead, so the address
+    // unit never waits on it.
+    u32 ph = o.ph + in;
+    const opxy::i16* p = table::sine + (ph >> 20);
+    i32 v = o.v, a = o.a;
+    const i32 vk = o.vk, ak = o.ak;
+    for (u32 j = 0; j < n; ++j) {
+        const i32 s = static_cast<i32>(*p) << 16;
+        ph += in;
+        p = table::sine + (ph >> 20);
+        v = mul(v, vk);
+        a = mul(a, ak);   // the attack runs out on its own
+        y[j] += mul(v - a, s);
+    }
+    o.ph = ph - in;
+    o.v = v;
+    o.a = a;
+}
+inline void tone_at(Tone& o, i32* y, u32 n) { tone_into(o, y, n, o.inc); }
 
 // --------------------------------------------------------------------- BALL
 // A ball dropped on a stretched hide, bouncing to rest: each bounce strikes
@@ -31,14 +53,19 @@ struct Ball {
     Tone tone[2];
     i32 sweep[2], sdi[2];
     u32 inc0, inc_edge[3], incf, inc190, incp;
-    i32 sweepk;
+    i32 sweepk, sweepk64;   // the sweep's fall a sample, and over a block
     u32 ph1, ph2, ph3, phf, ph190, php;
+    // The drop's and the edge's half-rate increments now and their steps:
+    // the drop's rise is planned at each block's ends and glided between.
+    u32 fd, fe[3];
+    i32 dfd, dfe[3];
     Env edge, fl, clk, ping;
     i32 clk_lp, clk_a;
     i32 tau_us, attk;
     i32 drive, undrive, follow, follow_a, buzz_gain;
     Res buzz;
     ResK buzzk;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void strike_at(i32 amp) {
         // The skin's pitch rises a little with each bounce at an edge strike.
@@ -88,27 +115,33 @@ struct Ball {
         clk_lp = 0;
         buzz = Res();
         follow = 0;
+        hlast = 0;
         // The skin: 30..120 Hz.
         inc0 = inc(hz(30) + 2 * c[2] + tune);
         tau_us = 60000 + sc(1100000, pw(c[4], C(1.6)));
         attk = decay(1200);
         sweepk = decay(22000);
+        sweepk64 = sweepk;
+        for (int i = 0; i < 6; ++i) sweepk64 = mul(sweepk64, sweepk64);
         fl.k = decay(static_cast<u32>(60000 + sc(250000, c[5])));
         inc190 = inc(hz(190));
         incp = inc(hz(3150) + tune);
         ping.k = decay(60000);
-        clk.k = decay(static_cast<u32>(800 + sc(6000, 4095 - c[3])));
-        clk_a = pole(lg2(static_cast<u32>(250 + sc(12000, mul(c[3], c[3] << 19)))));
+        // Everything runs at half the rate: the click's decay is a half-rate
+        // step's, its low-pass an octave up.
+        const i32 clk_tau = 800 + sc(6000, 4095 - c[3]);
+        clk.k = decay(static_cast<u32>(clk_tau >> 1));
+        clk_a = pole(lg2(static_cast<u32>(250 + sc(12000, mul(c[3], c[3] << 19)))) + (1 << 12));
         // Grit: a tanh drive and a buzz of the snare chain.
         drive = (1 << 24) + sc(7 << 24, pw(c[7], C(1.5)));   // Q24: 1 + 7 grit^1.5, gradual
         {
             const i32 g = drive >> 12;                      // Q12, 1..8
-            const i32 th = tanh(g << 16);                   // Q28
+            const i32 th = soft(g << 16);                   // Q28
             undrive = static_cast<i32>((static_cast<u32>(1) << 30) / static_cast<u32>(th >> 14));   // Q16
         }
-        follow_a = pole(hz(30));
-        band(buzzk, hz(3200), C(1.2));
-        buzz_gain = mul(band_gain(hz(3200), C(1.2)) << 12, sc(F(0.25), c[7]));   // Q28 per unit noise
+        follow_a = pole(hz(30) + (1 << 12));
+        band_half(buzzk, hz(3200), C(1.2));
+        buzz_gain = mul(band_gain(hz(3200) + (1 << 12), C(1.2)) << 12, sc(F(0.25), c[7]));   // Q28 per unit noise
         // The bounces: restitution e = 0.85 bounce^0.8, the first gap 0.07 + 0.22 drop s.
         e = mul(F(0.85), pw(c[1], C(0.8)) << 19);
         gap = static_cast<i32>(samples(static_cast<u32>(70000 + sc(220000, c[0]))));
@@ -129,65 +162,212 @@ struct Ball {
         next = static_cast<u32>(t0);
     }
     bool waiting() const { return next != 0; }
+    // The whole ball runs at half the rate, two samples a step, in passes
+    // split at the bounces, and is drawn back up to the full rate once a
+    // block. The drop's rise (and the edge's, which follows it) is planned
+    // at the block's two ends and glided between them.
+    void plan() {
+        const i32 sw0 = sweep[0], sw1 = mul(sw0, sweepk64);
+        const i32 r0 = mul(sw0, sdi[0]) << 1, r1 = mul(sw1, sdi[0]) << 1;
+        sweep[0] = sw1;
+        const i32 dr = (r1 - r0) >> 5;   // 32 half-rate steps a block
+        fd = (tone[0].inc << 1) + static_cast<u32>(r0);
+        dfd = dr;
+        fe[0] = (inc_edge[0] << 1) + (static_cast<u32>(mul(r0, F(1.59 / 2))) << 1);
+        fe[1] = (inc_edge[1] << 1) + (static_cast<u32>(mul(r0, F(2.14 / 4))) << 2);
+        fe[2] = (inc_edge[2] << 1) + (static_cast<u32>(mul(r0, F(2.65 / 4))) << 2);
+        dfe[0] = mul(dr, F(1.59 / 2)) << 1;
+        dfe[1] = mul(dr, F(2.14 / 4)) << 2;
+        dfe[2] = mul(dr, F(2.65 / 4)) << 2;
+    }
+    // The drop's tone (it never rests).
+    __attribute__((noinline)) void drop_pass(i32* y, u32 n) {
+        Tone& o = tone[0];
+        u32 ph = o.ph, f = fd;
+        const u32 df = static_cast<u32>(dfd);
+        i32 v = o.v, a = o.a;
+        const i32 vk = mul(o.vk, o.vk), ak = mul(o.ak, o.ak);
+        for (u32 j = 0; j < n; ++j) {
+            ph += f;
+            f += df;
+            v = mul(v, vk);
+            a = mul(a, ak);   // the attack runs out on its own
+            y[j] += mul(v - a, sine(ph));
+        }
+        o.ph = ph;
+        o.v = v;
+        o.a = a;
+        fd = f;
+    }
+    // The bounces' tone: it costs nothing once it has died away.
+    __attribute__((noinline)) void bounce_pass(i32* y, u32 n) {
+        Tone& o = tone[1];
+        u32 ph = o.ph;
+        const u32 in = o.inc << 1;
+        i32 v = o.v, a = o.a, sw = sweep[1];
+        const i32 vk = mul(o.vk, o.vk), ak = mul(o.ak, o.ak), swk = mul(sweepk, sweepk), d = sdi[1];
+        // Once under its floor it rests until the next bounce (checked a span at a time).
+        if (v < 4096 && v > -4096) { o.v = o.a = 0; return; }
+        for (u32 j = 0; j < n; ++j) {
+            sw = mul(sw, swk);
+            ph += in + (static_cast<u32>(mul(sw, d)) << 1);
+            v = mul(v, vk);
+            a = mul(a, ak);   // the attack runs out on its own
+            y[j] += mul(v - a, sine(ph));
+        }
+        o.ph = ph;
+        o.v = v;
+        o.a = a;
+        sweep[1] = sw;
+    }
+    // The skin's edge modes, risen with the drop's sweep.
+    __attribute__((noinline)) void edge_pass(i32* y, u32 n) {
+        i32 ev = edge.v;
+        if (ev <= 4096) return;   // and so it stays
+        u32 p1 = ph1, p2 = ph2, p3 = ph3, f1 = fe[0], f2 = fe[1], f3 = fe[2];
+        const u32 d1 = static_cast<u32>(dfe[0]), d2 = static_cast<u32>(dfe[1]), d3 = static_cast<u32>(dfe[2]);
+        const i32 ek = mul(edge.k, edge.k);
+        for (u32 j = 0; j < n; ++j) {
+            p1 += f1;
+            f1 += d1;
+            p2 += f2;
+            f2 += d2;
+            p3 += f3;
+            f3 += d3;
+            ev = mul(ev, ek);
+            y[j] += mul(ev, (sine(p1) >> 2) + mul(sine(p2), F(0.7 / 4)) + mul(sine(p3), F(0.4 / 4))) << 2;
+        }
+        ph1 = p1;
+        ph2 = p2;
+        ph3 = p3;
+        fe[0] = f1;
+        fe[1] = f2;
+        fe[2] = f3;
+        edge.v = ev;
+    }
+    // The floor's ring and the ping of the ball.
+    __attribute__((noinline)) void floor_pass(i32* y, u32 n) {
+        i32 fv = fl.v;
+        if (fv <= 4096) return;   // and so it stays
+        u32 pf = phf, p190 = ph190;
+        const u32 inf = incf << 1, in190 = inc190 << 1;
+        const i32 fk = mul(fl.k, fl.k);
+        for (u32 j = 0; j < n; ++j) {
+            pf += inf;
+            p190 += in190;
+            fv = mul(fv, fk);
+            y[j] += mul(fv, (sine(pf) >> 1) + mul(sine(p190), F(0.3))) << 1;
+        }
+        phf = pf;
+        ph190 = p190;
+        fl.v = fv;
+    }
+    __attribute__((noinline)) void ping_pass(i32* y, u32 n) {
+        i32 pv = ping.v;
+        if (pv <= 4096) return;   // and so it stays
+        u32 pp = php;
+        const u32 ip = incp << 1;
+        const i32 pk = mul(ping.k, ping.k);
+        for (u32 j = 0; j < n; ++j) {
+            pp += ip;
+            pv = mul(pv, pk);
+            y[j] += mul(pv, sine(pp));
+        }
+        php = pp;
+        ping.v = pv;
+    }
+    // The click: low-passed noise.
+    __attribute__((noinline)) void click_pass(i32* y, u32 n) {
+        i32 cv = clk.v, lp = clk_lp;
+        const i32 ck = clk.k, ca = clk_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            cv = mul(cv, ck);
+            const i32 c = lev(noise(r), cv);
+            lp += mul(ca, c - lp);
+            y[j] += lp;
+        }
+        clk.v = cv;
+        clk_lp = lp;
+        rng = r;
+    }
+    // Grit: a tanh drive and a buzz of the snare chain, on the half-rate whole.
+    __attribute__((noinline)) void grit_pass(i32* out, u32 n) {
+        i32 f = follow, y1 = buzz.y1, y2 = buzz.y2, x1 = buzz.x1, x2 = buzz.x2;
+        const i32 fa = follow_a, dr = drive, ud = undrive << 14, bg = buzz_gain;
+        const i32 c = buzzk.c, r2 = buzzk.r2, b = buzzk.b;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            i32 y = out[j];
+            const i32 m = y < 0 ? -y : y;
+            f += mul(fa, m - f);
+            i32 d = mul(y, dr);                          // y g / 128
+            const i32 lim = 1 << 22;                     // g y > 2: past the curve's top
+            d = d > lim ? lim : d < -lim ? -lim : d;
+            y = mul(soft(d << 7), ud) << 1;
+            const i32 in = mul(noise(r), b);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            y += mul(mul(o, bg) << 3, (f < one ? f : one - 1) << 3);
+            out[j] = y;
+        }
+        follow = f;
+        buzz.y1 = y1;
+        buzz.y2 = y2;
+        buzz.x1 = x1;
+        buzz.x2 = x2;
+        rng = r;
+    }
+    // n half-rate samples between bounces.
+    __attribute__((noinline)) void half_span(i32* h, u32 n) {
+        drop_pass(h, n);
+        bounce_pass(h, n);
+        edge_pass(h, n);
+        floor_pass(h, n);
+        ping_pass(h, n);
+        // The click, once under its floor, rests until the next bounce.
+        if (clk.v > 4096 || clk_lp > 4096 || clk_lp < -4096) click_pass(h, n);
+    }
+    // The half-rate whole back up to the full rate, each new sample halfway
+    // between two (a sample later).
+    __attribute__((noinline)) void up_pass(const i32* h, i32* y) {
+        i32 last = hlast;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            const i32 x = h[j];
+            y[0] = (last >> 1) + (x >> 1);
+            y[1] = x;
+            last = x;
+            y += 2;
+        }
+        hlast = last;
+    }
     void run(i32* out) {
-        for (u32 i = 0; i < frames; ++i, ++t) {
+        i32 h[frames / 2];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
+        plan();
+        const u32 t0 = t;
+        for (u32 i = 0, hi = 0;;) {
+            // The next bounce in this block.
+            u32 e = frames;
+            if (next) { const u32 d = next - t0; if (d < e && d >= i) e = d; }
+            const u32 he = (e + 1) >> 1;
+            if (he > hi) half_span(h + hi, he - hi);
+            i = e;
+            hi = he;
+            if (i >= frames) break;
+            t = t0 + i;
             if (next && t == next) {
                 ++k;
                 strike_at(a);
                 schedule();
             }
-            i32 y = 0;
-            u32 now0 = 0;
-            for (int s = 0; s < 2; ++s) {
-                Tone& o = tone[s];
-                // A tone that has died away costs nothing.
-                if (o.v < 4096 && o.v > -4096 && s) { o.v = o.a = 0; continue; }
-                sweep[s] = mul(sweep[s], sweepk);
-                const u32 now = o.inc + static_cast<u32>(mul(sweep[s], sdi[s]));
-                if (!s) now0 = now;
-                o.ph += now;
-                y += mul(o.level(), sine(o.ph));
-            }
-            const i32 rise = static_cast<i32>(now0 - tone[0].inc);
-            if (edge.v > 4096) {
-                ph1 += inc_edge[0];
-                ph2 += inc_edge[1];
-                ph3 += inc_edge[2];
-                if (rise) {
-                    ph1 += static_cast<u32>(mul(rise, F(1.59 / 2))) << 1;
-                    ph2 += static_cast<u32>(mul(rise, F(2.14 / 4))) << 2;
-                    ph3 += static_cast<u32>(mul(rise, F(2.65 / 4))) << 2;
-                }
-                const i32 eg = edge.step();
-                y += mul(eg, (sine(ph1) >> 2) + mul(sine(ph2), F(0.7 / 4)) + mul(sine(ph3), F(0.4 / 4))) << 2;
-            }
-            if (fl.v > 4096) {
-                phf += incf;
-                ph190 += inc190;
-                const i32 f = fl.step();
-                y += mul(f, (sine(phf) >> 1) + mul(sine(ph190), F(0.3))) << 1;
-            }
-            if (clk.v > 4096 || clk_lp > 4096 || clk_lp < -4096) {
-                const i32 n = lev(noise(rng), clk.step());
-                clk_lp += mul(clk_a, n - clk_lp);
-                y += clk_lp;
-            }
-            if (ping.v > 4096) {
-                php += incp;
-                y += mul(ping.step(), sine(php));
-            }
-            if (c[7] > 0) {
-                const i32 m = y < 0 ? -y : y;
-                follow += mul(follow_a, m - follow);
-                const i32 d = mul(y, drive);                 // y g / 128
-                const i32 lim = 1 << 23;                     // g y > 4
-                const i32 s = d >= lim ? U(0.99933) : d <= -lim ? -U(0.99933) : tanh(d << 7);
-                y = mul(s, undrive << 14) << 1;
-                const i32 b = bp(buzz, buzzk, noise(rng));
-                y += mul(mul(b, buzz_gain) << 3, (follow < one ? follow : one - 1) << 3);
-            }
-            out[i] = y;
         }
+        if (c[7] > 0) grit_pass(h, frames / 2);
+        up_pass(h, out);
+        t = t0 + frames;
     }
 };
 
@@ -206,6 +386,7 @@ struct Cask {
     ResK woodk[4], hoopk[3];
     i32 wood_amp, hoop_amp, clk_lp, clk_a, thud_lp, thud_a;
     i32 attk;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void strike(i32 g, bool echo) {
         // A delayed copy of the air's ring adds only its share in phase with it.
@@ -217,7 +398,7 @@ struct Cask {
         const i32 hg = echo ? mul(g, F(0.5)) : g;
         for (int m = 0; m < 3; ++m) dsp::strike(hoop[m], hoopk[m], mul(mul(hoop_amp, ha[m]), hg));
         clk.v += mul(U(0.4) + sc(U(2.2), c[2]), echo ? mul(g, F(0.4)) : g);
-        thud.v += mul(sc(U(0.8), c[1]), g);
+        thud.v += mul(sc(U(0.8 * 0.7071), c[1]), g);   // at half the rate its low-passed noise is louder
     }
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
@@ -265,48 +446,146 @@ struct Cask {
         hoop_amp = sc(U(1.2), c[5]);
         clk.k = decay(static_cast<u32>(6000 - sc(5000, c[2])));
         clk_a = pole(lg2(static_cast<u32>(500 + sc(9000, pw(c[2], C(1.5))))));
-        thud.k = decay(40000);
-        thud_a = pole(hz(220));
+        thud.k = decay(20000);   // the thud at half the rate
+        thud_a = pole(hz(220) + (1 << 12));
+        hlast = 0;
         strike(full, false);
     }
-    static void tune_res(ResK& k, i32 lp, u32 t60) { dsp::tune(k, inc(lp), decay60(t60)); }
+    // The staves and hoops ring at half the rate: an octave's step, twice the decay.
+    static void tune_res(ResK& k, i32 lp, u32 t60) { dsp::tune(k, inc(lp + (1 << 12)), decay60(t60 >> 1)); }
     bool waiting() const { return c[7] > 0 && tap < 4; }
+    // The block in passes, each with its state in registers, split at the
+    // cellar's taps.
+    // The air's pitch each sample: the knock's blip, the bung's bend, the slosh.
+    template <bool blipping, bool bunged, bool sloshing> __attribute__((noinline)) void pitch_pass(u32* fb, u32 n, i32 vib) {
+        const u32 in = inca;
+        i32 bv = blip.v, ev = bend.v, sv = slosh_on.v;
+        const i32 bk = mul(blip.k, blip.k), ek = mul(bend.k, bend.k), sk = mul(slosh_on.k, slosh_on.k), bg = bung;
+        for (u32 j = 0; j < n; ++j) {
+            u32 f = in;
+            if (blipping && CURIO_LIKELY(bv > (1 << 20))) { bv = mul(bv, bk); f += static_cast<u32>(mul(static_cast<i32>(in), mul(F(0.35), bv))); }
+            if (bunged) { ev = mul(ev, ek); f -= static_cast<u32>(mul(static_cast<i32>(f), mul(bg, full - ev))); }
+            if (sloshing) {
+                sv = mul(sv, sk);
+                f += static_cast<u32>(mul(static_cast<i32>(f), vib));
+            }
+            fb[j] = f << 1;   // two samples a step
+        }
+        blip.v = bv;
+        bend.v = ev;
+        slosh_on.v = sv;
+    }
+    // Each sample's pitch, the parts that move it chosen once a span (the
+    // blip, once under its floor, stays there).
+    void pitch(u32* fb, u32 n, i32 vib) {
+        const bool b = blip.v > (1 << 20), g = bung != 0, s = slosh_depth != 0;
+        if (b) {
+            if (g) { if (s) pitch_pass<true, true, true>(fb, n, vib); else pitch_pass<true, true, false>(fb, n, vib); }
+            else { if (s) pitch_pass<true, false, true>(fb, n, vib); else pitch_pass<true, false, false>(fb, n, vib); }
+        } else {
+            if (g) { if (s) pitch_pass<false, true, true>(fb, n, vib); else pitch_pass<false, true, false>(fb, n, vib); }
+            else { if (s) pitch_pass<false, false, true>(fb, n, vib); else pitch_pass<false, false, false>(fb, n, vib); }
+        }
+    }
+    // The air's boom, swelling with the slosh.
+    template <bool am_on> __attribute__((noinline)) void air_pass(i32* y, const u32* fb, u32 n, i32 am) {
+        u32 ph = air.ph;
+        i32 v = air.v, a = air.a;
+        const i32 vk = mul(air.vk, air.vk), ak = mul(air.ak, air.ak);
+        for (u32 j = 0; j < n; ++j) {
+            ph += fb[j];
+            v = mul(v, vk);
+            a = mul(a, ak);   // the attack runs out on its own
+            i32 s = mul(v - a, sine(ph));
+            if (am_on) s += mul(s, am);
+            y[j] += s;
+        }
+        air.ph = ph;
+        air.v = v;
+        air.a = a;
+    }
+    // The knuckle's click, at the full rate while it sounds.
+    __attribute__((noinline)) void knock_pass(i32* y, u32 n) {
+        i32 cv = clk.v, cl = clk_lp;
+        const i32 ck = clk.k, ca = clk_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            cv = mul(cv, ck);
+            cl += mul(ca, lev(noise(r), cv) - cl);
+            y[j] += cl;
+        }
+        clk.v = cv;
+        clk_lp = cl;
+        rng = r;
+    }
+    // The thud, at half the rate.
+    __attribute__((noinline)) void thud_pass(i32* h, u32 n) {
+        i32 tv = thud.v, tl = thud_lp;
+        const i32 tk = thud.k, ta = thud_a;
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            tv = mul(tv, tk);
+            tl += mul(ta, lev(noise(r), tv) - tl);
+            h[j] += tl;
+        }
+        thud.v = tv;
+        thud_lp = tl;
+        rng = r;
+    }
+    // n samples between taps; each part costs nothing once it is still or
+    // switched off.
+    // n half-rate samples between taps: the air and the wood are all under
+    // 11 kHz, so they step two samples at a time.
+    __attribute__((noinline)) void half_span(i32* h, u32 n, i32 vib, i32 am) {
+        u32 fb[frames / 2];
+        pitch(fb, n, vib);
+        if (slosh_am) air_pass<true>(h, fb, n, am);
+        else air_pass<false>(h, fb, n, am);
+        ring_bank(wood, woodk, 4, h, n);
+        if (hoop_amp) ring_bank(hoop, hoopk, 3, h, n);
+        if (thud.v > 4096) thud_pass(h, n);
+    }
+    // The half-rate parts back up to the full rate, each new sample halfway
+    // between two.
+    __attribute__((noinline)) void up_pass(const i32* h, i32* y) {
+        i32 last = hlast;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            const i32 x = h[j];
+            y[0] += (last >> 1) + (x >> 1);
+            y[1] += x;
+            last = x;
+            y += 2;
+        }
+        hlast = last;
+    }
     void run(i32* out) {
+        static const u32 at[4] = {1014, 1632, 2690, 3925};       // 23, 37, 61, 89 ms
+        static const i32 gain[4] = {F(0.64), F(0.48), F(0.35), F(0.2)};   // 1.6 times the prototype's: it read faintly
         // The slosh: 5.5 Hz, once a block.
         ph55 += 64u * 535653u;   // 5.5 Hz
         const i32 swing = mul(sine(ph55), full - slosh_on.v);
         const i32 vib = mul(slosh_depth, swing);
         const i32 am = mul(slosh_am, sine(ph55 + 683565275u));   // phase +1 rad
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (c[7] > 0 && tap < 4) {
-                static const u32 at[4] = {1014, 1632, 2690, 3925};       // 23, 37, 61, 89 ms
-                static const i32 gain[4] = {F(0.64), F(0.48), F(0.35), F(0.2)};   // 1.6 times the prototype's: it read faintly
-                if (t == at[tap]) { strike(sc(gain[tap], c[7]), true); ++tap; }
-            }
-            // Each part costs nothing once it is still or switched off.
-            u32 f = inca;
-            if (blip.v > (1 << 20)) f += static_cast<u32>(mul(static_cast<i32>(inca), mul(F(0.35), blip.step())));
-            if (bung) f -= static_cast<u32>(mul(static_cast<i32>(f), mul(bung, full - bend.step())));
-            if (slosh_depth) {
-                slosh_on.step();
-                f += static_cast<u32>(mul(static_cast<i32>(f), vib));
-            }
-            air.ph += f;
-            i32 y = mul(air.level(), sine(air.ph));
-            if (slosh_am) y += mul(y, am);
-            for (int m = 0; m < 4; ++m) y += ring(wood[m], woodk[m], 0);
-            if (hoop_amp) for (int m = 0; m < 3; ++m) y += ring(hoop[m], hoopk[m], 0);
-            if (clk.v > 4096 || thud.v > 4096) {
-                const i32 n = noise(rng);
-                clk_lp += mul(clk_a, lev(n, clk.step()) - clk_lp);
-                thud_lp += mul(thud_a, lev(n, thud.step()) - thud_lp);
-            } else {
-                clk_lp -= clk_lp >> 6;
-                thud_lp -= thud_lp >> 6;
-            }
-            y += clk_lp + thud_lp;
-            out[i] = y;
+        i32 h[frames / 2];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        const u32 t0 = t;
+        for (u32 i = 0, hi = 0;;) {
+            // The cellar's next tap in this block.
+            u32 e = frames;
+            if (c[7] > 0 && tap < 4) { const u32 d = at[tap] - t0; if (d < e && d >= i) e = d; }
+            const u32 he = (e + 1) >> 1;
+            if (he > hi) half_span(h + hi, he - hi, vib, am);
+            // The click, once under its floor, rests until the next tap.
+            if (e > i && clk.v > 4096) knock_pass(out + i, e - i);
+            i = e;
+            hi = he;
+            if (i >= frames) break;
+            t = t0 + i;
+            if (c[7] > 0 && tap < 4 && t == at[tap]) { strike(sc(gain[tap], c[7]), true); ++tap; }
         }
+        up_pass(h, out);
+        t = t0 + frames;
     }
 };
 
@@ -323,12 +602,16 @@ struct Stone {
     Res dustr;
     ResK dustk;
     u32 ph37;
+    u32 drng;    // the dust's own noise
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
     void start(const Ctx& x) {
         for (int i = 0; i < 8; ++i) c[i] = x.c[i];
         tune = x.tune;
         rng = x.seed | 1u;
         t = 0;
         ph37 = 0;
+        drng = (x.seed * 2654435761u) | 1u;
+        hlast = 0;
         const i32 lp0 = hz(110) + sc(C(3.0), c[0]) + tune;   // 110..880 Hz
         static const i32 lr[5] = {0, 5991, 9972, 12940, 15312};   // log2(1, 2.756, 5.404, 8.933, 13.34)
         static const i32 lk[5] = {0, 4096, 6492, 8192, 9511};      // log2(k + 1)
@@ -341,8 +624,10 @@ struct Stone {
             const i32 lp = lp0 + (lr[m] * (stretch >> 2) >> 10);
             const u32 t60 = ex2(lg2(static_cast<u32>(t1)) - (lk[m] * (dex >> 2) >> 10));
             mode[m] = Res();
-            if (lp > 57500) { modek[m].c = modek[m].r2 = modek[m].s = 0; continue; }   // above 0.45 of the rate
-            dsp::tune(modek[m], inc(lp), decay60(t60));
+            // The modes ring at half the rate (two samples a step); one above
+            // 10 kHz is left silent.
+            if (lp > 54400) { modek[m].c = modek[m].r2 = modek[m].s = 0; continue; }
+            dsp::tune(modek[m], inc(lp + (1 << 12)), decay60(t60 >> 1));
             const i32 amp = static_cast<i32>(ex2((28 << 12) - (lk[m] * (aex >> 2) >> 10)));
             dsp::strike(mode[m], modek[m], amp);
         }
@@ -350,42 +635,77 @@ struct Stone {
         const i32 sg = sc(U(1.1), c[5]);
         stack[0].ph = stack[1].ph = 0;
         stack[0].v = stack[0].a = stack[1].v = stack[1].a = 0;
-        stack[0].inc = inc(lp0 + 2396);    // 1.5
-        stack[1].inc = inc(lp0 + 8042);    // 3.9
-        stack[0].hit(sg, decay60(static_cast<u32>(mul(t1, F(0.6)) * 2)), decay(20000));
-        stack[1].hit(mul(sg, F(0.3)), decay60(static_cast<u32>(mul(t1, F(0.4)))), decay(20000));
+        stack[0].inc = inc(lp0 + 2396 + (1 << 12));    // 1.5, a half-rate step's
+        stack[1].inc = inc(lp0 + 8042 + (1 << 12));    // 3.9
+        stack[0].hit(sg, decay60(static_cast<u32>(mul(t1, F(0.6)))), decay(10000));
+        stack[1].hit(mul(sg, F(0.3)), decay60(static_cast<u32>(mul(t1, F(0.2)))), decay(10000));
         chip.v = U(0.1) + sc(U(2.5), c[4]);
         chip.k = decay(1200);
         chip_lp = 0;
         chip_a = pole(hz(1500));
         dust.v = sc(U(0.35), c[7]);
-        dust.k = decay(static_cast<u32>(mul(t1, F(0.3))));
-        band(dustk, hz(2400), C(0.8));
-        dust_gain = band_gain(hz(2400), C(0.8));
+        dust.k = decay(static_cast<u32>(mul(t1, F(0.15))));   // at half the rate
+        band_half(dustk, hz(2400), C(0.8));
+        dust_gain = band_gain(hz(2400) + (1 << 12), C(0.8));
         dustr = Res();
     }
     bool waiting() const { return false; }
+    // The chip: high-passed noise, at the full rate while it sounds.
+    __attribute__((noinline)) void chip_pass(i32* y) {
+        i32 v = chip.v, lp = chip_lp;
+        const i32 k = chip.k, a = chip_a;
+        u32 r = rng;
+        for (u32 j = 0; j < frames; ++j) {
+            const i32 x = noise(r);
+            v = mul(v, k);
+            const i32 ch = lev(x, v);
+            lp += mul(a, ch - lp);
+            y[j] += ch - lp;
+        }
+        chip.v = v;
+        chip_lp = lp;
+        rng = r;
+    }
+    // The dust's patter at half the rate, its own noise, while it lasts.
+    __attribute__((noinline)) void dust_pass(i32* y) {
+        i32 d = dust.v, y1 = dustr.y1, y2 = dustr.y2, x1 = dustr.x1, x2 = dustr.x2;
+        const i32 k = dust.k, c = dustk.c, r2 = dustk.r2, g = dustk.b, dg = dust_gain << 12;
+        u32 r = drng;
+        for (u32 j = 0; j < frames / 2; ++j) {
+            d = mul(d, k);
+            const i32 in = mul(noise(r), g);
+            const i32 o = twice(mul(c, y1) - mul(r2, y2)) + in - x2;
+            x2 = x1;
+            x1 = in;
+            y2 = y1;
+            y1 = o;
+            y[j] += mul(mul(o, dg) << 3, d << 3);
+        }
+        dust.v = d;
+        dustr.y1 = y1;
+        dustr.y2 = y2;
+        dustr.x1 = x1;
+        dustr.x2 = x2;
+        drng = r;
+    }
     void run(i32* out) {
         ph37 += 64u * 3603060u;   // 37 Hz, the dust's patter
         const bool on = static_cast<i32>(ph37) >= 0;
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            i32 y = 0;
-            for (int m = 0; m < 5; ++m) y += ring(mode[m], modek[m], 0);
-            for (int m = 0; m < 2; ++m) {
-                stack[m].ph += stack[m].inc;
-                y += mul(stack[m].level(), sine(stack[m].ph));
-            }
-            const i32 n = noise(rng);
-            const i32 ch = lev(n, chip.step());
-            chip_lp += mul(chip_a, ch - chip_lp);
-            y += ch - chip_lp;
-            const i32 d = dust.step();
-            if (d > 256) {
-                const i32 b = bp(dustr, dustk, n);
-                if (on) y += mul(mul(b, dust_gain << 12) << 3, d << 3);
-            }
-            out[i] = y;
+        // The modes, the stacked stones and the dust at half the rate.
+        i32 h[frames / 2];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
+        for (int m = 0; m < 5; ++m)
+            if (modek[m].c || modek[m].r2) ring_into(mode[m], modek[m], h, frames / 2);
+        for (int m = 0; m < 2; ++m) tone_at(stack[m], h, frames / 2);
+        // Once the dust is under its floor it stays there; between its
+        // patters it rings on unheard.
+        if (dust.v > 256) {
+            if (on) dust_pass(h);
+            else for (int b = 0; b < 32; ++b) dust.v = mul(dust.v, dust.k);
         }
+        up_onto(h, out, hlast);
+        if (chip.v > 4096 || chip_lp > 4096 || chip_lp < -4096) chip_pass(out);
+        t += frames;
     }
 };
 
@@ -407,6 +727,7 @@ struct Drip {
     i32 splash_lp, splash_a, basin_amp;
     u32 ph23;
     i32 wob, risek, risek64;
+    i32 hlast;   // the last half-rate sample, for drawing the next block up
 
     void drop(i32 amp, i32 ratio_lp, bool echo_drop) {
         Bubble& b = echo_drop ? bub[2] : bub[turn];
@@ -437,6 +758,7 @@ struct Drip {
         t = 0;
         turn = 0;
         echo = 0;
+        hlast = 0;
         ph23 = 0;
         for (int s = 0; s < 3; ++s) {
             bub[s].v = bub[s].a = bub[s].vk = bub[s].ak = 0;
@@ -452,9 +774,12 @@ struct Drip {
         const i32 lb = lp0 - 2827;   // 0.62
         static const i32 br[4] = {0, 4974, 8263, 10500};   // log2(1, 2.32, 4.05, 5.9)
         const u32 t60[4] = {static_cast<u32>(300000 + sc(2500000, c[2])), static_cast<u32>(200000 + sc(1500000, c[2])), 600000u, 300000u};
+        // The bubbles and the basin ring at half the rate (two samples a
+        // step); a basin mode over 10 kHz is left silent.
         for (int m = 0; m < 4; ++m) {
-            dsp::tune(basink[m], inc(lb + br[m]), decay60(t60[m]));
             basin[m] = Res();
+            if (lb + br[m] > 54400) { basink[m].c = basink[m].r2 = basink[m].s = 0; continue; }
+            dsp::tune(basink[m], inc(lb + br[m] + (1 << 12)), decay60(t60[m] >> 1));
         }
         splash.v = 0;
         splash.k = decay(6000);
@@ -471,9 +796,82 @@ struct Drip {
         drop(full, 0, false);
     }
     bool waiting() const { return drops > 0 || (c[7] > 0 && echo < 6); }
-    void run(i32* out) {
+    // The block in passes, each with its state in registers, split at the
+    // drops and the room's echoes.
+    // A bubble that has died away costs nothing until the next drop.
+    template <bool wobble> __attribute__((noinline)) static void bubble_pass(Bubble& b, i32* y, u32 n, i32 vib) {
+        u32 ph = b.ph, f = b.f;
+        const u32 df = static_cast<u32>(b.df);
+        i32 v = b.v, a = b.a;
+        const i32 vk = mul(b.vk, b.vk), ak = mul(b.ak, b.ak);
+        // Once under its floor it rests until the next drop (checked a span at a time).
+        if (v < 4096 && v > -4096) { b.v = b.a = 0; return; }
+        for (u32 j = 0; j < n; ++j) {
+            ph += f;
+            f += df;
+            v = mul(v, vk);
+            a = mul(a, ak);
+            const i32 s = mul(v - a, sine(ph));
+            y[j] += s;
+            if (wobble) y[j] += mul(s, vib) * 5;   // the bubble's wobble flutters its level too
+        }
+        b.ph = ph;
+        b.f = f;
+        b.v = v;
+        b.a = a;
+    }
+    __attribute__((noinline)) void splash_pass(i32* y, u32 n) {
+        i32 v = splash.v, lp = splash_lp;
+        const i32 k = splash.k, sa = splash_a;
+        if (v <= 4096 && !lp) return;   // still, until the next drop
+        u32 r = rng;
+        for (u32 j = 0; j < n; ++j) {
+            if (CURIO_UNLIKELY(v > 4096)) {
+                v = mul(v, k);
+                const i32 sp = lev(noise(r), v);
+                lp += mul(sa, sp - lp);
+                y[j] += sp - lp;
+            } else if (CURIO_LIKELY(lp)) {
+                v = 0;
+                y[j] -= lp;
+                lp -= lp >> 4;
+                if (lp < 64 && lp > -64) lp = 0;
+            }
+        }
+        splash.v = v;
+        splash_lp = lp;
+        rng = r;
+    }
+    // n half-rate samples between drops and echoes.
+    __attribute__((noinline)) void half_span(i32* h, u32 n, i32 vib) {
+        for (int s = 0; s < 3; ++s) {
+            Bubble& b = bub[s];
+            if (!b.v && !b.a) continue;
+            if (wob) bubble_pass<true>(b, h, n, vib);
+            else bubble_pass<false>(b, h, n, vib);
+        }
+        ring_bank(basin, basink, 4, h, n);
+    }
+    // A drop from the tap or an echo from the room at t.
+    __attribute__((noinline)) void events() {
         static const u32 at[6] = {1367, 2073, 3219, 4851, 7056, 10143};   // 31 .. 230 ms
         static const i32 eg[6] = {F(0.7), F(0.55), F(0.45), F(0.3), F(0.2), F(0.12)};
+        if (drops && t == next_drop) {
+            --drops;
+            last_amp = F(0.5) + mul(F(0.4), draw(rng) << 19);   // 0.5 .. 0.9
+            last_ratio = (jitter(rng) * 1229) >> 12;             // +-0.3 octave
+            drop(last_amp, last_ratio, false);
+            next_drop = drops ? t + samples(static_cast<u32>(drip_gap + (drip_gap * jitter(rng) >> 16))) : 0;
+            base_t = t;
+            echo = 0;
+        }
+        if (c[7] > 0 && echo < 6 && t - base_t == at[echo]) {
+            drop(mul(mul(last_amp, eg[echo]), c[7] << 19), last_ratio, true);
+            ++echo;
+        }
+    }
+    void run(i32* out) {
+        static const u32 at[6] = {1367, 2073, 3219, 4851, 7056, 10143};   // 31 .. 230 ms
         ph23 += 64u * 2239006u;   // 23 Hz wobble
         const i32 vib = mul(wob, sine(ph23));
         // Each bubble's pitch for the block: its rise and wobble at the block's
@@ -486,50 +884,30 @@ struct Drip {
             u32 f1 = b.inc + static_cast<u32>(mul(static_cast<i32>(b.inc), mul(full - r1, b.span << 18)) << 1);
             f0 += static_cast<u32>(mul(static_cast<i32>(f0), vib));
             f1 += static_cast<u32>(mul(static_cast<i32>(f1), vib));
-            b.f = f0;
-            b.df = static_cast<i32>(f1 - f0) >> 6;
+            b.f = f0 << 1;                              // a half-rate step's
+            b.df = static_cast<i32>(f1 - f0) >> 4;      // and its rise a step
             b.rise = r1;
         }
-        for (u32 i = 0; i < frames; ++i, ++t) {
-            if (drops && t == next_drop) {
-                --drops;
-                last_amp = F(0.5) + mul(F(0.4), draw(rng) << 19);   // 0.5 .. 0.9
-                last_ratio = (jitter(rng) * 1229) >> 12;             // +-0.3 octave
-                drop(last_amp, last_ratio, false);
-                next_drop = drops ? t + samples(static_cast<u32>(drip_gap + (drip_gap * jitter(rng) >> 16))) : 0;
-                base_t = t;
-                echo = 0;
-            }
-            if (c[7] > 0 && echo < 6 && t - base_t == at[echo]) {
-                drop(mul(mul(last_amp, eg[echo]), c[7] << 19), last_ratio, true);
-                ++echo;
-            }
-            i32 y = 0;
-            for (int s = 0; s < 3; ++s) {
-                Bubble& b = bub[s];
-                if (!b.v && !b.a) continue;
-                // A bubble that has died away costs nothing until the next drop.
-                if (b.v < 4096 && b.v > -4096) { b.v = b.a = 0; continue; }
-                b.ph += b.f;
-                b.f += static_cast<u32>(b.df);
-                b.v = mul(b.v, b.vk);
-                b.a = mul(b.a, b.ak);
-                y += mul(b.v - b.a, sine(b.ph));
-                if (wob) y += mul(mul(b.v - b.a, sine(b.ph)), vib) * 5;   // the bubble's wobble flutters its level too
-            }
-            for (int m = 0; m < 4; ++m) y += ring(basin[m], basink[m], 0);
-            if (splash.v > 4096) {
-                const i32 sp = lev(noise(rng), splash.step());
-                splash_lp += mul(splash_a, sp - splash_lp);
-                y += sp - splash_lp;
-            } else if (splash_lp) {
-                splash.v = 0;
-                y -= splash_lp;
-                splash_lp -= splash_lp >> 4;
-                if (splash_lp < 64 && splash_lp > -64) splash_lp = 0;
-            }
-            out[i] = y;
+        for (u32 i = 0; i < frames; ++i) out[i] = 0;
+        i32 h[frames / 2];
+        for (u32 i = 0; i < frames / 2; ++i) h[i] = 0;
+        const u32 t0 = t;
+        for (u32 i = 0, hi = 0;;) {
+            // The next drop or echo in this block.
+            u32 e = frames;
+            if (drops) { const u32 d = next_drop - t0; if (d < e && d >= i) e = d; }
+            if (c[7] > 0 && echo < 6) { const u32 d = base_t + at[echo] - t0; if (d < e && d >= i) e = d; }
+            const u32 he = (e + 1) >> 1;
+            if (he > hi) half_span(h + hi, he - hi, vib);
+            if (e > i) splash_pass(out + i, e - i);
+            i = e;
+            hi = he;
+            if (i >= frames) break;
+            t = t0 + i;
+            events();
         }
+        up_into(h, out, hlast);
+        t = t0 + frames;
     }
 };
 }

@@ -220,7 +220,29 @@ inline void park(Frame& frame, u32 p) {
 // outlines' 64 px reach is drawn at half size and shown at twice it, in a
 // palette entry of half the stroke (7: the hero's, 8: structure's). Each is
 // moved by its specimen's offset to the screen's middle (art.h's ox, oy).
+// Any corner of an outline turning sharper than 150 degrees eased onto the
+// midpoint of its neighbours: the OP-XY strokes with mitred joins and no mitre
+// limit, so a turn near straight back (a ribbon folding at a bend) draws a spike.
+inline void soften(Path& p) {
+    for (u32 pass = 0; pass < 12; ++pass) {   // until none is left, as a rule in one or two
+        bool eased = false;
+        for (u32 i = 0; i < 64; ++i) {
+            const Point& a = p.points[(i + 63) % 64];
+            Point& b = p.points[i];
+            const Point& c = p.points[(i + 1) % 64];
+            const i32 ux = (b.x - a.x) >> 4, uy = (b.y - a.y) >> 4, vx = (c.x - b.x) >> 4, vy = (c.y - b.y) >> 4;
+            const i32 dot = ux * vx + uy * vy, cross = ux * vy - uy * vx;
+            if (dot < 0 && (cross < 0 ? -cross : cross) * 7 < -dot * 4) {   // tan 30 degrees, about 4/7
+                b.x = a.x + (c.x - a.x) / 2;
+                b.y = a.y + (c.y - a.y) / 2;
+                eased = true;
+            }
+        }
+        if (!eased) break;
+    }
+}
 inline void show_path(Frame& frame, u32 m, u32 p, i32 x, i32 y, u32 shade, i32 scale = u) {
+    soften(frame.paths[p]);
     frame.paths[p].key = key_of(frame.paths[p]);
     place(frame, p, x + art::ox[m] * u, y + art::oy[m] * u, scale, shade, stroke);
 }
@@ -627,15 +649,30 @@ inline void draw_paths(Frame& frame, u32 m, const i32* c, i32 age, i32 life) {
         band(frame.paths[0], pts, u / 2);
         show_path(frame, m, 0, 165 * u, (base - h) * u, 4);
         used[0] = true;
-        // Its cut: a band of mitred facets round the lower bowl.
+        // Its cut: a band of mitred facets round the lower bowl. A facet's
+        // lower point that would fall outside the bowl at 42 px rises up the
+        // bowl's side until it is inside, rather than squeezing in sideways:
+        // a squeezed V turns sharper than the device draws (a spike).
         const i32 ww = w + v, cut = ww * root(h * h - 30 * 30) / h - 2;
         const i32 n = clamp(cut / 5, 3, 6);
         Point corner[13];
         for (i32 j = 0; j <= 2 * n; ++j) {
             const i32 x = -cut * 1024 + 2 * cut * 1024 * j / (2 * n);
-            const i32 low = (ww * root(h * h - 42 * 42) / h - 1) * u;
-            corner[j].x = j % 2 ? clamp(x, -low, low) * 9 / 10 : x;
-            corner[j].y = (j % 2 ? 42 : 30) * u;
+            corner[j].x = j % 2 ? x * 9 / 10 : x;
+            i32 y = 30;
+            if (j % 2) {
+                const i32 ax = (corner[j].x < 0 ? -corner[j].x : corner[j].x) >> 10;
+                const i32 q = h * (ax + 1) / (ww > 1 ? ww : 1);
+                y = clamp(q < h ? root(h * h - q * q) : 0, 34, 42);
+            }
+            corner[j].y = y * u;
+        }
+        // And no facet deeper than its V can be without its point turning
+        // sharper than 150 degrees: about 3.3 times its narrower half.
+        for (i32 j = 1; j < 2 * n; j += 2) {
+            const i32 a = corner[j].x - corner[j - 1].x, b = corner[j + 1].x - corner[j].x;
+            const i32 d = (a < b ? a : b) > u ? (a < b ? a : b) : u;
+            if (corner[j].y > 30 * u + d * 10 / 3) corner[j].y = 30 * u + d * 10 / 3;
         }
         resample(corner, 2 * n + 1, pts);
         band(frame.paths[3], pts, u / 2);

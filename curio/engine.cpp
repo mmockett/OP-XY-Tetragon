@@ -29,6 +29,60 @@ inline void initialize(Voice& voice, Shared&, u32 owner) {
 inline void start(Voice& voice, Shared&, u32) { voice.pending = 1; }
 inline void destroy(Voice&, Shared&, u32) {}
 inline void drum_select(Voice& voice, Shared&, u32, u32 model) { voice.next = model < kit::models ? model : 0; }
+
+// The ranges the track menu's scramble draws each specimen's controls from,
+// so a scrambled cabinet stays playable. The pitched specimens keep within
+// about an octave of their defaults (the ball's skin 33 to 86 Hz, the cask
+// 40 to 134 Hz, the stone 110 to 435 Hz); no ring runs for seconds (the
+// glass ringing and rubbing at most 1.5 s a time constant, as it ends 84 dB
+// down within ten seconds; the sheet's hang 2.5 s, the drip's basin 2.2 s,
+// the bell 1.2 s, the roar 2 s); the drives stay light (the ball's GRIT at most
+// 2.6 times, the spark's DIST under half); the cicada's body resonates at Q
+// 21 at most and sings with three at most; and the repeats (a cask's cellar,
+// shards, echoes, strokes, glugs, a sheet's roll and thunder) stay short of
+// their tops. The level trims (levels.h) hold every control's loudness, so
+// no slot here is narrowed for level alone.
+const opxy::u8 scramble_low[kit::models][8] = {
+    {0, 0, 10, 0, 0, 0, 0, 0},   // ball
+    {0, 0, 0, 0, 0, 0, 0, 0},    // cask
+    {0, 0, 0, 0, 0, 0, 0, 0},    // stone
+    {8, 0, 0, 0, 0, 0, 0, 0},    // drip
+    {0, 0, 0, 0, 0, 0, 0, 0},    // ice
+    {0, 0, 0, 0, 0, 0, 0, 0},    // sheet
+    {0, 0, 0, 0, 0, 0, 0, 0},    // spark
+    {0, 0, 0, 0, 0, 0, 0, 0},    // cork
+    {0, 0, 0, 0, 0, 0, 0, 0},    // cicada
+    {0, 0, 0, 0, 0, 0, 0, 0},    // ratchet
+    {0, 0, 0, 0, 0, 0, 0, 0},    // pod
+    {0, 0, 0, 0, 0, 0, 0, 0},    // match
+    {0, 0, 0, 0, 0, 0, 0, 0},    // glass
+    {0, 0, 0, 0, 0, 0, 0, 0},    // bell jar
+    {0, 0, 0, 0, 0, 0, 0, 0},    // chalk
+    {0, 0, 0, 0, 0, 0, 0, 0},    // roar
+};
+const opxy::u8 scramble_high[kit::models][8] = {
+    {127, 100, 96, 127, 100, 127, 127, 48},    // ball
+    {96, 127, 127, 127, 100, 127, 127, 80},    // cask
+    {84, 127, 127, 110, 127, 127, 127, 90},    // stone
+    {120, 127, 96, 96, 127, 127, 127, 100},    // drip
+    {127, 127, 96, 127, 127, 127, 127, 100},   // ice
+    {127, 100, 127, 104, 90, 127, 127, 80},    // sheet
+    {127, 127, 127, 127, 96, 127, 127, 48},    // spark
+    {127, 127, 127, 127, 127, 80, 127, 96},    // cork
+    {100, 127, 127, 100, 127, 127, 127, 64},   // cicada
+    {127, 127, 127, 127, 127, 127, 127, 127},  // ratchet
+    {127, 127, 127, 127, 127, 127, 127, 127},  // pod
+    {127, 127, 127, 127, 127, 127, 127, 127},  // match
+    {127, 127, 56, 127, 48, 127, 127, 127},    // glass
+    {80, 127, 127, 127, 110, 127, 127, 127},   // bell jar
+    {110, 127, 127, 127, 127, 127, 127, 127},  // chalk
+    {127, 127, 127, 127, 100, 127, 127, 127},  // roar
+};
+void scramble_range(u32 model, u32 slot, opxy::u8* low, opxy::u8* high) {
+    if (model >= kit::models || slot >= 8) return;
+    *low = scramble_low[model][slot];
+    *high = scramble_high[model][slot];
+}
 // TUNE (-16..15 semitones) and VARY (0..15), before every render.
 inline void drum_pad(Voice& voice, Shared&, u32, const i32* values) {
     voice.tune = clamp(values[0], -16, 15);
@@ -165,6 +219,32 @@ inline i32 knee(i32 y) {
     return (y < 0 ? -s : s) << 3;
 }
 
+// The hit's gain on a block the limiter leaves alone; whether any sample
+// reaches the quiet floor (the block's highest and lowest).
+__attribute__((noinline)) static bool gain_pass(i32* out, i32 g) {
+    i32 top = -full - 1, bottom = full;
+    for (u32 i = 0; i < frames; ++i) {
+        const i32 y = mul(out[i], g) << 6;
+        out[i] = y;
+        top = y > top ? y : top;
+        bottom = y < bottom ? y : bottom;
+    }
+    return top >= quiet_floor || bottom <= -quiet_floor;
+}
+
+// The same with the limiter's gain l moving by d a sample, and the knee.
+__attribute__((noinline)) static bool limit_pass(i32* out, i32 g, i32 l, i32 d) {
+    i32 top = -full - 1, bottom = full;
+    for (u32 i = 0; i < frames; ++i) {
+        const i32 y = knee(mul(mul(out[i], g), l) << 3);
+        l += d;
+        out[i] = y;
+        top = y > top ? y : top;
+        bottom = y < bottom ? y : bottom;
+    }
+    return top >= quiet_floor || bottom <= -quiet_floor;
+}
+
 inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy::Parameters parameters, opxy::Pitch) {
     if (voice.pending || voice.next != voice.model) {
         voice.pending = 0;
@@ -203,22 +283,12 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     i32 l = voice.lim;
     bool loud = false;
     if (l == full && want == full) {
-        for (u32 i = 0; i < frames; ++i) {
-            const i32 y = mul(out[i], g) << 6;
-            output[i] = y;
-            loud = loud || y >= quiet_floor || y <= -quiet_floor;
-        }
+        loud = gain_pass(out, g);
     } else {
         // Down at once; up 1 dB a block, ramped across it, never past what the block allows.
         if (want < l) l = want;
         const i32 to = lo(l > F(0.888) ? full : l + (l >> 3), want);
-        const i32 d = (to - l) >> 6;
-        for (u32 i = 0; i < frames; ++i) {
-            const i32 y = knee(mul(mul(out[i], g), l) << 3);
-            l += d;
-            output[i] = y;
-            loud = loud || y >= quiet_floor || y <= -quiet_floor;
-        }
+        loud = limit_pass(out, g, l, (to - l) >> 6);
         voice.lim = to;
     }
     voice.quiet = loud ? 0 : voice.quiet + 1;

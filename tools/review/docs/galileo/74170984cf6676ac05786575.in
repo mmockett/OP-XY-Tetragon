@@ -1,0 +1,72 @@
+scene SHAKERd
+model 13
+slots 64 38 44 51 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SHAKER00
+model 13
+slots 0 38 44 51 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SHAKER0127
+model 13
+slots 127 38 44 51 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SHAKER10
+model 13
+slots 64 0 44 51 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SHAKER1127
+model 13
+slots 64 127 44 51 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SHAKER20
+model 13
+slots 64 38 0 51 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SHAKER2127
+model 13
+slots 64 38 127 51 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SHAKER30
+model 13
+slots 64 38 44 0 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit
+scene SHAKER3127
+model 13
+slots 64 38 44 127 88 0 0 70
+pad 0 0 0 0
+row 0
+
+run 0.1 60
+emit

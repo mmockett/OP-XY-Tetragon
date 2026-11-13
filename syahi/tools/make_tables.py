@@ -39,9 +39,11 @@ def main():
              "namespace tables {",
              "using opxy::i16;",
              "using opxy::i32;"]
-    # A sine of 4096 steps (and one more for the wrap), 16 bits.
-    sine = [int(round(32767 * math.sin(2 * math.pi * i / 16384))) for i in range(16384)]
-    parts += ["// sin(2 pi i / 16384) * 32767.", "const i16 sine[16384] = {", rows(sine, 16), "};"]
+    # A sine of 2048 steps and one more for the wrap, 16 bits: 4 KiB, small
+    # enough to stay in the data cache with sixteen voices' state (the module
+    # runs from SDRAM; 32 KiB missed on most of the modes' reads).
+    sine = [int(round(32767 * math.sin(2 * math.pi * i / 2048))) for i in range(2049)]
+    parts += ["// sin(2 pi i / 2048) * 32767, and its first step again for the wrap.", "const i16 sine[2049] = {", rows(sine, 16), "};"]
     # 2^(i / 256), Q30.
     exp2 = [int(round(2 ** (i / 256) * (1 << 30))) for i in range(257)]
     exp2[-1] = min(exp2[-1], 2147483647)
@@ -88,6 +90,40 @@ def main():
             parts.append("        " + ", ".join(entries[i:i + 4]) + ",")
         parts.append("    },")
     parts += ["};"]
+    # METAL's wash at half the rate, while GRIT crushes (+10 and up): its
+    # inputs' gain that keeps the band's level, at pitches 100 * 2^(i / 2) Hz.
+    # From the impulse responses' energy on white noise of the same spread a
+    # sample: full rate (Chamberlin high-pass at twice the pitch, 900..3000 Hz,
+    # one-pole low-pass at ten times, 5..12 kHz, the tilt), and half rate (the
+    # same retuned, each half-sample's step heard between), Q14.
+    def wash_energy(pitch, half):
+        fh = min(3000.0, max(900.0, 2 * pitch))
+        fl = min(12000.0, max(5000.0, 10 * pitch))
+        f = 2 * math.sin(math.pi * min(fh, 8000.0) / SR * (2 if half else 1))
+        d = 2 * 0.5 / 0.7071
+        c = 1 - math.exp(-2 * math.pi * fl / SR)
+        if half:
+            c = 1 - (1 - c) ** 2
+        low = band = lp = last = 0.0
+        ys = []
+        for n in range(8192):
+            x = 1.0 if n == 0 else 0.0
+            low += f * band
+            high = x - low - d * band
+            band += f * high
+            lp += (high - lp) * c
+            ys.append(lp if half else (lp + last) / 2)
+            last = lp
+        e = sum(y * y for y in ys)
+        if not half:
+            return e
+        e1 = sum(ys[k] * ys[k + 1] for k in range(len(ys) - 1))
+        return (e + (e + e1) / 2) / 2
+    wash_half = [int(round(math.sqrt(wash_energy(100 * 2 ** (i / 2), False) / wash_energy(100 * 2 ** (i / 2), True)) * 16384))
+                 for i in range(10)]
+    parts += ["// METAL's wash at half the rate (GRIT +10 and up): its inputs' gain that keeps",
+              "// the band's level, Q14, at pitches 100 * 2^(i / 2) Hz (tools/make_tables.py).",
+              "const i32 wash_half[10] = {" + ", ".join(map(str, wash_half)) + "};"]
     parts += ["}", "}", ""]
     (HERE / "tables.h").write_text("\n".join(parts))
     print("wrote", HERE / "tables.h")

@@ -26,21 +26,23 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 ID = "curio"
 PATHS, POINTS = 4, 64
 PALETTE = 9
+SHARPEST = 150.0   # degrees: the sharpest turn an outline may make
+SHARP = []         # outlines that turn sharper, reported and refused
 
 # Greys and weights, by role (few, used consistently): brightest is what the
 # sound is doing; the object's body a step down; its structure, then engraving.
 # Lines are thin, as stock Drumline's: an outline draws at most 1 px, a line
 # (a thin closed ribbon, RIBBON wide) about 1.5 px across, its band and its
-# stroke together. The dimmest greys are a step brighter than a 2 px line
-# needs, so a 1 px line that falls between pixels still shows.
+# stroke together. The dimmest greys are no darker than #7C at 0.8 px or more,
+# so a line that falls between pixels still shows on the device.
 HERO = ("#E2E2E2", 1.0)        # the specimen itself, what moves
 BODYL = ("#BDBDBD", 1.0)       # the specimen's body
 DETAIL = ("#A6A6A6", 0.8)      # its details
 STRUCT = ("#8A8A8A", 0.9)      # stands, frames, holders
-ENGR = ("#787878", 0.6)        # engraving, grain, scales
-DIM = ("#707070", 0.8)         # far things, echoes
+ENGR = ("#848484", 0.8)        # engraving, grain, scales: on black a fine line needs #80 or more
+DIM = ("#7C7C7C", 0.9)         # far things, echoes: the dimmest that still reads on the device
 GLINT = ("#C8C8C8", 0.8)       # one glint on glass or steel
-RIBBON = 0.6                   # a line's band, px: with its stroke, 1.2 to 1.5 px across
+RIBBON = 0.7                   # a line's band, px: with its stroke, 1.4 to 1.6 px across
 BODY, BODY2 = "#141414", "#242424"
 
 # Control effects: kinds. Values: px for dx/dy, Q10 (1024 = 1) for scale, tenths of a degree for rot.
@@ -290,7 +292,7 @@ for i, (dx, h) in enumerate(((34, 30), (58, 14), (76, 6))):
     P(m, f"ghost {i}", (D + dx, 132), C(4.5), DIM, fx=[(1, DY, 0, -h), (1, DX, -int(dx * 0.4), 0), (6, DX, 0, 30)], hide=(1, 400 + i * 900, 0))
 P(m, "jaw", (D, 112), ribbon(arc(0, 12, 10.5, 10.5, 200, 340, 14), 1.3), STRUCT, fx=BALLFX)
 P(m, "ball", (D, 112), C(8, 0, 12), HERO, BODY, fx=BALLFX, hit=(FALL, 1))
-P(m, "seam", (D, 112), ribbon([(x, 12 + 2.6 * math.sin(math.pi * x / 6.4)) for x in [-6.4 + 12.8 * i / 12 for i in range(13)]], 0.7), DETAIL, fx=BALLFX, hit=(FALL, 1), hide=(3, 1640, 1))
+P(m, "seam", (D, 112), ribbon(arc(-1.2, 12, 3.4, 7.2, -78, 78, 10), 0.7), DETAIL, fx=BALLFX, hit=(FALL, 1), hide=(3, 1640, 1))
 P(m, "glint", (D, 112), ribbon(arc(0, 12, 5.2, 5.2, 205, 255, 7), 0.9), GLINT, fx=BALLFX, hit=(FALL, 1), hide=(3, 2050, 0))
 
 # --- CASK: a cooper's cask on end on a stillage, cut away to show the liquid,
@@ -314,7 +316,11 @@ YS = [-50 + 6.25 * i for i in range(17)]
 body = [(bilge(y), y) for y in YS] + arc(0, 50, 34, 5, 15, 165, 12)
 body += [(-bilge(y), y) for y in YS[::-1]] + arc(0, -50, 34, 5, 165, 15, 12)
 P(m, "cask", (CX0, CY0), body, HERO, fx=SIZE)
-P(m, "head", (CX0, CY0), ell(0, -50, 34, 5, 36), DETAIL, fx=SIZE)
+# The head set down in its croze: the staves' chime a ring round it, the
+# ring's two ends a stave joint at its side.
+chime = [(34 * math.cos(math.radians(a)), -50 + 5 * math.sin(math.radians(a))) for a in range(8, 353, 15)]
+chime += [(30.5 * math.cos(math.radians(a)), -50.4 + 3.4 * math.sin(math.radians(a))) for a in range(352, 7, -15)]
+P(m, "head", (CX0, CY0), chime, DETAIL, fx=SIZE)
 
 
 def stave(kk, down):
@@ -346,7 +352,7 @@ P(m, "felt", (266, 116), [(-12.5, -5), (-16, -4), (-16, 4), (-12.5, 5)], DETAIL,
 # carved to the rock) on felt cords over a sounding box; a rattan mallet, a damp cloth.
 m = 2
 SX = 185
-P(m, "box", (SX, 182), [(-64, -14), (64, -14), (64, 10), (58, 10), (58, 14), (47, 14), (47, 10), (-47, 10), (-47, 14), (-58, 14), (-58, 10), (-64, 10)], STRUCT, BODY)
+P(m, "box", (SX, 182), [(-66, -14), (66, -14), (66, -11), (64, -10), (64, 10), (58, 10), (58, 14), (47, 14), (47, 10), (-47, 10), (-47, 14), (-58, 14), (-58, 10), (-64, 10), (-64, -10), (-66, -11)], STRUCT, BODY)
 P(m, "hole", (SX, 180), C(4), ENGR, BODY2)
 P(m, "cord l", (SX - 32, 165), C(3.4), DETAIL, BODY2, fx=[(0, DX, 0, 15), (3, DX, 14, 0)])
 P(m, "cord r", (SX + 32, 165), C(3.4), DETAIL, BODY2, fx=[(0, DX, 0, -15), (3, DX, -14, 0)])
@@ -379,7 +385,10 @@ for i, v in enumerate(G):
 # The tiled wall rises behind as the room's echo grows.
 P(m, "tiles", (362, 195), ribbon(rows, 1.0), DIM, fx=[(7, SCALE, 300, 1000)], hide=(7, 3, 0), k=2)
 P(m, "joints", (362, 195), ribbon(cols, 1.0), DIM, fx=[(7, SCALE, 300, 1000)], hide=(7, 3, 0), k=2)
-pipe = [(24, 67.5), (176, 67.5)] + arc(176, 78, 10.5, 10.5, -70, 0, 7)[0:] + [(186.5, 86), (181.5, 86), (181.5, 78)] + arc(176, 78, 5.5, 5.5, 0, -70, 5)[1:] + [(176, 72.5), (24, 72.5)]
+# The pipe from its wall flange, two couplings along it, the elbow down to the spout.
+pipe = [(22, 63.5), (26, 63.5), (26, 67.5), (54, 67.5), (54, 66), (61, 66), (61, 67.5), (142, 67.5), (142, 66), (149, 66), (149, 67.5), (176, 67.5)]
+pipe += arc(176, 78, 10.5, 10.5, -70, 0, 7)[0:] + [(186.5, 86), (181.5, 86), (181.5, 78)] + arc(176, 78, 5.5, 5.5, 0, -70, 5)[1:]
+pipe += [(176, 72.5), (149, 72.5), (149, 74), (142, 74), (142, 72.5), (61, 72.5), (61, 74), (54, 74), (54, 72.5), (26, 72.5), (26, 76.5), (22, 76.5)]
 pipe = [pipe[0]] + [p for p in pipe[1:]]
 P(m, "pipe", (104, 77), T(pipe, -104, -77), STRUCT, BODY2, k=2)
 P(m, "valve", (100, 70), C(7.5), STRUCT, BODY2)
@@ -427,7 +436,7 @@ P(m, "milk", (IX, 156), ribbon([(-52, -15), (-30, -14), (-8, -15.5), (14, -13.8)
 P(m, "milk 2", (IX, 156), ribbon([(-46, -3), (-24, -4), (0, -2.5), (22, -4), (44, -2.8)], 0.7), DETAIL, fx=SHEETFX + [(3, SCALE, 1024, 500)], hide=(3, 2048, 1))
 WEIGHT = [(0, SCALE, 600, 1300), (1, DY, 2, -10)]
 P(m, "weight ring", (IX, 132), ribbon(arc(0, -14, 6.5, 7.5, 180, 360, 14), 1.6), STRUCT, fx=WEIGHT, hit=(KICK_DY, 3))
-P(m, "weight", (IX, 132), [(-13, 0), (-11, -14), (11, -14), (13, 0)], STRUCT, BODY2, fx=WEIGHT, hit=(KICK_DY, 3))
+P(m, "weight", (IX, 132), [(-14, 0), (-14, -2.5), (-12, -3.5), (-10.5, -14), (10.5, -14), (12, -3.5), (14, -2.5), (14, 0)], STRUCT, BODY2, fx=WEIGHT, hit=(KICK_DY, 3))
 # Frost crystals blooming on the slab's top as it gets colder, carried with
 # the slab as it grows (a move by the sheet's control matching its scale).
 for i, ox in enumerate((-30, 8, 42)):
@@ -479,9 +488,10 @@ P(m, "chain", (JX, 110), ribbon(zig(0, 0, 0, 44, 7, 1.8), 0.6), ENGR)
 P(m, "rod", (JX, 104), rect(-1.5, -26, 1.5, -5), STRUCT, BODY2)
 P(m, "conductor", (JX + 41, KY), rect(-41, -1.4, 41, 1.4), STRUCT, BODY2)
 P(m, "knob", (JX, KY), C(8), HERO, BODY2, hit=(RING_DY, 1))
-P(m, "pillar l", (192, 133), rect(-2.5, -53, 2.5, 53), DETAIL)
+PILLAR = [(-4, -53), (4, -53), (4, -49.5), (2.5, -48), (2.5, 45), (4.5, 46.5), (4.5, 53), (-4.5, 53), (-4.5, 46.5), (-2.5, 45), (-2.5, -48), (-4, -49.5)]
+P(m, "pillar l", (192, 133), PILLAR, DETAIL)
 P(m, "ball l", (192, KY), C(6), HERO, BODY2, fx=KNOB)
-P(m, "pillar r", (268, 133), rect(-2.5, -53, 2.5, 53), DETAIL)
+P(m, "pillar r", (268, 133), PILLAR, DETAIL)
 P(m, "clamp", (268, KY), [(-4, -5), (4, -5), (4, 5), (-4, 5)], STRUCT, BODY2)
 P(m, "arm", (214, KY), rect(0, -1.4, 60, 1.4), STRUCT, BODY2, fx=GAPX)
 P(m, "brush", (214, KY), [(-6, -2), (-16, -10), (-10, -3), (-18, 0), (-10, 3), (-16, 10), (-6, 2)], DETAIL, fx=GAPX + [(5, SCALE, 300, 1300)], hide=(5, 3, 0))
@@ -505,14 +515,19 @@ m = 7
 BOT = [(3, SCALE, 820, 1024), (3, DY, 7, 0)]
 NECK = [(0, SCALE, 870, 1050), (3, DY, 15, 0)]
 TOP = [(0, DY, 4, -5), (3, DY, 15, 0)]
-P(m, "bottle", (170, 156), mirror(curve([(8, -42), (12, -38), (19, -32), (23, -25), (24, -18)], 4) + curve([(24, 36), (23.6, 38.3), (22.2, 39.6), (19, 40)], 3)), HERO, fx=BOT)
-P(m, "label", (170, 156), rect(-20, -4, 20, 24), DETAIL, BODY, fx=BOT)
-P(m, "cartouche", (170, 156), ell(0, 10, 12, 6.5, 30), ENGR, fx=BOT)
-P(m, "glass glint", (170, 156), ribbon(curve([(-19.5, -27), (-21, -18), (-21, -8)], 4), 0.9), GLINT, fx=BOT)
+# A Bordeaux's high, square shoulder; its heel rounded and the punt's kick
+# rising in the base; the label wrapping the glass, its edges bowed.
+P(m, "bottle", (170, 156), mirror([(0, -42)] + curve([(8, -42), (8.4, -38), (10.5, -34), (15.5, -30.5), (21.5, -27), (23.8, -23), (24, -19)], 4) + curve([(24, 36), (23.6, 38.3), (22.2, 39.6), (19, 40), (13, 40)], 3) + curve([(13, 40), (7, 37.8), (0, 37.2)], 3)[1:-1] + [(0, 37.2)]), HERO, fx=BOT)
+P(m, "label", (170, 156), [(x, -4 + 1.2 * (1 - (x / 21) ** 2)) for x in range(-20, 21, 5)] + [(x, 24 + 1.2 * (1 - (x / 21) ** 2)) for x in range(20, -21, -5)], DETAIL, BODY, fx=BOT)
+# The label's engraved border, its corners cut, inside its edge.
+lab = [(-12, -0.5), (14, -0.5), (17, 2.5), (17, 18.5), (14, 21.5), (-14, 21.5), (-17, 18.5), (-17, 2.5), (-14, -0.5), (-12.6, -0.5)]
+P(m, "cartouche", (170, 156), ribbon([(x, y + 1.2 * (1 - (x / 21) ** 2)) for x, y in lab], 0.6), ENGR, fx=BOT)
+P(m, "glass glint", (170, 156), ribbon(curve([(-16, -25), (-19, -17), (-19.5, -8)], 4), 0.9), GLINT, fx=BOT)
 for i, (dx, dy, r) in enumerate(((-8, 176, 2.5), (6, 156, 2.2), (-3, 134, 2.0))):
     P(m, f"fizz {i}", (170 + dx, dy), C(r), DETAIL, fx=[(2, SCALE, 700, 1300)], hit=(RISE, -16), hide=(2, 300 + i * 1000, 0))
 P(m, "neck", (170, 114), [(-8, 0), (-7.4, -30), (7.4, -30), (8, 0)], HERO, fx=NECK)
-P(m, "capsule", (170, 114), [(-7.9, -12), (-7.4, -30), (7.4, -30), (7.9, -12)], DETAIL, BODY2, fx=NECK)
+# The foil capsule, its skirt crimped in pleats round the neck.
+P(m, "capsule", (170, 114), [(-7.4, -30), (7.4, -30)] + [(7.9 - 15.8 * i / 6, -12 + (0 if i % 2 == 0 else -1.5)) for i in range(7)], DETAIL, BODY2, fx=NECK)
 # The cork sits in the neck, a little drawn; the corkscrew's worm in it, its T-bar above.
 P(m, "worm", (170, 114), T(ribbon(zig(0, 9, 0, -3, 6, 2.6) + [(0, -8)], 0.7), 0, -36), STRUCT, fx=[(5, DY, -6, 0)] + NECK, hit=(FALL, -40), hide=(5, 3, 0))
 P(m, "t bar", (170, 114), T(rrect(-14, -1.8, 14, 1.8, 1.5, 1), 0, -45), STRUCT, BODY2, fx=[(5, DY, -6, 0)] + NECK, hit=(FALL, -40), hide=(5, 3, 0))
@@ -553,7 +568,7 @@ for side in (1, -1):
     WP = (CP[0] + side * 18 * Z, CP[1])
     P(m, f"hindwing {nm}", WP, z(sx(R(loop(hind, 3), 6))), DETAIL, fx=WFX, hit=(KICK_ROT, 60 * side), k=2)
     P(m, f"wing {nm}", WP, z(sx(loop(fore, 3))), HERO, fx=WFX, hit=(KICK_ROT, 60 * side), k=2)
-    P(m, f"veins {nm}", WP, z(sx(ribbon(veins, 0.9))), DETAIL, fx=WFX, hit=(KICK_ROT, 60 * side), k=2)
+    P(m, f"veins {nm}", WP, z(sx(ribbon(veins, 0.6))), DETAIL, fx=WFX, hit=(KICK_ROT, 60 * side), k=2)
 for side in (1, -1):
     P(m, f"tymbal {side}", CP, z(ell(13 * side, 26, 4, 5.5, 20)), DETAIL, BODY, fx=SH)
 P(m, "mesonotum", CP, z([(-19, -5)] + curve([(19, -5), (18, 6), (12, 16), (4, 21), (0, 22), (-4, 21), (-12, 16), (-18, 6), (-19, -5)], 3)[:-1]), HERO, BODY, fx=SH)
@@ -575,14 +590,14 @@ for i, (x, y) in enumerate(((58, 172), (322, 166), (300, 62))):
 # clamp, a clock-gong spring, a weight for the slowing, a sounding box.
 m = 9
 RC = (128, 124)
-P(m, "box", (232, 196), rect(-50, -30, 50, 0), STRUCT, BODY, fx=[(6, SCALE, 300, 1024)], hide=(6, 3, 0))
+P(m, "box", (232, 196), [(-52.5, -30), (52.5, -30), (52.5, -26.5), (50, -26.5), (50, 0), (-50, 0), (-50, -26.5), (-52.5, -26.5)], STRUCT, BODY, fx=[(6, SCALE, 300, 1024)], hide=(6, 3, 0))
 P(m, "box hole", (232, 182), C(5), ENGR, fx=[(6, SCALE, 300, 1024), (6, DY, 10, 0)], hide=(6, 3, 0))
 P(m, "handle", RC, mirror([(0, 4), (3, 4)] + curve([(3, 24), (3.6, 28), (5.6, 32), (6, 40), (5, 50), (4, 56), (5, 60), (6, 62)], 3) + [(18, 62), (18, 72), (0, 72)]), STRUCT, BODY2, k=2)
 frame = [(300, 98), (102, 98), (100, 100), (100, 148), (102, 150), (300, 150), (300, 145), (106, 145), (105, 144), (105, 104), (106, 103), (300, 103)]
 P(m, "frame", (200, 124), T(frame, -200, -124), STRUCT, BODY2, k=2)
 P(m, "end block", (296, 124), rect(-8, -21, 6, 21), STRUCT, BODY)
 P(m, "slat", (218, 112), [(72, -3.6), (-72, -1.4), (-73, 1), (72, 3.6)], DETAIL, BODY2, hit=(RING_DY, 1), k=2)
-P(m, "grain", (282, 112), ribbon([(6, -1.3), (-60, -0.9), (-122, -0.4), (-123, 0.6), (-60, 1.1), (6, 1.5)], 1.0), DETAIL, fx=[(3, SCALE, 300, 1000)], hit=(RING_DY, 1), k=2)
+P(m, "grain", (282, 112), ribbon([(6, -1.3), (-60, -0.9), (-122, -0.4), (-123, 0.6), (-60, 1.1), (6, 1.5)], 0.6), DETAIL, fx=[(3, SCALE, 300, 1000)], hit=(RING_DY, 1), k=2)
 P(m, "wear", (150, 111), ribbon([(-3, 1), (0, -1.6), (3, 1), (6, -1.6)], 0.6), DETAIL, fx=[(7, SCALE, 300, 1500)], hide=(7, 3, 0))
 P(m, "clamp", (280, 111), [(-4, -6), (-1, -6), (-1, -11), (-4, -11), (-4, -13), (4, -13), (4, -11), (1, -11), (1, -6), (4, -6), (4, 6), (-4, 6)], STRUCT, BODY2, fx=[(2, DX, 0, -96)])
 P(m, "gong", (296, 124), ribbon([(10 * t / 20 * math.cos(t * 0.6), 10 * t / 20 * math.sin(t * 0.6)) for t in range(3, 21)] + [(16, 2)], 0.6), DETAIL, fx=[(5, SCALE, 300, 1024)], hide=(5, 3, 0))
@@ -654,7 +669,7 @@ P(m, "end", MB, ribbon([(88, -10), (88, 24)], 1.0), STRUCT, k=2)
 P(m, "label", MB, [(-78, -12.5), (62, -12.5), (80, -22), (-60, -22)], ENGR, k=2)
 P(m, "star", (MB[0] + 2, MB[1] - 17), S(star(5, 1, 0.42), 6.5), DETAIL)
 P(m, "striker", MB, rect(-102, -4, 78, 18), DETAIL, BODY2, k=2)
-P(m, "grit", MB, ribbon(zig(-98, 7, 74, 7, 18, 5), 0.8), ENGR, fx=[(0, SCALE, 750, 1024)], k=2)
+P(m, "grit", MB, ribbon(zig(-98, 7, 74, 7, 28, 3.2), 0.8), ENGR, fx=[(0, SCALE, 750, 1024)], k=2)
 MT = [(3, DX, 36, -56)]                   # drawn: the match runs along the striker
 mh = (186, 171)                           # the head, on the striker
 SCR = [(0, ROT, 80, -180)]                 # scrape: pressed flatter and harder
@@ -684,7 +699,7 @@ P(m, "rod", (212, 74), rect(-0.7, 0, 0.7, 48), STRUCT, BODY2, fx=PEND, hit=(STRI
 P(m, "spoon", (212, 74), ell(0, 54, 3.4, 6.5, 22), HERO, BODY2, fx=PEND, hit=(STRIKE, 160), hide=(1, 2048, 1))
 P(m, "rod knob", (212, 74), C(4, 0, 51), HERO, BODY2, fx=PEND, hit=(STRIKE, 160), hide=(1, 2048, 0))
 P(m, "carriage", (212, 74), C(2.6), DETAIL, BODY2, fx=PEND[:1])
-P(m, "stem", (165, 196), T(mirror([(2.2, -26)] + curve([(2.2, -16), (4.5, -13), (5.5, -10), (4.5, -7), (2, -5)], 3) + curve([(1.8, 12), (3.5, 17), (9, 21), (18, 24.5), (23, 26.5)], 3) + [(23, 28)]), 0, -28), HERO, fx=[(2, SCALE, 850, 1150)])
+P(m, "stem", (165, 196), T(mirror([(2.2, -26), (2.2, -24.2), (4.8, -23.6), (4.8, -21.8), (2.2, -21.2)] + curve([(2.2, -16), (4.5, -13), (5.5, -10), (4.5, -7), (2, -5)], 3) + curve([(1.8, 12), (3.5, 17), (9, 21), (18, 24.5), (23, 26.5)], 3) + [(23, 28)]), 0, -28), HERO, fx=[(2, SCALE, 850, 1150)])
 P(m, "foot rim", (165, 196), ribbon(arc(0, -1.5, 22, 2.2, 160, 20, 12), 0.6), ENGR, fx=[(2, SCALE, 850, 1150)])
 # The crack runs down from the rim, further as crack rises: the bowl's height at 100.
 P(m, "crack", (178, 105), ribbon([(0, 0), (3, 6), (0, 12), (2, 18), (-2, 24), (-1, 30)], 0.6), DETAIL, fx=[(6, SCALE, 400, 1100), (2, DY, 0, -16)], hide=(6, 3, 0))
@@ -695,7 +710,7 @@ P(m, "finger", (143, 103), [(-40, -4)] + curve([(-6, -5), (-1, -3.5), (1, -1), (
 # felt damper; the pump's barrel and T handle, its pipe and cock; a Leclanché cell.
 m = 13
 JJ = [(6, SCALE, 900, 1140), (6, DY, 6, -8)]
-P(m, "cell", (62, 176), [(-12, -20), (12, -20), (12, 17), (10, 20), (-10, 20), (-12, 17)], DETAIL)
+P(m, "cell", (62, 176), [(-13.5, -20), (-6, -20), (-6, -25), (6, -25), (6, -20), (13.5, -20), (13.5, -17.5), (12, -16), (12, 17), (10, 20), (-10, 20), (-12, 17), (-12, -16), (-13.5, -17.5)], DETAIL)
 P(m, "terminal", (62, 148), C(2.4), STRUCT, BODY2)
 P(m, "wire", (100, 160), ribbon(curve([(-36, -12), (-24, -22), (-10, -14), (0, 6), (14, 26), (30, 28)], 4), 0.7), ENGR)
 P(m, "post", (165, 184), rect(-1.5, -38, 1.5, 0), STRUCT, BODY2)
@@ -707,12 +722,14 @@ P(m, "damper post", (205, 184), rect(-1.4, -34, 1.4, 0), STRUCT, BODY2)
 P(m, "damper", (190, 152), rrect(-2.5, -4, 4, 4, 1.5, 1), DETAIL, BODY2, fx=[(4, DX, 0, 12)])
 P(m, "jar", (165, 128), mirror(curve([(0, -56), (14, -55), (29, -51), (40, -43), (47, -32), (50, -20), (51, -8)], 3) + [(51, 48), (54, 52), (54, 56)]), BODYL, fx=JJ)
 P(m, "jar glint", (165, 128), ribbon(arc(0, -8, 44, 44, 205, 235, 10), 0.8), GLINT, fx=JJ)
-P(m, "jar knob", (165, 67), C(5), BODYL, BODY2, fx=[(6, DY, 11, -16)])
+# The jar's knob: a glass ball on a short neck, flared where it meets the dome.
+P(m, "jar knob", (165, 67), mirror(arc(0, -1.2, 3.8, 3.8, -90, 62, 9) + [(1.5, 3.4), (2.6, 4.6), (4.4, 5.4), (0, 5.4)]), BODYL, BODY2, fx=[(6, DY, 11, -16)])
 P(m, "plate", (165, 196), [(-62, -11), (62, -11), (62, -5), (56, -5), (56, 0), (48, 0), (48, -5), (-48, -5), (-48, 0), (-56, 0), (-56, -5), (-62, -5)], STRUCT, BODY2, fx=[(7, SCALE, 850, 1150)])
 P(m, "pipe", (258, 188), ribbon([(-24, 0), (24, 0), (27, -2)], 1.6), STRUCT)
 P(m, "cock", (252, 188), C(3), STRUCT, BODY2)
-P(m, "pump rod", (285, 118), [(-1.2, 30), (-1.2, -29.8), (-15, -29.8), (-15, -34.2), (15, -34.2), (15, -29.8), (1.2, -29.8), (1.2, 30)], STRUCT, BODY2, fx=[(2, DY, 20, -26)])
-P(m, "barrel", (285, 152), rrect(-8, -34, 8, 34, 2, 1), STRUCT, BODY2)
+# The pump's T handle with its turned grips; the barrel's cap and foot collars.
+P(m, "pump rod", (285, 118), mirror([(0, -34.2), (9, -34.2), (10, -35.4), (15.5, -35.4), (16.6, -34.2), (16.6, -29.8), (15.5, -28.6), (10, -28.6), (9, -29.8), (1.2, -29.8), (1.2, 30)]), STRUCT, BODY2, fx=[(2, DY, 20, -26)])
+P(m, "barrel", (285, 152), [(-10, -34), (10, -34), (10, -29.5), (8, -29.5), (8, 29.5), (10, 29.5), (10, 34), (-10, 34), (-10, 29.5), (-8, 29.5), (-8, -29.5), (-10, -29.5)], STRUCT, BODY2)
 
 # --- CHALK: a school slate in its pegged frame with ruled lines and its sponge
 # on a string, on a chalk ledge; a brass chalk holder writing the stroke (reshaped).
@@ -759,10 +776,12 @@ P(m, "wind 2", (238, 176), ribbon([(x, 2.5 * (1 - (x / 28) ** 2)) for x in range
 # Each specimen stands alone on the black, its picture centred in the screen
 # below the header: every part moves by its specimen's (dx, dy), px, and the
 # display moves its reshaped outlines by the same (art.h's ox, oy). Measured
-# by tests/clear.cpp, which prints each specimen's extent at its defaults:
-# its box there centred on (240, 129), as far as every sweep stays on screen.
-OFFSET = [(100, 8), (44, 1), (55, 4), (47, 2), (14, 6), (49, 9), (33, 3), (54, -3),
-          (54, 20), (41, -18), (60, -7), (70, -17), (35, -3), (65, -5), (70, -7), (60, -4)]
+# by tests/clear.cpp, which prints each specimen's extent at its defaults.
+# Each specimen's box at rest is centred on (240, 130), as far as its every
+# sweep stays between y 46 (clear of the two-row header) and 214 and between
+# x 6 and 474.
+OFFSET = [(100, 9), (44, 7), (55, 5), (47, 3), (14, 7), (49, 6), (33, 5), (54, 3),
+          (54, 21), (41, -17), (60, -6), (70, -16), (35, -2), (65, 1), (70, -6), (60, -1)]
 for prt in parts:
     dx, dy = OFFSET[prt["model"]]
     prt["pivot"] = (prt["pivot"][0] + dx, prt["pivot"][1] + dy)
@@ -795,14 +814,16 @@ def check(pts, name):
         assert d >= 0.125, (name, i, d)
         if i == n - 1:
             assert d >= 0.25, (name, "closing", d)
-    # No turn straight back.
+    # No turn sharper than SHARPEST: the OP-XY strokes with mitred joins and no
+    # mitre limit, so a turn near straight back draws a long spike.
     for i in range(n):
         p0, p1, p2 = pts[i - 1], pts[i], pts[(i + 1) % n]
         v1 = (p1[0] - p0[0], p1[1] - p0[1])
         v2 = (p2[0] - p1[0], p2[1] - p1[1])
-        L1, L2 = math.hypot(*v1), math.hypot(*v2)
-        cosang = (v1[0] * v2[0] + v1[1] * v2[1]) / (L1 * L2)
-        assert cosang > -0.999, (name, "turns straight back at", i)
+        turn = math.degrees(math.atan2(abs(v1[0] * v2[1] - v1[1] * v2[0]), v1[0] * v2[0] + v1[1] * v2[1]))
+        if turn > SHARPEST:
+            assert name != "snap", "snapping sharpens a turn"
+            SHARP.append((name, i, round(turn)))
     if len(set((round(x * 1024), round(y * 1024)) for x, y in pts)) != n:
         raise AssertionError((name, "repeats a point"))
 
@@ -817,6 +838,33 @@ def rounded(pts, k=1):
 
 
 SNAP = 0.25   # px on screen
+
+
+def blunt(pts, k=1, cut=0.4):
+    """Each corner sharper than SHARPEST cut across, a quarter pixel or so back
+    along both its edges, so the device's mitred join draws no spike: the one
+    sharp turn becomes two gentle ones."""
+    for _ in range(4):
+        out, n, changed = [], len(pts), False
+        for i in range(n):
+            p0, p1, p2 = pts[i - 1], pts[i], pts[(i + 1) % n]
+            v1 = (p1[0] - p0[0], p1[1] - p0[1])
+            v2 = (p2[0] - p1[0], p2[1] - p1[1])
+            L1, L2 = math.hypot(*v1), math.hypot(*v2)
+            turn = math.degrees(math.atan2(abs(v1[0] * v2[1] - v1[1] * v2[0]), v1[0] * v2[0] + v1[1] * v2[1]))
+            # the cut's two points must stand 1/8 px apart however narrow the tip
+            need = 0.17 * k / max(1e-6, 2 * math.sin(math.radians(180 - turn) / 2))
+            c = min(max(cut * k, need), 0.48 * L1, 0.48 * L2, L1 - 0.16 * k, L2 - 0.16 * k)
+            if turn > SHARPEST - 1 and c >= need:
+                out.append((p1[0] - v1[0] / L1 * c, p1[1] - v1[1] / L1 * c))
+                out.append((p1[0] + v2[0] / L2 * c, p1[1] + v2[1] / L2 * c))
+                changed = True
+            else:
+                out.append(p1)
+        pts = out
+        if not changed:
+            break
+    return pts
 
 
 def snapped(pts, k=1):
@@ -873,7 +921,7 @@ def main():
             shape = prt["shape"]
             if len(shape) >= 12:   # a long outline: drop points the eye can't place (a ribbon's are dropped already)
                 shape = simplify(shape + [shape[0]], 0.25)[:-1]
-            pts = snapped(shape, kk)
+            pts = snapped(blunt(shape, kk), kk)
             check(pts, name)
             out.append(f'<path id="{ID}_node_{i}" d="{d_of(pts)}" fill="{fill}" stroke="{st}" stroke-width="{sw}"/>')
             bounds.append((min(x for x, _ in pts), min(y for _, y in pts), max(x for x, _ in pts), max(y for _, y in pts)))
@@ -1003,6 +1051,7 @@ const float node[{len(bounds)}][4] = {{
             per[nodes[int(mm.group(1))]["model"]] += len(line) + 1
     print(f"{node_count} nodes ({len(rows)} specimen parts), {len(svg)} bytes of artwork")
     print("bytes by specimen:", ", ".join(f"{MODELS[i]} {per[i]} ({counts[i]})" for i in range(16)))
+    assert not SHARP, f"outlines turning sharper than {SHARPEST} degrees: {SHARP}"
 
 
 if __name__ == "__main__":

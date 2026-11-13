@@ -45,8 +45,11 @@ def tables():
     decay = [min(0x7fffffff, q(math.exp(-2 ** (-i / 16)), 31)) for i in range(353)]
     tanh = [min(0x7fffffff, q(math.tanh(4 * i / 256), 31)) for i in range(257)]
     log2 = [q(math.log2(1 + i / 256), 16) for i in range(257)]
-    # The handful: 1 + round(b^1.6 * 23) balls for the control b (0..127).
+    # The handful: 1 + round(b^1.6 * 23) balls for the control b (0..127), up to
+    # 12; past that a third as many again, so the top of the travel is 16 balls
+    # (it was 24: every ball's every bounce costs the engine a gather).
     count = [1 + int(round((b / 127) ** 1.6 * 23)) for b in range(128)]
+    count = [c if c <= 12 else 12 + int(round((c - 12) / 3)) for c in count]
     # Restitution 0.93 * b^0.5, Q15: the first touch already gives a rebound you hear.
     rest = [q(0.93 * (b / 127) ** 0.5, 15) for b in range(128)]
     # A handful of m: the balls' spacing and scatter, in samples, and how far

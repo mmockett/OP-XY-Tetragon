@@ -25,6 +25,49 @@ inline void start(Voice& voice, Shared&, u32) { voice.pending = 1; }
 inline void destroy(Voice&, Shared&, u32) {}
 inline void drum_select(Voice& voice, Shared&, u32, u32 model) { voice.next = model < kit::models ? model : 0; }
 
+// The ranges the track menu's scramble draws each model's controls from, so a
+// scrambled kit stays playable. SIZE stays within about an octave of the
+// model's default (no 30 Hz rumble under a kick, no shackle gone to a squeak);
+// DAMP never leaves a drum ringing for seconds nor dead (BOOM 0.79 s to 40 ms,
+// models.h's lt0); CHAIN rattles at most half way, except on the snare, whose
+// wires it is; and a sheet's own ring (METAL, SHEET), a long swell, a roll
+// (ROLL, BUZZ), a deep chirp (DEPTH), a slow bow and a long storm (RUMBLE,
+// 2.3 s at 104) stay short of their tops. The level trims (levels.h) hold
+// every control's loudness, so no slot here is narrowed for level alone.
+const opxy::u8 scramble_low[kit::models][8] = {
+    {12, 16, 0, 0, 0, 0, 0, 0},    // BOOM
+    {0, 0, 0, 0, 0, 24, 0, 0},     // SLAP
+    {0, 0, 0, 0, 0, 0, 0, 0},      // POP
+    {0, 12, 0, 0, 0, 0, 0, 0},     // FLICK
+    {24, 8, 0, 0, 0, 0, 0, 0},     // TOM
+    {8, 0, 0, 0, 0, 0, 0, 0},      // CRASH
+    {16, 16, 0, 0, 0, 0, 0, 0},    // CLANK
+    {0, 0, 0, 16, 0, 0, 0, 0},     // GRIT
+    {16, 0, 16, 0, 0, 0, 0, 0},    // HOP
+    {0, 0, 0, 0, 0, 0, 0, 0},      // ZAP
+    {12, 0, 0, 0, 0, 0, 0, 0},     // BOW
+    {0, 0, 0, 0, 0, 0, 0, 0},      // SHAKE
+};
+const opxy::u8 scramble_high[kit::models][8] = {
+    {92, 112, 127, 127, 127, 110, 127, 64},    // BOOM
+    {127, 112, 127, 127, 127, 127, 127, 100},  // SLAP
+    {127, 120, 127, 127, 127, 80, 64, 127},    // POP
+    {127, 127, 127, 127, 127, 64, 127, 127},   // FLICK
+    {112, 112, 127, 127, 127, 100, 80, 64},    // TOM
+    {92, 104, 127, 127, 127, 96, 127, 64},     // CRASH
+    {96, 120, 127, 127, 127, 100, 64, 80},     // CLANK
+    {127, 127, 127, 127, 127, 100, 64, 127},   // GRIT
+    {104, 120, 127, 127, 127, 127, 127, 64},   // HOP
+    {127, 127, 127, 127, 100, 100, 64, 127},   // ZAP
+    {104, 127, 104, 127, 100, 127, 64, 96},    // BOW
+    {100, 120, 104, 127, 127, 80, 127, 127},   // SHAKE
+};
+void scramble_range(u32 model, u32 slot, opxy::u8* low, opxy::u8* high) {
+    if (model >= kit::models || slot >= 8) return;
+    *low = scramble_low[model][slot];
+    *high = scramble_high[model][slot];
+}
+
 // The key's pad controls: TUNE, -16..15 semitones; DRIVE, 0..15.
 inline void drum_pad(Voice& voice, Shared&, u32, const i32* values) {
     voice.tune = clamp(values[0], -16, 15);
@@ -56,12 +99,12 @@ inline bool pad_control_text(u32 field, i32 value, char* text) {
     return true;
 }
 
-// A note's sound has ended once its output has stayed under -96 dB for
-// 90 ms with nothing still to come (a roll, a bounce, a snap, an echo, a
+// A note's sound has ended once its output has stayed under -84 dB for
+// 45 ms with nothing still to come (a roll, a bounce, a snap, an echo, a
 // jolt, a bow still drawn). Its voice then writes silence without running the
 // sheet, and finished tells the SDK it may free the voice.
-const i32 quiet_under = 1 << 15;
-const u32 quiet_blocks = 62;
+const i32 quiet_under = 1 << 17;
+const u32 quiet_blocks = 31;
 inline bool finished(const Voice& voice, const Shared&) { return voice.done != 0; }
 
 // A control word (raw << 24) as a Q16 unit.
@@ -79,7 +122,7 @@ inline i32 overdrive(i32 x, i32 drive) {
     z = z > lim ? lim : z < -lim ? -lim : z;
     z <<= 5;
     const i32 z3 = multiply(multiply(z, z), z);
-    return multiply(z - multiply(z3, Q31(1.0 / 3.0)), Q31(0.6));
+    return multiply(z - multiply(z3, Q31(1.0 / 3.0)), Q31(0.5625));
 }
 
 // A soft knee over the last quarter under the ceiling: what the level trim
@@ -93,6 +136,22 @@ inline i32 knee(i32 y) {
     return y < 0 ? -b : b;
 }
 
+// The knee over a block (noinline, and every sample computed, then chosen:
+// the same values as knee(), without a branch a sample). |y| and 4 (|y| - K)
+// come from saturating adds, which hold them at 2^31 - 1 where knee() does.
+__attribute__((noinline)) inline void knee_block(i32* y) {
+    using opxy::q31::add;
+    const i32 k = half_scale - (half_scale >> 2);
+    for (u32 n = 0; n < frames; ++n) {
+        const i32 x = *y, m = x >> 31;
+        const i32 a = add(x ^ m, m & 1);
+        const i32 d = a - k, d2 = add(d, d);
+        const i32 e = add(d2, d2);   // Q31: one once the excess passes 2 (H - K)
+        const i32 b = k + multiply(half_scale >> 2, e + multiply(e, one - e));
+        const i32 sel = -static_cast<i32>(a > k);
+        *y++ = x ^ ((x ^ ((b ^ m) - m)) & sel);
+    }
+}
 // A transient limiter, on the models levels::limit names (a clap's snaps, a
 // pour's loudest beads, a shackle's and a bearing's strikes, whose peaks stand
 // far over their body, and a tom's hard beater): a block's peak over 0.8 of
@@ -104,12 +163,24 @@ inline i32 knee(i32 y) {
 const i32 limit_top = half_scale - (half_scale / 5);
 const i32 limit_log = L(0.8 * 1073741824.0);
 const i32 limit_back = Q31(0.2516);   // 1 - exp(-64 / (0.005 * 44100)) a block
-inline void limit(Voice& voice, i32* y) {
-    i32 peak = 0;
-    for (unsigned i = 0; i < frames; ++i) {
-        const i32 a = absolute(y[i]);
-        if (a > peak) peak = a;
+// The limiter's passes (noinline: inlined, their loops lose the hardware loop).
+// y times a gain that steps from g by step a sample (the step taken first).
+__attribute__((noinline)) inline void ramp_gain(i32* y, u32 count, i32 g, i32 step) {
+    for (u32 n = 0; n < count; ++n) {
+        g += step;
+        *y = multiply(*y, g);
+        ++y;
     }
+}
+// y times a gain.
+__attribute__((noinline)) inline void hold_gain(i32* y, u32 count, i32 g) {
+    for (u32 n = 0; n < count; ++n) {
+        *y = multiply(*y, g);
+        ++y;
+    }
+}
+// peak: the block's largest |y| (the output pass finds it).
+inline void limit(Voice& voice, i32* y, i32 peak) {
     i32 g = voice.lim;
     i32 target = g >= one ? one : g + multiply(one - g, limit_back);
     if (one - target < (one >> 12)) target = one;
@@ -128,11 +199,10 @@ inline void limit(Voice& voice, i32* y) {
         while ((2u << k) <= first + 1) ++k;
         const i32 step = (target - g) >> k;
         const unsigned n = 1u << k;
-        for (unsigned i = 0; i < n; ++i) { g += step; y[i] = multiply(y[i], g); }
-        for (unsigned i = n; i < frames; ++i) y[i] = multiply(y[i], target);
+        ramp_gain(y, n, g, step);
+        hold_gain(y + n, frames - n, target);
     } else {
-        const i32 step = (target - g) >> 6;
-        for (unsigned i = 0; i < frames; ++i) { g += step; y[i] = multiply(y[i], g); }
+        ramp_gain(y, frames, g, (target - g) >> 6);
     }
     voice.lim = target;
 }
@@ -187,30 +257,40 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     // the model's gain; then DRIVE, if any; then the soft knee, if anything
     // reaches it; and whether anything was loud enough to keep the note going
     const i32 gain = voice.gain, drive = voice.drive;
-    i32 most = 0;
+    i32 most = 0, quiet = quiet_under;
     if (!drive) {
+        i32 peak = 0;   // (|y| is exact: y never reaches -2^31)
         for (unsigned i = 0; i < frames; ++i) {
             const i32 y = clamp(multiply(x[i], gain), -(one >> 6), one >> 6) << 6;
             output[i] = y;
-            most |= y < 0 ? -y : y;
+            const i32 a = y < 0 ? -y : y;
+            most |= a;
+            peak = a > peak ? a : peak;
         }
-        if (levels::limit[voice.model]) limit(voice, output);   // level: limiter
+        if (levels::limit[voice.model]) limit(voice, output, peak);   // level: limiter
+        // (the knee leaves every sample under it as it is: only a block whose
+        // peak passes it needs the pass; most, an OR of them all, overstates it)
+        if (peak > half_scale - (half_scale >> 2)) knee_block(output);   // level: knee
     } else {
-        // DRIVE in the same pass: 0.6 z (1 - z^2 / 3), z the output at a gain of 1.4..7
+        // DRIVE in the same pass: 0.5625 z (1 - z^2 / 3), z the output at a gain of 1.4..7,
+        // held at full scale (which the output alone, at a gain of 1.4 or more, reaches first):
+        // at most 0.375 of full scale, just under the knee, which it then never needs
         const i32 g = Q31((1.0 * 2.5) / 32) + drive * Q31((6.0 / 15 * 2.5) / 32);
-        const i32 lim = one >> 5;
+        const i32 gg = multiply(gain, g);   // the model's gain and DRIVE's in one
+        const i32 lim = one >> 11;
+        // (a note ends at the level it would without DRIVE: under -84 dB before
+        // DRIVE's gain, 0.5625 x 32 g its small-signal gain)
+        quiet = multiply(quiet_under * 18, g);
         for (unsigned i = 0; i < frames; ++i) {
-            const i32 y0 = clamp(multiply(x[i], gain), -(one >> 6), one >> 6) << 6;
-            const i32 z = clamp(multiply(y0, g), -lim, lim) << 5;
-            const i32 y = multiply(z, Q31(0.6) - multiply(multiply(z, z), Q31(0.2)));
+            const i32 z = clamp(multiply(x[i], gg), -lim, lim) << 11;
+            const i32 y = multiply(z, Q31(0.5625) - multiply(multiply(z, z), Q31(0.1875)));
             output[i] = y;
             most |= y < 0 ? -y : y;
         }
     }
     // (tools/calibrate.py builds a copy without the lines marked "level:", to
     // measure the peaks the cap, the limiter and the knee take)
-    if (most > half_scale - (half_scale >> 2)) for (unsigned i = 0; i < frames; ++i) output[i] = knee(output[i]);   // level: knee
-    const bool loud = most >= quiet_under;
+    const bool loud = most >= quiet;
     voice.quiet = loud ? 0 : voice.quiet + 1;
     if (voice.quiet >= quiet_blocks && !voice.waiting) voice.done = 1;
 }

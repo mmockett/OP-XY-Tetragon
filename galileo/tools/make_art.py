@@ -33,7 +33,7 @@ ID = "galileo"
 # display scales takes its stroke from a palette entry for its scale
 # (LINE_BANDS), so it stays 1 px at any size; the rest are authored for the
 # size they're drawn at (SCALE).
-BRIGHT, LIGHT, MID, DIM = "#f2f2f2", "#c8c8c8", "#9a9a9a", "#666666"
+BRIGHT, LIGHT, MID, DIM = "#f2f2f2", "#c8c8c8", "#9a9a9a", "#828282"   # DIM: the faintest a line reads on the device
 BRASS = LIGHT                      # brass fittings read as the light grey
 BLACK, WOOD, METAL, FELT, BALL = "#000000", "#181818", "#262626", "#3a3a3a", "#a8a8a8"
 LINE = 1.0                         # every stroke, as drawn (px)
@@ -102,6 +102,58 @@ def dedupe(points):
     return out
 
 
+SHARPEST = 150.0   # degrees: the sharpest turn an outline may make
+
+
+def turns(points):
+    """Each corner's turn, degrees."""
+    n, out = len(points), []
+    for i in range(n):
+        (ax, ay), (bx, by), (cx, cy) = points[i - 1], points[i], points[(i + 1) % n]
+        ux, uy, vx, vy = bx - ax, by - ay, cx - bx, cy - by
+        out.append(math.degrees(math.atan2(abs(ux * vy - uy * vx), ux * vx + uy * vy)))
+    return out
+
+
+def blunt(points, cut=0.4):
+    """Each corner sharper than SHARPEST cut across back along both its edges, so
+    the device's mitred join (it has no mitre limit) draws no spike: the one sharp
+    turn becomes two gentle ones, the cut's ends at least 1/8 px apart. A cusp
+    between edges too short to cut loses its point."""
+    for _ in range(4):
+        out, n, changed = [], len(points), False
+        for i in range(n):
+            p0, p1, p2 = points[i - 1], points[i], points[(i + 1) % n]
+            v1 = (p1[0] - p0[0], p1[1] - p0[1])
+            v2 = (p2[0] - p1[0], p2[1] - p1[1])
+            l1, l2 = math.hypot(*v1), math.hypot(*v2)
+            turn = math.degrees(math.atan2(abs(v1[0] * v2[1] - v1[1] * v2[0]), v1[0] * v2[0] + v1[1] * v2[1]))
+            need = 0.3 / max(1e-6, 2 * math.sin(math.radians(180 - turn) / 2))
+            c = min(max(cut, need), 0.48 * l1, 0.48 * l2, l1 - 0.3, l2 - 0.3)
+            if turn > SHARPEST - 1 and c >= need:
+                out += [(p1[0] - v1[0] / l1 * c, p1[1] - v1[1] / l1 * c), (p1[0] + v2[0] / l2 * c, p1[1] + v2[1] / l2 * c)]
+                changed = True
+            elif turn > SHARPEST - 1 and n > 3:
+                changed = True   # edges too short to cut across (a cusp): the corner's point goes
+            else:
+                out.append(p1)
+        points = out
+        if not changed:
+            break
+    return points
+
+
+def written(points):
+    """The outline as d_of writes it (to a tenth), checked against the device's rules."""
+    pts = [(float(num(x)), float(num(y))) for x, y in points]
+    for i in range(len(pts)):
+        a, b = pts[i - 1], pts[i]
+        assert math.hypot(b[0] - a[0], b[1] - a[1]) >= 0.125, ("points merge", i)
+    sharp = [round(t) for t in turns(pts) if t > SHARPEST]
+    assert not sharp, ("turns sharper than SHARPEST", sharp)
+    return pts
+
+
 def rect(x0, y0, x1, y1):
     return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
 
@@ -147,14 +199,20 @@ def comb(spine, teeth, w=RIBBON):
         for tip in tips:
             h = w / 2
             out += [(x - tx * h, y - ty * h), (tip[0] - tx * h, tip[1] - ty * h), (tip[0] + tx * h, tip[1] + ty * h), (x + tx * h, y + ty * h)]
-    # back along the spine's other side
+    # back along the spine's other side: the side away from the ticks, so its
+    # end caps run straight on from the end ticks' edges
+    (ax, ay), (bx, by) = spine[0], spine[1]
+    k0, tip0 = teeth[0]
+    away = -1 if (tip0[0] - spine[k0][0]) * (by - ay) - (tip0[1] - spine[k0][1]) * (bx - ax) > 0 else 1
     back = []
     for i, (x, y) in enumerate(spine):
         a = spine[max(0, i - 1)]
         b = spine[min(len(spine) - 1, i + 1)]
         dx, dy = b[0] - a[0], b[1] - a[1]
         L = math.hypot(dx, dy) or 1
-        back.append((x + dy / L * w, y - dx / L * w))
+        back.append((x + away * dy / L * w, y - away * dx / L * w))
+    for j in (0, -1):
+        back[j] = (back[j][0] + out[j][0] - spine[j][0], back[j][1] + out[j][1] - spine[j][1])
     # a straight run of the spine needs only its ends
     keep = [back[0]]
     for i in range(1, len(back) - 1):
@@ -180,14 +238,19 @@ def paint(stroke, width, fill):
 
 
 def static(points, stroke=MID, width=W_STRUCT, fill="none", layer="back"):
-    pts = dedupe(points)
+    pts = dedupe(blunt(dedupe(points)))
     assert 3 <= len(pts) <= 64, len(pts)
+    written(pts)
     STATIC.append((layer, f'<path d="{d_of(pts)}" {paint(stroke, width, fill)}/>'))
 
 
 def node(name, points, origin=(640, 320), stroke=MID, width=W_STRUCT, fill="none", layer="body"):
-    pts = dedupe(points)
+    pts = dedupe(blunt(dedupe(points)))
     assert 3 <= len(pts) <= 64, (name, len(pts))
+    try:
+        written(pts)
+    except AssertionError as e:
+        raise AssertionError((name,) + e.args)
     NAMES[name] = len(NODES)
     NODES.append((name, f'<path d="{d_of(pts)}" {paint(stroke, width, fill)}/>', origin, layer))
 
@@ -208,17 +271,23 @@ path_node("head", BRIGHT, W_MOVE, "head")        # a drum's batter head, dented 
 path_node("teeth", LIGHT, W_STRUCT, "front")     # a ratchet's gear; a cowbell's mouth; a cabasa's front chain
 
 # ------------------------------------------------- the base and the post --
-# A moulded walnut base the length of the screen, on two scrolled feet.
-base = [(2, BASE_Y + 2), (6, BASE_Y), (474, BASE_Y), (478, BASE_Y + 2), (478, BASE_Y + 9)]
-base += arc(462, BASE_Y + 9, 10, 7, 0, math.pi, 8)
-base += arc(18, BASE_Y + 9, 10, 7, 0, math.pi, 8)
-base += [(2, BASE_Y + 9)]
+# A moulded walnut base nearly the screen's width, inset from its edges: a top
+# board with a rounded lip over a plinth, on two turned bun feet.
+BASE_L, BASE_R = 6.0, 474.0
+base = [(BASE_L, BASE_Y + 1.2), (BASE_L + 1.2, BASE_Y), (BASE_R - 1.2, BASE_Y), (BASE_R, BASE_Y + 1.2), (BASE_R, BASE_Y + 3),
+        (BASE_R - 1.2, BASE_Y + 4.2), (BASE_R - 3, BASE_Y + 4.2), (BASE_R - 3, BASE_Y + 11)]
+for fx in (BASE_R - 13, BASE_L + 13):
+    base += arc(fx, BASE_Y + 11, 8, 6, 0, math.pi, 8)
+base += [(BASE_L + 3, BASE_Y + 11), (BASE_L + 3, BASE_Y + 4.2), (BASE_L + 1.2, BASE_Y + 4.2), (BASE_L, BASE_Y + 3)]
 static(base, MID, W_STRUCT, WOOD)
-static(ribbon([(8, BASE_Y + 3.4), (472, BASE_Y + 3.4)]), DIM, W_ENGRAVE, DIM)
-# The graduated post: a square column on a plinth under a brass cap, its slot, its scale.
-post = [(POST_X - 10, BASE_Y), (POST_X - 9, BASE_Y - 5), (POST_X - 6, BASE_Y - 5), (POST_X - 6, 48), (POST_X - 8, 48), (POST_X - 8, 45),
-        (POST_X - 4, 41), (POST_X + 4, 41), (POST_X + 8, 45), (POST_X + 8, 48), (POST_X + 6, 48), (POST_X + 6, BASE_Y - 5),
-        (POST_X + 9, BASE_Y - 5), (POST_X + 10, BASE_Y)]
+# the lip's shadow line, and the walnut's grain along the plinth, gathering round a knot
+static(ribbon([(BASE_L + 3, BASE_Y + 4.2), (BASE_R - 3, BASE_Y + 4.2)]), DIM, W_ENGRAVE, DIM)
+grain = curve([(14, BASE_Y + 7.4), (90, BASE_Y + 8.3), (170, BASE_Y + 7.2), (250, BASE_Y + 7.9), (330, BASE_Y + 8.5), (400, BASE_Y + 7.4), (466, BASE_Y + 8)], 2)
+static(ribbon(grain), DIM, W_ENGRAVE, DIM)
+# The graduated post: a square column on a plinth, its slot and scale, under
+# a brass cap that the pendulum's bracket hangs from.
+post = [(POST_X - 10, BASE_Y), (POST_X - 9, BASE_Y - 5), (POST_X - 6, BASE_Y - 5), (POST_X - 6, 50.5), (POST_X + 6, 50.5),
+        (POST_X + 6, BASE_Y - 5), (POST_X + 9, BASE_Y - 5), (POST_X + 10, BASE_Y)]
 static(post, MID, W_STRUCT, WOOD)
 static(rect(POST_X - 1.3, 56, POST_X + 1.3, BASE_Y - 12), DIM, W_DETAIL, BLACK)
 ticks = [(i, y) for i, y in enumerate(range(58, int(BASE_Y) - 8, 5))]
@@ -226,22 +295,28 @@ for half in (ticks[:14], ticks[14:]):
     spine = [(POST_X + 6.3, y) for _, y in half]
     teeth = [(k, (POST_X + (12 if i % 5 == 0 else 9.5), y)) for k, (i, y) in enumerate(half)]
     static(comb(spine, teeth), MID, W_ENGRAVE, MID)
-# The pendulum's bracket and the arc it reads against.
-static([(POST_X - 6, PIVOT[1] - 2), (PIVOT[0] - 2, PIVOT[1] - 2), (PIVOT[0] - 2, PIVOT[1] + 2), (POST_X - 6, PIVOT[1] + 2)], BRASS, W_DETAIL, METAL)
+# The pendulum's bracket under the cap, and the arc it reads against (its
+# swing is 14 degrees each way: the arc 15).
+static([(POST_X - 6, PIVOT[1] - 1.6), (PIVOT[0] - 2, PIVOT[1] - 1.6), (PIVOT[0] - 2, PIVOT[1] + 1.6), (POST_X - 6, PIVOT[1] + 1.6)], BRASS, W_DETAIL, METAL)
+static([(POST_X - 7.5, 51.2), (POST_X - 7.5, 49.6), (POST_X - 6, 49.6), (POST_X - 6, 48.4), (POST_X - 4, 46.5), (POST_X + 4, 46.5),
+        (POST_X + 6, 48.4), (POST_X + 6, 49.6), (POST_X + 7.5, 49.6), (POST_X + 7.5, 51.2)], BRASS, W_DETAIL, METAL)
 spine, teeth = [], []
 for k in range(-3, 4):
-    a = math.radians(90 + 6 * k)
-    for sub in ((0, 1) if k < 3 else (0,)):
-        b = math.radians(90 + 6 * k + 3 * sub)
-        spine.append((PIVOT[0] + 44.5 * math.cos(b), PIVOT[1] + 44.5 * math.sin(b)))
-        if sub == 0:
-            r1 = 47.5 if k % 3 else 50
+    a = math.radians(90 + 5 * k)
+    for sub_ in ((0, 1) if k < 3 else (0,)):
+        b = math.radians(90 + 5 * k + 2.5 * sub_)
+        spine.append((PIVOT[0] + 43.5 * math.cos(b), PIVOT[1] + 43.5 * math.sin(b)))
+        if sub_ == 0:
+            r1 = 46 if k % 3 else 48
             teeth.append((len(spine) - 1, (PIVOT[0] + r1 * math.cos(a), PIVOT[1] + r1 * math.sin(a))))
 static(comb(spine[::-1], [(len(spine) - 1 - i, t) for i, t in teeth]), DIM, W_ENGRAVE, DIM)
 
 # --------------------------------------------------- the hinge and its quadrant --
 static([(FOOT[0] - 15, BASE_Y), (FOOT[0] - 12, FOOT[1] + 13), (FOOT[0] - 14, FOOT[1] + 13), (FOOT[0] - 14, FOOT[1] + 10),
         (FOOT[0] + 14, FOOT[1] + 10), (FOOT[0] + 14, FOOT[1] + 13), (FOOT[0] + 12, FOOT[1] + 13), (FOOT[0] + 15, BASE_Y)], MID, W_STRUCT, WOOD)
+# the grain running up the pillar's walnut
+for gx in ((293.4, 292.9, 293.6, 293.2), (306.4, 307, 306.6, 306.9)):
+    static(ribbon(curve([(gx[0], 197), (gx[1], 182), (gx[2], 165), (gx[3], 147)], 3)), DIM, W_ENGRAVE, DIM)
 # the quadrant: a brass sector behind the board's foot, ticked every 2 degrees
 # of tilt (3 to 17), where the board's index points
 index_r = math.hypot(*INDEX)
@@ -274,7 +349,9 @@ node("board", edge, FOOT, LIGHT, W_STRUCT, WOOD, "board")
 pts = [(-BEAM + 6 + i * (BEAM - 14) / 14, 5.4 + 0.7 * math.sin(i * 0.9 + 1.7)) for i in range(15)]
 node("grain", ribbon(pts), FOOT, DIM, W_ENGRAVE, DIM, "board")
 node("lining", ribbon([(-BEAM + 1, -0.6), (1, -0.6)]), FOOT, BRASS, W_DETAIL, METAL, "board")
-node("ferrule_head", rect(-BEAM - 4, -1.5, -BEAM + 3, BOARD_T + 1.5), FOOT, BRASS, W_DETAIL, METAL, "board")
+# the head's ferrule rises into a stop at the groove's end
+node("ferrule_head", [(-BEAM - 4, -5), (-BEAM - 1, -5), (-BEAM - 1, -1.5), (-BEAM + 3, -1.5), (-BEAM + 3, BOARD_T + 1.5), (-BEAM - 4, BOARD_T + 1.5)],
+     FOOT, BRASS, W_DETAIL, METAL, "board")
 node("ferrule_foot", rect(-5, -1.5, 4, BOARD_T + 1.5), FOOT, BRASS, W_DETAIL, METAL, "board")
 node("index", [(-30, BOARD_T), (-26, BOARD_T), (INDEX[0] + 0.5, INDEX[1] + 4), (INDEX[0] - 0.5, INDEX[1] + 4)],
      FOOT, BRASS, W_DETAIL, METAL, "board")
@@ -316,9 +393,11 @@ node("glint", ribbon(arc(0, 0, 3.0, 3.0, math.radians(200), math.radians(260), 4
 
 # The pendulum: rod and lens bob, with the cord that ties it back on FREE; the
 # peg in the post and its thumbscrew.
-pend = [(0.3, 0), (0.3, 37.5)] + arc(0, 42, 4.6, 4.6, -math.pi / 2 + 0.065, 3 * math.pi / 2 - 0.065, 20) + [(-0.3, 37.5), (-0.3, 0)]
+# (short enough that its full swing keeps the bob 6 px inside the screen)
+pend = [(0.3, 0), (0.3, 31.8)] + arc(0, 36, 4.2, 4.2, -math.pi / 2 + 0.072, 3 * math.pi / 2 - 0.072, 20) + [(-0.3, 31.8), (-0.3, 0)]
 node("pendulum", pend, PIVOT, LIGHT, W_DETAIL, METAL, "front")
-node("tie", [(0, -0.3), (12, -0.3), (12, 0.3), (0, 0.3)], (640, 320), LIGHT, W_DETAIL, LIGHT, "front")
+# the cord from the tied-back bob to the post
+node("tie", ribbon([(-1.3, -5.8), (12, 0)], 0.6), (640, 320), LIGHT, W_DETAIL, LIGHT, "front")
 node("peg", [(-6, 0), (16, 0), (17.5, 1.8), (16, 3.6), (-6, 3.6)], (640, 320), BRASS, W_DETAIL, METAL, "board")
 circle_node("screw", 2.8, (640, 320), BRASS, W_DETAIL, METAL, "front")
 
@@ -326,21 +405,22 @@ circle_node("screw", 2.8, (640, 320), BRASS, W_DETAIL, METAL, "front")
 # Authored at their drawn size around the batter head's centre; display.cpp
 # scales them a little with tune. The head itself is the "head" path, over its hoop.
 RX, RY, DEPTH = 60.0, 10.5, 40.0
-front = [(RX * math.cos(a), RY * math.sin(a)) for a in [math.pi * i / 24 for i in range(25)]]          # the head's near half, right to left
-bottom = [(RX * math.cos(a), DEPTH + RY * math.sin(a)) for a in [math.pi - math.pi * i / 24 for i in range(25)]]
+HALF = 18        # points along a shell's or hoop's half ellipse: within a quarter pixel of the curve
+front = [(RX * math.cos(a), RY * math.sin(a)) for a in [math.pi * i / HALF for i in range(HALF + 1)]]          # the head's near half, right to left
+bottom = [(RX * math.cos(a), DEPTH + RY * math.sin(a)) for a in [math.pi - math.pi * i / HALF for i in range(HALF + 1)]]
 shell = [(-RX, 0), (-RX, DEPTH)] + bottom[1:-1] + [(RX, DEPTH), (RX, 0)] + front[1:-1]
 node("shell", shell, (640, 320), MID, W_STRUCT, WOOD)
 # the sheen: one tell of a lacquered shell
 node("sheen", [(-RX * 0.62, RY * 0.79 + 2), (-RX * 0.5, RY * 0.87 + 2), (-RX * 0.5, DEPTH + RY * 0.87 - 2), (-RX * 0.62, DEPTH + RY * 0.79 - 2)],
      (640, 320), DIM, W_ENGRAVE, METAL)
-node("hoop_low", [(RX * math.cos(a), DEPTH - 2.8 + RY * math.sin(a)) for a in [math.pi - math.pi * i / 24 for i in range(25)]]
-     + [(RX * 1.02 * math.cos(a), DEPTH + 0.8 + RY * 1.04 * math.sin(a)) for a in [math.pi * i / 24 for i in range(25)]], (640, 320), MID, W_DETAIL, METAL)
+node("hoop_low", [(RX * math.cos(a), DEPTH - 2.8 + RY * math.sin(a)) for a in [math.pi - math.pi * i / HALF for i in range(HALF + 1)]]
+     + [(RX * 1.02 * math.cos(a), DEPTH + 0.8 + RY * 1.04 * math.sin(a)) for a in [math.pi * i / HALF for i in range(HALF + 1)]], (640, 320), MID, W_DETAIL, METAL)
 # the bass drum's deeper shell and its lower hoop
 BASS = 62.0
-bass_bottom = [(RX * math.cos(a), BASS + RY * math.sin(a)) for a in [math.pi - math.pi * i / 24 for i in range(25)]]
+bass_bottom = [(RX * math.cos(a), BASS + RY * math.sin(a)) for a in [math.pi - math.pi * i / HALF for i in range(HALF + 1)]]
 node("bass_shell", [(-RX, 0), (-RX, BASS)] + bass_bottom[1:-1] + [(RX, BASS), (RX, 0)] + front[1:-1], (640, 320), MID, W_STRUCT, WOOD)
-node("bass_hoop", [(RX * math.cos(a), BASS - 2.8 + RY * math.sin(a)) for a in [math.pi - math.pi * i / 24 for i in range(25)]]
-     + [(RX * 1.02 * math.cos(a), BASS + 0.8 + RY * 1.04 * math.sin(a)) for a in [math.pi * i / 24 for i in range(25)]], (640, 320), MID, W_DETAIL, METAL)
+node("bass_hoop", [(RX * math.cos(a), BASS - 2.8 + RY * math.sin(a)) for a in [math.pi - math.pi * i / HALF for i in range(HALF + 1)]]
+     + [(RX * 1.02 * math.cos(a), BASS + 0.8 + RY * 1.04 * math.sin(a)) for a in [math.pi * i / HALF for i in range(HALF + 1)]], (640, 320), MID, W_DETAIL, METAL)
 # the six tension rods and lugs, one outline hung from the hoop's lower rim
 band_lo = lambda a: (RX * math.cos(a), (RY + 1.2) * math.sin(a) + 1.6)
 band_hi = lambda a: (RX * math.cos(a), (RY + 1.2) * math.sin(a) + 0.4)
@@ -353,7 +433,9 @@ def lugs(rod, lug):
         lx, top = band_lo(a)
         w = 2.0 * math.sin(a) + 0.8
         mid = top + rod
-        pts += [(lx + 0.4, top), (lx + 0.4, mid), (lx + w, mid), (lx + w, mid + lug), (lx - w, mid + lug), (lx - w, mid), (lx - 0.4, mid), (lx - 0.4, top)]
+        # a tube lug, its foot tapered like a casting's, on its tension rod
+        pts += [(lx + 0.4, top), (lx + 0.4, mid), (lx + w, mid), (lx + w, mid + lug - 0.7 * w), (lx, mid + lug), (lx - w, mid + lug - 0.7 * w),
+                (lx - w, mid), (lx - 0.4, mid), (lx - 0.4, top)]
     pts.append(band_lo(math.pi))
     return pts + [band_hi(math.pi * (6 - k) / 6) for k in range(0, 7)]
 
@@ -363,10 +445,10 @@ node("lugs", lugs(DEPTH * 0.3, 9), (640, 320), LIGHT, W_DETAIL, METAL, "drum")
 
 def deep(name, depth):
     """A shell `depth` deep under the head, and its lower hoop."""
-    bot = [(RX * math.cos(a), depth + RY * math.sin(a)) for a in [math.pi - math.pi * i / 24 for i in range(25)]]
+    bot = [(RX * math.cos(a), depth + RY * math.sin(a)) for a in [math.pi - math.pi * i / HALF for i in range(HALF + 1)]]
     node(f"{name}_shell", [(-RX, 0), (-RX, depth)] + bot[1:-1] + [(RX, depth), (RX, 0)] + front[1:-1], (640, 320), MID, W_STRUCT, WOOD)
-    node(f"{name}_hoop", [(RX * math.cos(a), depth - 2.8 + RY * math.sin(a)) for a in [math.pi - math.pi * i / 24 for i in range(25)]]
-         + [(RX * 1.02 * math.cos(a), depth + 0.8 + RY * 1.04 * math.sin(a)) for a in [math.pi * i / 24 for i in range(25)]], (640, 320), MID, W_DETAIL, METAL)
+    node(f"{name}_hoop", [(RX * math.cos(a), depth - 2.8 + RY * math.sin(a)) for a in [math.pi - math.pi * i / HALF for i in range(HALF + 1)]]
+         + [(RX * 1.02 * math.cos(a), depth + 0.8 + RY * 1.04 * math.sin(a)) for a in [math.pi * i / HALF for i in range(HALF + 1)]], (640, 320), MID, W_DETAIL, METAL)
 
 
 # The snare's shallow shell, its short lugs; a rack tom's deep one.
@@ -386,12 +468,12 @@ for i in range(5):
     a = math.pi * (0.1 + 0.8 * i / 4)
     claws.append(a)
 hoop_out = []
-for k in range(25):
-    a = math.pi * k / 24
+for k in range(HALF + 1):
+    a = math.pi * k / HALF
     hoop_out.append((RX * 1.07 * math.cos(a), (RY + 3.6) * math.sin(a) + 1.0))
-hoop_in = [(RX * 1.0 * math.cos(math.pi * k / 24), (RY + 0.6) * math.sin(math.pi * k / 24) - 0.8) for k in range(25)]
+hoop_in = [(RX * 1.0 * math.cos(math.pi * k / HALF), (RY + 0.6) * math.sin(math.pi * k / HALF) - 0.8) for k in range(HALF + 1)]
 node("rimhoop", hoop_out + hoop_in[::-1], (640, 320), BRIGHT, W_STRUCT, METAL, "drum")
-node("hoop", ellipse(0, 0, RX + 2.4, RY + 1.3, 60), (640, 320), MID, W_STRUCT, METAL, "drum")
+node("hoop", ellipse(0, 0, RX + 2.4, RY + 1.3, 44), (640, 320), MID, W_STRUCT, METAL, "drum")
 node("collar", ribbon(ellipse(0, 0, RX * 0.9, RY * 0.9, 40)[:21], rib("collar")), (640, 320), DIM, W_ENGRAVE, DIM, "over")
 # the felt laid on a head (decay): wider as decay falls
 node("felt", [(0, -3.2), (34, -2.0), (36, 0.4), (34, 3.2), (0, 3.6), (-1.5, 0)], (640, 320), LIGHT, W_DETAIL, FELT, "over")
@@ -408,7 +490,9 @@ node("ring", ribbon(ellipse(0, 0, 28, 4.4, 40)[:21], 1.0), (640, 320), MID, W_DE
 # the kick's spurs and its pedal: footboard, beater shaft and head
 node("spur_l", [(0, 0), (1.8, 0), (-8, 34), (-1.4, 34), (-1.4, 35.6), (-10, 35.6)], (640, 320), MID, W_STRUCT, METAL)
 node("spur_r", [(0, 0), (-1.8, 0), (8, 34), (1.4, 34), (1.4, 35.6), (10, 35.6)], (640, 320), MID, W_STRUCT, METAL)
-node("footboard", [(-20, 0), (18, -7), (19, -5), (-19, 2)], (640, 320), MID, W_DETAIL, METAL)
+# the pedal: its footboard hinged at the heel on a base plate
+node("footboard", [(-24, 2), (-24, 0.8), (-22, 0.8), (-22, -1.8), (-20.5, -3), (-17.5, -3), (18, -8.6), (19.6, -7.8), (19.4, -6.4),
+                   (-15, -0.6), (-15, 0.8), (12, 0.8), (13, 2)], (640, 320), MID, W_DETAIL, METAL)
 node("shaft", rect(-0.4, -52, 0.4, 0), (640, 320), MID, W_DETAIL, METAL)
 node("beater", ellipse(0, 0, 6.5, 6.5, 28), (640, 320), LIGHT, W_STRUCT, FELT, "over")
 # a snare stand: a column, three basket arms, a tripod with its feet
@@ -433,19 +517,21 @@ node("palm", curve([(-13.5, 0.4), (-9, -3.2), (6.8, -3.6), (13.5, -1.6), (14.6, 
 node("rack", [(-2, 0), (2, 0), (2, -46), (44, -46), (44, -43), (2, -43), (2, -40), (-2, -40)], (640, 320), MID, W_DETAIL, METAL)
 for k in (1, 2):
     node(f"rack_shell{k}", shell, (640, 320), MID, W_STRUCT, WOOD)
-    node(f"rack_head{k}", ellipse(0, 0, RX + 1.8, RY + 1, 48), (640, 320), LIGHT, W_STRUCT, METAL)
+    node(f"rack_head{k}", ellipse(0, 0, RX + 1.8, RY + 1, 40), (640, 320), LIGHT, W_STRUCT, METAL)
 
 # ----------------------------------------------------------- the metals --
 # A cymbal in three-quarter view: the plate, two lathe rings, its bell.
-plate = ellipse(0, 0, 58, 8.5, 60)
+plate = ellipse(0, 0, 58, 8.5, 48)
 node("cymbal_low", plate, (640, 320), MID, W_STRUCT, WOOD)
 node("cymbal", plate, (640, 320), BRIGHT, W_MOVE, METAL)
 node("lathe", ribbon(ellipse(0, 0, 40, 5.9, 36)[:19], rib("lathe")), (640, 320), DIM, W_ENGRAVE, DIM)
 node("lathe2", ribbon(ellipse(0, 0, 24, 3.5, 28)[:15], rib("lathe2")), (640, 320), DIM, W_ENGRAVE, DIM)
 node("dome", arc(0, 0, 11.5, 7.5, math.pi, 2 * math.pi, 22)[1:-1] + [(11.5, 0.4), (-11.5, 0.4)], (640, 320), LIGHT, W_DETAIL, METAL)
 node("clutch", [(-4, -4), (4, -4), (4, -1), (2, 0), (-2, 0), (-4, -1)], (640, 320), BRASS, W_DETAIL, METAL)
-node("felts", [(-5, -2), (5, -2), (5, 2), (-5, 2)], (640, 320), MID, W_DETAIL, FELT)
-node("wingnut", [(-6, -2), (-2, -1.4), (-1.5, -3.5), (1.5, -3.5), (2, -1.4), (6, -2), (6, 0), (-6, 0)], (640, 320), MID, W_DETAIL, METAL)
+node("felts", [(-5, -2), (5, -2), (5.8, -1), (5.8, 1), (5, 2), (-5, 2), (-5.8, 1), (-5.8, -1)], (640, 320), MID, W_DETAIL, FELT)
+# a wing nut: its boss on the thread, two wings swept up
+wing = [(-2.2, 0), (-2.2, -1.6), (-4.6, -3), (-6.2, -5.4), (-5.6, -6.4), (-4.2, -5.8), (-1.8, -3.6), (-0.8, -3.6), (-0.8, -5)]
+node("wingnut", wing + [(-x, y) for x, y in wing[::-1]], (640, 320), MID, W_DETAIL, METAL)
 for i in range(4):
     circle_node(f"rivet{i}", 2.0, (640, 320), LIGHT, W_DETAIL, METAL)
 node("pedal", [(-15, 0), (15, -7.5), (16, -5.5), (-14, 2)], (640, 320), MID, W_DETAIL, METAL)
@@ -579,7 +665,7 @@ node("cradle", [(-12, 0), (-10, 0), (0, 8), (10, 0), (12, 0), (2, 11), (-2, 11)]
 # the frame's two rails turn on the axle and hold at their end block the
 # tongue, a springy slat (the "head" path) whose tip rides the teeth.
 node("handle", [(-3.5, 0), (3.5, 0), (4.5, 30), (5.5, 34), (4.5, 50), (-4.5, 50), (-5.5, 34), (-4.5, 30)], (640, 320), MID, W_DETAIL, WOOD)
-node("frame_r", [(-7, -10), (84, -10), (88, -7), (88, 9), (84, 12), (-7, 12)] + arc(-7, 1, 3.5, 11, 0.5 * math.pi, 1.5 * math.pi, 8)[1:-1], (640, 320), MID, W_STRUCT, WOOD)
+node("frame_r", [(-7, -10), (80, -10), (84, -7), (84, 9), (80, 12), (-7, 12)] + arc(-7, 1, 3.5, 11, 0.5 * math.pi, 1.5 * math.pi, 8)[1:-1], (640, 320), MID, W_STRUCT, WOOD)
 node("slot_r", [(9, -5), (70, -5), (70, 7), (9, 7)], (640, 320), MID, W_DETAIL, BLACK)
 circle_node("hub", 5.0, (640, 320), BRASS, W_DETAIL, METAL)
 
