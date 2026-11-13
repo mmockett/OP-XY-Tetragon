@@ -291,22 +291,22 @@ static inline void setup(Core& v, const i32* controls, u32 form_raw, i32 human_p
     }
     // 40 x the threshold-passed motion, through noise of a third of its swing.
     v.wire_gain = multiply(s.wires, q31(0.4 * wire_drive * 1.732 / 32 * 0.7071));   // Q28 * 2^-5 -> Q23; -3 dB at half rate
-    // The wash.
-    // Its band follows the cymbal's size: a big, low one keeps its body (from
-    // twice the note, at least 900 Hz) and a darker top (ten times it); a small
-    // hat sprays from 3 kHz to the top octave.
-    v.xh.set(q_butter, clamp(pitch + lg(2), lg(900), lg(3000)));
-    v.wash_c = one_pole(-(clamp(pitch + lg(10), lg(5000), lg(12000)) + lg(2 * 3.14159265)));
-    // The wash's level: 1.5 x WASH, rising faster near the top (the prototype had 1.4 x): it rings
-    // as long as its modes, so it needs less than twice. A slow flow (a hat's) is given back its level.
-    const i32 dense = multiply(s.dense, v.velocity);
-    i32 wash_gain = multiply(multiply(multiply(dense, q31(2.0 / 8)) * 8 + (multiply(multiply(dense, s.dense) << 3, q31(3.0 / 4)) << 2), v.wash_trim), q31(0.76));
-    wash_gain += multiply(wash_gain, v.wash_lift);
-    // At least half (Q28), so SIZZLE's noise, which runs in the wash's band, has
-    // headroom; a lower wash scales its inputs instead.
-    v.wash_gain = wash_gain > (1 << 27) ? wash_gain : 1 << 27;
-    v.wash_in = wash_gain > (1 << 27) ? one : wash_gain << 4;
+    // The wash (METAL's alone: the other models skip it).
     if (v.model == metal) {
+        // Its band follows the cymbal's size: a big, low one keeps its body (from
+        // twice the note, at least 900 Hz) and a darker top (ten times it); a small
+        // hat sprays from 3 kHz to the top octave.
+        v.xh.set(q_butter, clamp(pitch + lg(2), lg(900), lg(3000)));
+        v.wash_c = one_pole(-(clamp(pitch + lg(10), lg(5000), lg(12000)) + lg(2 * 3.14159265)));
+        // The wash's level: 1.5 x WASH, rising faster near the top (the prototype had 1.4 x): it rings
+        // as long as its modes, so it needs less than twice. A slow flow (a hat's) is given back its level.
+        const i32 dense = multiply(s.dense, v.velocity);
+        i32 wash_gain = multiply(multiply(multiply(dense, q31(2.0 / 8)) * 8 + (multiply(multiply(dense, s.dense) << 3, q31(3.0 / 4)) << 2), v.wash_trim), q31(0.76));
+        wash_gain += multiply(wash_gain, v.wash_lift);
+        // At least half (Q28) at the output, a lower wash scaling its inputs
+        // instead: the band keeps its headroom either way.
+        v.wash_gain = wash_gain > (1 << 27) ? wash_gain : 1 << 27;
+        v.wash_in = wash_gain > (1 << 27) ? one : wash_gain << 4;
         // At half the rate (GRIT +10 and up): the band retuned, and the inputs'
         // gain that keeps its level (tables::wash_half, by the band's pitch).
         v.wash_f2 = sine_fine(increment_cold(clamp(pitch + lg(2), lg(900), lg(3000))));
