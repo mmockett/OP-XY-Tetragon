@@ -26,8 +26,8 @@ on:
 permissions:
   contents: read
 env:
-  OPEN_XY_REPO: mmockett/open-xy
-  OPEN_XY_REF: drum/pad-channel
+  OPEN_XY_REPO: etcetc000/open-xy
+  OPEN_XY_REF: staging
   KITS: thunder curio galileo syahi
   GDB_VERSION: '16.3'
 jobs:

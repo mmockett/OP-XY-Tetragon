@@ -99,12 +99,12 @@ inline bool pad_control_text(u32 field, i32 value, char* text) {
     return true;
 }
 
-// A note's sound has ended once its output has stayed under -96 dB for
-// 90 ms with nothing still to come (a roll, a bounce, a snap, an echo, a
+// A note's sound has ended once its output has stayed under -84 dB for
+// 45 ms with nothing still to come (a roll, a bounce, a snap, an echo, a
 // jolt, a bow still drawn). Its voice then writes silence without running the
 // sheet, and finished tells the SDK it may free the voice.
-const i32 quiet_under = 1 << 15;
-const u32 quiet_blocks = 62;
+const i32 quiet_under = 1 << 17;
+const u32 quiet_blocks = 31;
 inline bool finished(const Voice& voice, const Shared&) { return voice.done != 0; }
 
 // A control word (raw << 24) as a Q16 unit.
@@ -122,7 +122,7 @@ inline i32 overdrive(i32 x, i32 drive) {
     z = z > lim ? lim : z < -lim ? -lim : z;
     z <<= 5;
     const i32 z3 = multiply(multiply(z, z), z);
-    return multiply(z - multiply(z3, Q31(1.0 / 3.0)), Q31(0.6));
+    return multiply(z - multiply(z3, Q31(1.0 / 3.0)), Q31(0.5625));
 }
 
 // A soft knee over the last quarter under the ceiling: what the level trim
@@ -257,7 +257,7 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
     // the model's gain; then DRIVE, if any; then the soft knee, if anything
     // reaches it; and whether anything was loud enough to keep the note going
     const i32 gain = voice.gain, drive = voice.drive;
-    i32 most = 0;
+    i32 most = 0, quiet = quiet_under;
     if (!drive) {
         i32 peak = 0;   // (|y| is exact: y never reaches -2^31)
         for (unsigned i = 0; i < frames; ++i) {
@@ -268,23 +268,29 @@ inline void render(Voice& voice, Shared& shared, u32, opxy::Output output, opxy:
             peak = a > peak ? a : peak;
         }
         if (levels::limit[voice.model]) limit(voice, output, peak);   // level: limiter
+        // (the knee leaves every sample under it as it is: only a block whose
+        // peak passes it needs the pass; most, an OR of them all, overstates it)
+        if (peak > half_scale - (half_scale >> 2)) knee_block(output);   // level: knee
     } else {
-        // DRIVE in the same pass: 0.6 z (1 - z^2 / 3), z the output at a gain of 1.4..7,
-        // held at full scale (which the output alone, at a gain of 1.4 or more, reaches first)
+        // DRIVE in the same pass: 0.5625 z (1 - z^2 / 3), z the output at a gain of 1.4..7,
+        // held at full scale (which the output alone, at a gain of 1.4 or more, reaches first):
+        // at most 0.375 of full scale, just under the knee, which it then never needs
         const i32 g = Q31((1.0 * 2.5) / 32) + drive * Q31((6.0 / 15 * 2.5) / 32);
         const i32 gg = multiply(gain, g);   // the model's gain and DRIVE's in one
         const i32 lim = one >> 11;
+        // (a note ends at the level it would without DRIVE: under -84 dB before
+        // DRIVE's gain, 0.5625 x 32 g its small-signal gain)
+        quiet = multiply(quiet_under * 18, g);
         for (unsigned i = 0; i < frames; ++i) {
             const i32 z = clamp(multiply(x[i], gg), -lim, lim) << 11;
-            const i32 y = multiply(z, Q31(0.6) - multiply(multiply(z, z), Q31(0.2)));
+            const i32 y = multiply(z, Q31(0.5625) - multiply(multiply(z, z), Q31(0.1875)));
             output[i] = y;
             most |= y < 0 ? -y : y;
         }
     }
     // (tools/calibrate.py builds a copy without the lines marked "level:", to
     // measure the peaks the cap, the limiter and the knee take)
-    if (most > half_scale - (half_scale >> 2)) knee_block(output);   // level: knee
-    const bool loud = most >= quiet_under;
+    const bool loud = most >= quiet;
     voice.quiet = loud ? 0 : voice.quiet + 1;
     if (voice.quiet >= quiet_blocks && !voice.waiting) voice.done = 1;
 }
